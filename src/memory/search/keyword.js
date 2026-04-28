@@ -1,4 +1,5 @@
 import cortexDb from '../../db/cortex.js';
+import { CONFIDENCE_CASE, buildFactFilters } from './filters.js';
 
 async function searchChunks(query, { namespaces, limit = 20 }) {
   const { rows } = await cortexDb.raw(`
@@ -15,18 +16,10 @@ async function searchChunks(query, { namespaces, limit = 20 }) {
   return rows;
 }
 
-async function searchFacts(query, { namespaces, limit = 20, minConfidence = 'medium', pointInTime }) {
-  const confidenceRank = { low: 0, medium: 1, high: 2 };
-  const minRank = confidenceRank[minConfidence] ?? 1;
+async function searchFacts(query, { namespaces, limit = 20, minConfidence = 'medium', pointInTime, categories }) {
+  const { temporalClause, categoryClause, filterParams } = buildFactFilters({ minConfidence, pointInTime, categories });
 
-  const params = [query, namespaces, query, minRank];
-  let temporalFilter = '';
-  if (pointInTime) {
-    temporalFilter = 'AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)';
-    params.push(pointInTime, pointInTime);
-  }
-
-  params.push(limit);
+  const params = [query, namespaces, query, ...filterParams, limit];
 
   const { rows } = await cortexDb.raw(`
     SELECT id, uid, content, category, confidence, importance, namespace, status,
@@ -37,12 +30,9 @@ async function searchFacts(query, { namespaces, limit = 20, minConfidence = 'med
     WHERE namespace = ANY(?)
       AND status = 'active'
       AND search_vector @@ plainto_tsquery('english', ?)
-      AND CASE confidence
-            WHEN 'high' THEN 2
-            WHEN 'medium' THEN 1
-            ELSE 0
-          END >= ?
-      ${temporalFilter}
+      AND ${CONFIDENCE_CASE} >= ?
+      ${temporalClause}
+      ${categoryClause}
     ORDER BY rank DESC
     LIMIT ?
   `, params);

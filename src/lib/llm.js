@@ -1,46 +1,70 @@
-import { spawn } from 'node:child_process';
-
 import config from '../config.js';
+import { getProvider, resolveProviderAndModel, detectProvider } from './llm/registry.js';
+import { logCall, calcCost, withRetry } from './llm/log.js';
 
-const MODEL_MAP = {
-  'claude-haiku-4-5-20251001': 'haiku',
-  'claude-sonnet-4-6': 'sonnet',
-  'claude-opus-4-6': 'opus',
-};
+// --- Resolve which provider + model to use for a given call ---
 
-function resolveModel(model) {
-  const m = model || config.llm.extractionModel;
-  return MODEL_MAP[m] || m;
+async function resolveForCall(taskModel) {
+  const globalProvider = await detectProvider();
+  return resolveProviderAndModel(taskModel, globalProvider);
 }
 
-async function prompt(input, { model } = {}) {
-  const resolvedModel = resolveModel(model);
-  const args = ['-p', '--model', resolvedModel, '--output-format', 'text'];
+// --- Public API (unchanged signatures) ---
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+async function prompt(input, { model, caller } = {}) {
+  const { provider, model: resolvedModel } = await resolveForCall(model);
+  const chatFn = await getProvider(provider);
+  const start = Date.now();
+
+  try {
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: false }), config.llm.maxRetries);
+    const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
+
+    logCall({
+      provider, model: result.model, caller,
+      input, response: result.text,
+      inputTokens: result.inputTokens, outputTokens: result.outputTokens,
+      cost, durationMs: Date.now() - start, status: 'success',
     });
 
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (d) => { stdout += d; });
-    proc.stderr.on('data', (d) => { stderr += d; });
-    proc.on('error', (err) => reject(new Error(`Failed to spawn claude CLI: ${err.message}`)));
-    proc.on('close', (code) => {
-      if (code !== 0) reject(new Error(`claude CLI exited ${code}: ${stderr}`));
-      else resolve(stdout.trim());
+    return result.text;
+  } catch (err) {
+    logCall({
+      provider, model: resolvedModel, caller,
+      input, response: null,
+      inputTokens: 0, outputTokens: 0,
+      cost: 0, durationMs: Date.now() - start, status: 'error', error: err.message,
     });
-
-    proc.stdin.write(input);
-    proc.stdin.end();
-  });
+    throw err;
+  }
 }
 
-async function promptJson(input, { model } = {}) {
-  const text = await prompt(input, { model });
-  return parseJson(text);
+async function promptJson(input, { model, caller } = {}) {
+  const { provider, model: resolvedModel } = await resolveForCall(model);
+  const chatFn = await getProvider(provider);
+  const start = Date.now();
+
+  try {
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: true }), config.llm.maxRetries);
+    const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
+
+    logCall({
+      provider, model: result.model, caller,
+      input, response: result.text,
+      inputTokens: result.inputTokens, outputTokens: result.outputTokens,
+      cost, durationMs: Date.now() - start, status: 'success',
+    });
+
+    return parseJson(result.text);
+  } catch (err) {
+    logCall({
+      provider, model: resolvedModel, caller,
+      input, response: null,
+      inputTokens: 0, outputTokens: 0,
+      cost: 0, durationMs: Date.now() - start, status: 'error', error: err.message,
+    });
+    throw err;
+  }
 }
 
 function parseJson(text) {

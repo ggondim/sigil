@@ -1,26 +1,26 @@
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { nanoid } from 'nanoid';
 import path from 'node:path';
 
 import cortexDb from '../../db/cortex.js';
 import { embed } from '../../ingestion/embedder.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
+import { pgVector } from '../../lib/vectors.js';
 import config from '../../config.js';
+import { PROMPTS_DIR } from '../../lib/paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AUDM_PROMPT_PATH = path.join(__dirname, '../../../prompts/audm-decision.md');
+const AUDM_PROMPT_PATH = path.join(PROMPTS_DIR, 'audm-decision.md');
 
 // Paraphrased content with nomic-embed-text typically lands 0.75-0.88.
-const SKIP_THRESHOLD = 0.88;
-const AMBIGUOUS_THRESHOLD = 0.65;
+const SKIP_THRESHOLD = config.memory.skipThreshold;
+const AMBIGUOUS_THRESHOLD = config.memory.ambiguousThreshold;
 
 /**
  * AUDM pipeline: Add, Update, Delete (contradict), or Merge.
  * For each fact, checks similarity against existing facts and decides what to do.
  */
-async function saveFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection }) {
-  const embedding = await embed(content);
+async function saveFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding: precomputed }) {
+  const embedding = precomputed || await embed(content);
   const similar = await findSimilar(embedding, { namespace });
 
   if (!similar.length) {
@@ -38,10 +38,12 @@ async function saveFact({ content, category, confidence, importance, namespace, 
     const decision = await audmDecide(content, topMatch.content);
 
     if (decision === 'UPDATE') {
-      const oldContent = topMatch.content;
-      await updateFact(topMatch.id, { content, category, confidence, importance, sourceDocumentIds, embedding });
-      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'UPDATE', oldContent, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` });
-      return { action: 'UPDATE', existingId: topMatch.id };
+      // Insert the new version, then mark the old one superseded with a closed valid_until.
+      // This preserves the full fact history as separate rows instead of overwriting in place.
+      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
+      await markSuperseded(topMatch.id, fact.id);
+      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'UPDATE', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` });
+      return { action: 'UPDATE', fact, supersededId: topMatch.id };
     }
 
     if (decision === 'CONTRADICT') {
@@ -60,7 +62,7 @@ async function audmDecide(newContent, existingContent) {
   const systemPrompt = await readFile(AUDM_PROMPT_PATH, 'utf8');
 
   const input = `${systemPrompt}\n\n**EXISTING FACT:** ${existingContent}\n\n**NEW FACT:** ${newContent}`;
-  const text = await llmPrompt(input, { model: config.llm.decisionModel });
+  const text = await llmPrompt(input, { model: config.llm.decisionModel, caller: 'audm' });
 
   const upper = text.trim().toUpperCase();
   if (upper.includes('UPDATE')) return 'UPDATE';
@@ -71,7 +73,7 @@ async function audmDecide(newContent, existingContent) {
 // ── Core CRUD ───────────────────────────────────────────────────────────────
 
 async function insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }) {
-  const uid = `fact-${randomUUID().slice(0, 8)}`;
+  const uid = `fact-${nanoid(16)}`;
 
   const [fact] = await cortexDb('fact')
     .insert({
@@ -84,7 +86,7 @@ async function insertFact({ content, category, confidence, importance, namespace
       status: 'active',
       sourceDocumentIds: sourceDocumentIds || [],
       sourceSection: sourceSection || null,
-      embedding: embedding ? `[${embedding.join(',')}]` : null,
+      embedding: pgVector(embedding),
       validFrom: new Date(),
     })
     .returning('*');
@@ -107,7 +109,7 @@ async function updateFact(factId, { content, category, confidence, importance, s
       confidence,
       importance,
       sourceDocumentIds,
-      embedding: embedding ? `[${embedding.join(',')}]` : undefined,
+      embedding: pgVector(embedding) ?? undefined,
     });
 
   await cortexDb.raw(`
@@ -152,7 +154,7 @@ async function markSuperseded(factId, supersededById) {
 }
 
 async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHOLD, limit = 5 }) {
-  const vec = `[${embedding.join(',')}]`;
+  const vec = pgVector(embedding);
 
   const { rows } = await cortexDb.raw(`
     SELECT id, uid, content, category, status,
@@ -182,8 +184,10 @@ async function recordHistory({ targetType, targetId, event, oldContent, newConte
 
 async function recordAccess(factIds) {
   if (!factIds.length) return;
-  await cortexDb('fact')
-    .whereIn('id', factIds)
+  // Writes to the skinny fact_lifecycle table — does NOT touch the fact row
+  // (which is in the HNSW index). Prevents index bloat on every search hit.
+  await cortexDb('fact_lifecycle')
+    .whereIn('factId', factIds)
     .update({
       accessCount: cortexDb.raw('access_count + 1'),
       lastAccessedAt: cortexDb.fn.now(),
@@ -191,15 +195,30 @@ async function recordAccess(factIds) {
 }
 
 async function getHotFacts(namespace, { limit = 10, since } = {}) {
+  const query = cortexDb('fact as f')
+    .join('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
+    .where({ 'f.status': 'active' })
+    .where('fl.access_count', '>', 0)
+    .orderBy('fl.access_count', 'desc')
+    .limit(limit)
+    .select('f.*');
+
+  if (namespace) query.where({ 'f.namespace': namespace });
+  if (since) query.where('fl.last_accessed_at', '>=', since);
+
+  return query;
+}
+
+async function listFacts({ namespace, limit = 50, offset = 0, category } = {}) {
   const query = cortexDb('fact')
     .where({ status: 'active' })
-    .where('accessCount', '>', 0)
-    .orderBy('accessCount', 'desc')
-    .limit(limit);
+    .select('id', 'uid', 'content', 'category', 'confidence', 'importance', 'createdAt', 'namespace')
+    .orderBy('createdAt', 'desc')
+    .limit(limit)
+    .offset(offset);
 
   if (namespace) query.where({ namespace });
-  if (since) query.where('lastAccessedAt', '>=', since);
-
+  if (category) query.where({ category });
   return query;
 }
 
@@ -210,10 +229,43 @@ async function getFactCount(namespace) {
   return Number(count);
 }
 
+async function deleteFact(idOrUid) {
+  const isUid = typeof idOrUid === 'string' && idOrUid.length > 8;
+  const where = isUid ? { uid: idOrUid } : { id: Number(idOrUid) };
+
+  // Clean up junction table first
+  const fact = await cortexDb('fact').where(where).first();
+  if (!fact) return null;
+
+  await cortexDb('fact_entity').where({ factId: fact.id }).del();
+  await cortexDb('fact').where({ id: fact.id }).del();
+  return fact;
+}
+
+async function listNamespaces() {
+  const rows = await cortexDb('fact')
+    .where({ status: 'active' })
+    .select('namespace')
+    .count('id as factCount')
+    .groupBy('namespace')
+    .orderBy('namespace');
+  return rows.map((r) => ({ namespace: r.namespace, factCount: Number(r.factCount) }));
+}
+
+async function deleteNamespace(namespace) {
+  // Cascade: facts, chunks, documents, entities, relations scoped to this namespace
+  const factsDeleted = await cortexDb('fact').where({ namespace }).del();
+  const chunksDeleted = await cortexDb('chunk').where({ namespace }).del();
+  const docsDeleted = await cortexDb('document').where({ namespace }).del();
+  const entitiesDeleted = await cortexDb('entity').where({ namespace }).del();
+  return { factsDeleted, chunksDeleted, docsDeleted, entitiesDeleted };
+}
+
 export {
   saveFact,
   insertFact,
   findByUid,
+  listFacts,
   listByCategory,
   listByDocument,
   markContradicted,
@@ -222,4 +274,7 @@ export {
   recordAccess,
   getHotFacts,
   getFactCount,
+  deleteFact,
+  listNamespaces,
+  deleteNamespace,
 };

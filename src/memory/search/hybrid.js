@@ -1,13 +1,17 @@
 import { keyBy } from 'lodash-es';
 
-import { embed } from '../../ingestion/embedder.js';
+import { embed, embedBatch } from '../../ingestion/embedder.js';
+import config from '../../config.js';
 import { findByName, searchByName } from '../entities/store.js';
 import { getFactsForEntity } from '../facts/entity-linker.js';
 import { recordAccess } from '../facts/store.js';
 import { listRelationsForEntity } from '../entities/relations.js';
 import * as vectorSearch from './vector.js';
 import * as keywordSearch from './keyword.js';
+import { hybridSearchFacts } from './hybrid-sql.js';
 import { extractEntitiesFromFacts, findRelatedFacts, rerank } from './graph-enhancement.js';
+import { expandQuery } from './query-expander.js';
+import { routeQuery } from '../cognitive/query-router.js';
 
 // K=20 gives good score spread for our result set sizes (5-50).
 // K=60 (original paper) compresses scores into a ~0.001 band with small sets.
@@ -20,14 +24,28 @@ const KEYWORD_WEIGHT = 0.7;
 // Entity detection only for short, name-like queries — not full sentences
 const MAX_ENTITY_QUERY_LENGTH = 60;
 
-async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime } = {}) {
+async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime, expand = false, route = true, categories } = {}) {
+  // Cognitive routing — classify query intent and adjust search params
+  let routing = null;
+  if (route) {
+    routing = await routeQuery(query);
+    // Route decision is logged to llm_log via the router's promptJson call.
+    // No console output here — search is called from MCP/hooks where stdout is protocol.
+
+    useGraph = useGraph || routing.useGraph;
+    expand = expand || routing.expand;
+    limit = routing.limit || limit;
+    pointInTime = pointInTime || routing.pointInTime;
+    categories = categories || (routing.categories.length ? routing.categories : undefined);
+  }
+
   const matchedEntity = await detectEntity(query, namespaces);
 
   let result;
   if (matchedEntity) {
-    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime });
+    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories });
   } else {
-    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime });
+    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories });
   }
 
   // Fire-and-forget access tracking
@@ -41,7 +59,7 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
 async function detectEntity(query, namespaces) {
   if (query.length < 2 || query.length > MAX_ENTITY_QUERY_LENGTH) return null;
 
-  const ns = namespaces[0] || 'default';
+  const ns = namespaces[0] || config.defaults.namespace;
 
   // Exact case-insensitive match first
   const exact = await findByName(query, ns);
@@ -53,11 +71,11 @@ async function detectEntity(query, namespaces) {
 }
 
 // Entity detected: fetch entity facts + relations in parallel with hybrid search, then merge
-async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime }) {
+async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories }) {
   const [entityFacts, entityRelations, hybridResult] = await Promise.all([
     getFactsForEntity(entity.id, { limit }),
     listRelationsForEntity(entity.id, { limit: 15 }),
-    coreHybridSearch(query, { namespaces, limit, minConfidence, includeChunks, pointInTime }),
+    coreHybridSearch(query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories }),
   ]);
 
   // Entity-linked facts get highest priority
@@ -94,10 +112,17 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
   };
 }
 
-// No entity match: regular hybrid search with optional graph enhancement
-async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime }) {
-  const result = await coreHybridSearch(query, { namespaces, limit, minConfidence, includeChunks, pointInTime });
-  let facts = result.facts.map((f) => ({ ...f, source: 'search' }));
+// No entity match: expand query into variants, search all in parallel, merge
+async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories }) {
+  const queries = expand ? await expandQuery(query) : [query];
+  const embeddings = await embedBatch(queries);
+
+  const results = await Promise.all(
+    queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories })),
+  );
+
+  let facts = multiQueryMerge(results.map((r) => r.facts), limit);
+  facts = facts.map((f) => ({ ...f, source: 'search' }));
 
   if (useGraph && facts.length) {
     try {
@@ -114,39 +139,63 @@ async function standardSearch(query, { namespaces, limit, minConfidence, useGrap
     }
   }
 
+  const chunks = includeChunks
+    ? multiQueryMerge(results.map((r) => r.chunks), limit)
+    : [];
+
   return {
     facts,
-    chunks: includeChunks ? result.chunks : [],
+    chunks,
     matchedEntity: null,
     relatedEntities: [],
   };
 }
 
-// Core vector+keyword hybrid with RRF merge — skips chunk queries when not needed
-async function coreHybridSearch(query, { namespaces, limit, minConfidence, includeChunks = false, pointInTime }) {
-  const queryEmbedding = await embed(query);
+// Merge results from multiple query variants using RRF
+function multiQueryMerge(resultSets, limit) {
+  const scores = {};
+  const itemsById = {};
 
-  const queries = [
-    vectorSearch.searchFacts(queryEmbedding, { namespaces, limit, minConfidence, pointInTime }),
-    keywordSearch.searchFacts(query, { namespaces, limit, minConfidence, pointInTime }),
-  ];
-
-  if (includeChunks) {
-    queries.push(
-      vectorSearch.searchChunks(queryEmbedding, { namespaces, limit }),
-      keywordSearch.searchChunks(query, { namespaces, limit }),
-    );
+  for (const results of resultSets) {
+    for (const [rank, item] of results.entries()) {
+      itemsById[item.id] = item;
+      scores[item.id] = (scores[item.id] || 0) + 1 / (RRF_K + rank + 1);
+    }
   }
 
-  const results = await Promise.all(queries);
-  const [vectorFacts, kwFacts] = results;
+  const entries = Object.entries(scores).sort(([, a], [, b]) => b - a);
+  const maxScore = entries.length ? entries[0][1] : 1;
 
-  const facts = rrfMerge(vectorFacts, kwFacts, limit);
-  let chunks = [];
+  return entries
+    .slice(0, limit)
+    .map(([id, score]) => ({
+      ...itemsById[id],
+      rrfScore: Math.round((score / maxScore) * 100) / 100,
+    }));
+}
 
-  if (includeChunks && results.length === 4) {
-    chunks = rrfMerge(results[2], results[3], limit);
-  }
+// Core vector+keyword hybrid with RRF merge.
+// Facts use single-SQL-query RRF (see hybrid-sql.js). Chunks stay on the
+// two-query + JS-merge path since they have no category/confidence filters.
+async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories }) {
+  const queryEmbedding = precomputed || await embed(query);
+
+  const factsPromise = hybridSearchFacts(query, queryEmbedding, {
+    namespaces, limit, minConfidence, pointInTime, categories,
+  });
+
+  const chunkPromises = includeChunks
+    ? [
+        vectorSearch.searchChunks(queryEmbedding, { namespaces, limit }),
+        keywordSearch.searchChunks(query, { namespaces, limit }),
+      ]
+    : [];
+
+  const [facts, ...chunkResults] = await Promise.all([factsPromise, ...chunkPromises]);
+
+  const chunks = includeChunks && chunkResults.length === 2
+    ? rrfMerge(chunkResults[0], chunkResults[1], limit)
+    : [];
 
   return { facts, chunks };
 }
