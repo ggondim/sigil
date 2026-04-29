@@ -5,6 +5,7 @@ import config from '../../config.js';
 import { findByName, searchByName } from '../entities/store.js';
 import { getFactsForEntity } from '../facts/entity-linker.js';
 import { recordAccess } from '../facts/store.js';
+import { strengthenEdges } from '../lifecycle/hebbian.js';
 import { listRelationsForEntity } from '../entities/relations.js';
 import * as vectorSearch from './vector.js';
 import * as keywordSearch from './keyword.js';
@@ -53,9 +54,12 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
     result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories });
   }
 
-  // Fire-and-forget access tracking
+  // Fire-and-forget access tracking + Hebbian co-retrieval edge strengthening.
+  // Both run off the hot path (no await). Edge writes are O(K²) per query but K is
+  // small (default top-5), so it's tens of upserts at most. Per Ogham §G.
   const factIds = result.facts.map((f) => f.id).filter(Boolean);
   recordAccess(factIds).catch((err) => console.error('[access-tracking]', err.message));
+  strengthenEdges(factIds.slice(0, 8)).catch((err) => console.error('[hebbian]', err.message));
 
   // Read-time synthesis — LLM pass over retrieved evidence to compose a coherent answer.
   // The synthesizer is also the must-miss signal: it returns "Not in retrieved memory."

@@ -1,15 +1,18 @@
 /**
- * Single-query hybrid search for facts: vector + keyword merged in SQL via RRF.
+ * Single-query hybrid search for facts: vector + keyword merged in SQL via RRF,
+ * then re-weighted by an ACT-R-style activation function.
  *
- * Previously we did two DB round-trips and merged in Node. This version runs
- * one query with CTEs + FULL OUTER JOIN and RRF fusion, returning pre-ranked
- * facts. Saves a round-trip and lets Postgres plan the whole pipeline.
+ * Pipeline (one round-trip):
+ *   1. Semantic CTE — top-K via cosine similarity
+ *   2. Keyword CTE — top-K via ts_rank
+ *   3. fused — FULL OUTER JOIN with position-based RRF
+ *   4. ranked — multiply RRF score by softplus(ACT-R activation) × importance × confidence
  *
- * Design follows Ogham's `hybrid_search_memories` pattern (see OGHAM-LEARNINGS.md §B):
- *   - Over-fetch 3x from each stage for RRF headroom
- *   - FULL OUTER JOIN preserves items appearing in only one list
- *   - Position-based RRF (scale-invariant)
- *   - Vital-importance tiebreak
+ * ACT-R activation (Anderson's cognitive architecture) makes frequently-used and
+ * recently-used facts win ties over equally-similar but older/less-used facts.
+ * Formula: `ln(access_count+1) - 0.5*ln(t_days)`, then softplus to keep ≥0.
+ *
+ * Design references OGHAM-LEARNINGS.md §B (single-SQL RRF) + the ACT-R section.
  */
 
 import cortexDb from '../../db/cortex.js';
@@ -22,6 +25,12 @@ const RRF_K = 20;
 const VECTOR_WEIGHT = 1.0;
 const KEYWORD_WEIGHT = 0.7;
 const OVERFETCH = 3;
+
+// Score multipliers (kept here — match what the rerank stage expects)
+const IMPORTANCE_VITAL_MULT = 1.5;
+const CONFIDENCE_HIGH_MULT = 1.0;
+const CONFIDENCE_MEDIUM_MULT = 0.85;
+const CONFIDENCE_LOW_MULT = 0.7;
 
 async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5, minConfidence = 'medium', pointInTime, categories }) {
   const vec = pgVector(queryEmbedding);
@@ -60,6 +69,7 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
              content, category, confidence, importance, namespace, status,
              source_document_ids AS "sourceDocumentIds",
              source_section AS "sourceSection",
+             created_at,
              1 - (embedding <=> ?) AS similarity,
              ROW_NUMBER() OVER (ORDER BY embedding <=> ?) AS rank_ix
       FROM fact
@@ -78,6 +88,7 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
              content, category, confidence, importance, namespace, status,
              source_document_ids AS "sourceDocumentIds",
              source_section AS "sourceSection",
+             created_at,
              ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) AS keyword_rank,
              ROW_NUMBER() OVER (ORDER BY ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) DESC) AS rank_ix
       FROM fact
@@ -101,6 +112,7 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
              COALESCE(s.status, k.status) AS status,
              COALESCE(s."sourceDocumentIds", k."sourceDocumentIds") AS "sourceDocumentIds",
              COALESCE(s."sourceSection", k."sourceSection") AS "sourceSection",
+             COALESCE(s.created_at, k.created_at) AS created_at,
              COALESCE(s.similarity, 0) AS similarity,
              (
                ${VECTOR_WEIGHT} * (1.0 / (${RRF_K} + COALESCE(s.rank_ix, ?)))
@@ -108,12 +120,41 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
              ) AS rrf_raw
       FROM semantic s
       FULL OUTER JOIN keyword k ON s.id = k.id
+    ),
+    ranked AS (
+      SELECT f.*,
+             COALESCE(fl.access_count, 0) AS access_count,
+             fl.last_accessed_at,
+             -- ACT-R activation: ln(n+1) - 0.5*ln(t_days), softplus to keep >= 0.
+             -- t_days floor of 0.01 prevents log(0). Recently-accessed facts win ties.
+             ln(1.0 + exp(
+               ln(COALESCE(fl.access_count, 0) + 1.0)
+               - 0.5 * ln(
+                   GREATEST(
+                     EXTRACT(epoch FROM (now() - COALESCE(fl.last_accessed_at, f.created_at))) / 86400.0,
+                     0.01
+                   )
+                 )
+             )) AS activation,
+             CASE f.importance WHEN 'vital' THEN ${IMPORTANCE_VITAL_MULT} ELSE 1.0 END AS importance_mult,
+             CASE f.confidence
+               WHEN 'high'   THEN ${CONFIDENCE_HIGH_MULT}
+               WHEN 'medium' THEN ${CONFIDENCE_MEDIUM_MULT}
+               WHEN 'low'    THEN ${CONFIDENCE_LOW_MULT}
+               ELSE 1.0
+             END AS confidence_mult
+      FROM fused f
+      LEFT JOIN fact_lifecycle fl ON fl.fact_id = f.id
     )
     SELECT id, uid, content, category, confidence, importance, namespace, status,
            "sourceDocumentIds", "sourceSection", similarity,
-           rrf_raw
-    FROM fused
-    ORDER BY rrf_raw DESC,
+           rrf_raw,
+           access_count,
+           last_accessed_at AS "lastAccessedAt",
+           activation,
+           (rrf_raw * activation * importance_mult * confidence_mult) AS final_score
+    FROM ranked
+    ORDER BY final_score DESC,
              CASE WHEN importance = 'vital' THEN 0 ELSE 1 END
     LIMIT ?
   `;
@@ -123,10 +164,11 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
 
   if (!rows.length) return [];
 
-  const maxScore = rows[0].rrf_raw || 1;
+  // Normalize against the top score so callers see [0..1] regardless of underlying scale.
+  const maxScore = rows[0].final_score || rows[0].rrf_raw || 1;
   return rows.map((r) => ({
     ...r,
-    rrfScore: Math.round((r.rrf_raw / maxScore) * 100) / 100,
+    rrfScore: Math.round((Number(r.final_score || r.rrf_raw) / Number(maxScore)) * 100) / 100,
   }));
 }
 

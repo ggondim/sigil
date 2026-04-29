@@ -156,19 +156,25 @@ async function markSuperseded(factId, supersededById) {
 async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHOLD, limit = 5 }) {
   const vec = pgVector(embedding);
 
-  const { rows } = await cortexDb.raw(`
-    SELECT id, uid, content, category, status,
-           1 - (embedding <=> ?) as similarity
-    FROM fact
-    WHERE namespace = ?
-      AND status = 'active'
-      AND embedding IS NOT NULL
-      AND 1 - (embedding <=> ?) >= ?
-    ORDER BY embedding <=> ?
-    LIMIT ?
-  `, [vec, namespace, vec, threshold, vec, limit]);
-
-  return rows;
+  // AUDM dedup only needs "is there any close match" — high recall is wasted here.
+  // Lower hnsw.ef_search trades recall for ANN scan speed, dropping per-fact dedup
+  // cost significantly during bulk ingest. SET LOCAL only takes effect inside the
+  // surrounding transaction. (Ogham §F.)
+  return cortexDb.transaction(async (trx) => {
+    await trx.raw(`SET LOCAL hnsw.ef_search = 40`);
+    const { rows } = await trx.raw(`
+      SELECT id, uid, content, category, status,
+             1 - (embedding <=> ?) as similarity
+      FROM fact
+      WHERE namespace = ?
+        AND status = 'active'
+        AND embedding IS NOT NULL
+        AND 1 - (embedding <=> ?) >= ?
+      ORDER BY embedding <=> ?
+      LIMIT ?
+    `, [vec, namespace, vec, threshold, vec, limit]);
+    return rows;
+  });
 }
 
 async function recordHistory({ targetType, targetId, event, oldContent, newContent, triggeredBy }) {
@@ -186,12 +192,20 @@ async function recordAccess(factIds) {
   if (!factIds.length) return;
   // Writes to the skinny fact_lifecycle table — does NOT touch the fact row
   // (which is in the HNSW index). Prevents index bloat on every search hit.
-  await cortexDb('fact_lifecycle')
-    .whereIn('factId', factIds)
-    .update({
-      accessCount: cortexDb.raw('access_count + 1'),
-      lastAccessedAt: cortexDb.fn.now(),
-    });
+  //
+  // Also flips stable → editing on access. The editing window is when new
+  // contradicting/refining facts can update this fact more freely (the AUDM
+  // path treats "editing" stage as receptive). closeEditingWindows() in the
+  // stage manager flips it back to stable after 30 minutes.
+  await cortexDb.raw(
+    `UPDATE fact_lifecycle
+     SET access_count = access_count + 1,
+         last_accessed_at = NOW(),
+         stage = CASE WHEN stage = 'stable' THEN 'editing' ELSE stage END,
+         stage_entered_at = CASE WHEN stage = 'stable' THEN NOW() ELSE stage_entered_at END
+     WHERE fact_id = ANY(?)`,
+    [factIds],
+  );
 }
 
 async function getHotFacts(namespace, { limit = 10, since } = {}) {

@@ -40,6 +40,7 @@ Commands:
   export [--format=json]   Export knowledge base as JSON or Markdown
   context                  Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
   status                   Show knowledge base statistics
+  maintain                 Run periodic memory maintenance (stage promotion, edge consolidation)
   migrate                  Run database migrations
   reset                    Reset the database (drops all data)
   register                 Register as a Claude Code MCP server (advanced)
@@ -66,6 +67,7 @@ const commands = {
   forget: runForget,
   namespace: runNamespace,
   export: runExport,
+  maintain: runMaintain,
   migrate: runMigrate,
   reset: runReset,
   register: runRegister,
@@ -1154,6 +1156,40 @@ Usage:
   console.log(`  Facts:      ${factCount} active`);
   console.log(`  Entities:   ${documents} documents, ${people} people, ${topics} topics`);
   console.log(`  Relations:  ${relations}`);
+
+  await cortexDb.destroy();
+}
+
+// ─── Maintain ────────────────────────────────────────────────────────────────
+
+async function runMaintain(args) {
+  if (args.includes('--help')) {
+    console.log(`cortex maintain — Run periodic memory maintenance
+
+Usage:
+  cortex maintain
+
+Promotes 'fresh' facts (older than 1h with importance=vital or any access) to 'stable',
+closes 'editing' windows older than 30 minutes back to 'stable', and consolidates
+co-retrieval edges. Safe to run as a cron — fully idempotent.`);
+    process.exit(0);
+  }
+
+  const cortexDb = (await import('./db/cortex.js')).default;
+  const { promoteFreshFacts, closeEditingWindows, getLifecycleStats } = await import('./memory/lifecycle/stage-manager.js');
+  const { consolidateCoRetrievalEdges } = await import('./memory/lifecycle/hebbian.js').catch(() => ({}));
+
+  const before = await getLifecycleStats();
+  const promoted = await promoteFreshFacts();
+  const closed = await closeEditingWindows();
+  const edgesConsolidated = consolidateCoRetrievalEdges ? await consolidateCoRetrievalEdges() : 0;
+  const after = await getLifecycleStats();
+
+  console.log('Memory maintenance:');
+  console.log(`  Stages — fresh: ${before.fresh}→${after.fresh}, stable: ${before.stable}→${after.stable}, editing: ${before.editing}→${after.editing}`);
+  console.log(`  Promoted (fresh→stable): ${promoted}`);
+  console.log(`  Closed editing windows (editing→stable): ${closed}`);
+  if (edgesConsolidated) console.log(`  Co-retrieval edges consolidated: ${edgesConsolidated}`);
 
   await cortexDb.destroy();
 }
