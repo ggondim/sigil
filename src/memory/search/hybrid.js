@@ -170,7 +170,7 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
 // No entity match: expand query into variants, search all in parallel, merge
 async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories }) {
   const queries = expand ? await expandQuery(query) : [query];
-  const embeddings = await embedBatch(queries);
+  const embeddings = await embedBatch(queries, { inputType: 'query' });
 
   const results = await Promise.all(
     queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories })),
@@ -233,7 +233,7 @@ function multiQueryMerge(resultSets, limit) {
 // Facts use single-SQL-query RRF (see hybrid-sql.js). Chunks stay on the
 // two-query + JS-merge path since they have no category/confidence filters.
 async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories }) {
-  const queryEmbedding = precomputed || await embed(query);
+  const queryEmbedding = precomputed || await embed(query, { inputType: 'query' });
 
   const factsPromise = hybridSearchFacts(query, queryEmbedding, {
     namespaces, limit, minConfidence, pointInTime, categories,

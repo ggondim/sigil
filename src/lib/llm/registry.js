@@ -14,6 +14,7 @@ const PROVIDERS = {
 const EMBEDDERS = {
   ollama: () => import('./embedders/ollama.js'),
   openai: () => import('./embedders/openai.js'),
+  voyage: () => import('./embedders/voyage.js'),
 };
 
 const providerCache = {};
@@ -114,12 +115,14 @@ async function detectEmbeddingProvider() {
     return detectedEmbedder;
   }
 
+  if (config.embedding.voyageApiKey) { detectedEmbedder = 'voyage'; return detectedEmbedder; }
   if (await isOllamaReachable()) { detectedEmbedder = 'ollama'; return detectedEmbedder; }
   if (config.embedding.openaiApiKey) { detectedEmbedder = 'openai'; return detectedEmbedder; }
 
   throw new Error(
     'No embedding provider available. Either:\n'
-    + '  - Set EMBEDDING_PROVIDER (ollama, openai)\n'
+    + '  - Set EMBEDDING_PROVIDER (voyage, ollama, openai)\n'
+    + '  - Set VOYAGE_API_KEY (recommended — best quality)\n'
     + '  - Start Ollama locally\n'
     + '  - Set OPENAI_API_KEY',
   );

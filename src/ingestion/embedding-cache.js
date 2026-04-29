@@ -17,11 +17,13 @@ import cortexDb from '../db/cortex.js';
 const MAX_CACHE_SIZE = 10_000;
 const EVICT_BATCH = 500; // Evict in batches to avoid single-row churn on every write
 
-function cacheKey(provider, model, text) {
+function cacheKey(provider, model, text, inputType = 'document') {
   const h = createHash('sha256');
   h.update(provider);
   h.update('\x00');
   h.update(model);
+  h.update('\x00');
+  h.update(inputType);
   h.update('\x00');
   h.update(text);
   return h.digest('hex');
@@ -102,10 +104,11 @@ async function evictIfOverLimit() {
  *
  * Returns results in the same order as input texts.
  */
-async function embedBatchCached(texts, providerName, modelName, providerFn, providerConfig) {
+async function embedBatchCached(texts, providerName, modelName, providerFn, providerConfig, opts = {}) {
   if (!texts.length) return [];
 
-  const keys = texts.map((t) => cacheKey(providerName, modelName, t));
+  const inputType = opts.inputType || providerConfig?.inputType || 'document';
+  const keys = texts.map((t) => cacheKey(providerName, modelName, t, inputType));
   const cached = await getCached(keys);
 
   const missTexts = [];

@@ -15,6 +15,7 @@ const config = {
     dimensions: Number(process.env.EMBEDDING_DIMENSIONS) || 768,
     ollamaHost: process.env.OLLAMA_HOST || 'http://localhost:11434',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
+    voyageApiKey: process.env.VOYAGE_API_KEY || '',
   },
 
   llm: {
