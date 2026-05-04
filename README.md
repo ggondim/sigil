@@ -2,42 +2,63 @@
 
 # Cortex
 
-**Persistent memory for Claude Code — local-first, zero-cloud.**
+### Persistent memory for Claude Code.<br/>Local-first. Zero-cloud. Two commands to install.
 
-Every AI coding session starts from zero. Cortex fixes that.
-Your architecture decisions, coding preferences, past bugs, and project context — remembered across every session, every tool, every day.
+Claude doesn't remember what you decided yesterday. Cortex does.<br/>
+Every prompt, every session — your context is already there.
+
+```bash
+npm install -g @anmol-srv/cortex
+cortex init
+```
 
 [![npm](https://img.shields.io/npm/v/@anmol-srv/cortex)](https://www.npmjs.com/package/@anmol-srv/cortex)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
+[![Benchmark](https://img.shields.io/badge/LongMemEval-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
 [![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
 
-[Quickstart](#quickstart) · [How it works](#how-it-works) · [Commands](#commands) · [Integration](#claude-code-integration) · [FAQ](#faq)
+[**Quickstart**](#quickstart) · [How it works](#how-it-works) · [Benchmarks](#benchmarks) · [Commands](#commands) · [FAQ](#faq)
 
 </div>
 
 ---
 
-## The problem
+## The 30-second demo
 
-Every time you open Claude Code, it starts from zero.
-It doesn't remember your codebase, your decisions, or the conversation you had yesterday.
+```bash
+# Tell Cortex something once
+cortex remember "We use canary deploys: 5% for 30min, then 25%, then full cutover. Rollback via LaunchDarkly killswitch."
 
-You end up:
-- Re-explaining the same architecture over and over
-- Watching Claude repeat the same mistakes you corrected last week
-- Losing hours to context-loading that should be instant
+# Open a brand-new Claude Code session in any project. Ask it:
+#   "What's our deployment strategy?"
 
-## The solution
+# Claude answers immediately — Cortex auto-injected the fact via the
+# UserPromptSubmit hook before Claude ever saw your prompt.
+```
 
-Cortex is a **local knowledge engine** that gives Claude Code persistent memory.
-It plugs in via Claude Code hooks and the Model Context Protocol (MCP) — so memory works invisibly:
+That's the whole pitch. **One command to remember. Zero commands to recall.** The hook handles it.
 
-- **Every prompt** → Cortex injects relevant facts before Claude answers
-- **Every edit / command** → Cortex silently captures the observation
-- **Every session** → Full project context is already there
+---
 
-No cloud. No subscription. No API key required (with Claude Code subscription).
+## What you actually get
+
+- **Persistent memory** across every Claude Code session, every project, every day
+- **Hybrid retrieval** — vector + keyword fused via Reciprocal Rank Fusion, with optional read-time synthesis. **R@10 = 100% on LongMemEval oracle** ([numbers + methodology](./eval/longmemeval/RESULTS.md))
+- **Local-first** — embedded PGlite or real Postgres, your choice. No cloud. No telemetry. No vendor lock-in.
+- **Free by default** — Ollama embeddings + Claude Code subscription. No API keys required to start. Voyage / OpenAI / Anthropic supported as paid upgrades for top-tier quality.
+- **Native Claude Code integration** — `UserPromptSubmit` hook injects relevant memory before every prompt; `PostToolUse` hook silently captures decisions; MCP tools for direct agent control
+- **Three-layer knowledge model** — chunks (raw text), facts (atomic statements with confidence/importance/temporal validity), entity graph (typed nodes + relations). Not a flat vector store.
+
+---
+
+## Why it exists
+
+Every time you open Claude Code, it starts from zero. You re-explain the same architecture, watch Claude repeat mistakes you corrected last week, lose hours to context-loading that should be instant.
+
+Cortex is a thin local layer that fixes this. It runs invisibly via Claude Code hooks and the Model Context Protocol — your memory is just *there*, in every session, on every machine you install it on.
+
+No cloud, no subscription, no API key required (with your Claude Code subscription).
 
 ---
 
