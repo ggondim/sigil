@@ -8,11 +8,11 @@ Claude doesn't remember what you decided yesterday. Cortex does.<br/>
 Every prompt, every session — your context is already there.
 
 ```bash
-npm install -g @anmol-srv/cortex
+npm install -g @anmolsrv/cortex
 cortex init
 ```
 
-[![npm](https://img.shields.io/npm/v/@anmol-srv/cortex)](https://www.npmjs.com/package/@anmol-srv/cortex)
+[![npm](https://img.shields.io/npm/v/@anmolsrv/cortex)](https://www.npmjs.com/package/@anmolsrv/cortex)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
@@ -66,7 +66,7 @@ No cloud, no subscription, no API key required (with your Claude Code subscripti
 
 ```bash
 # Install globally
-npm install -g @anmol-srv/cortex
+npm install -g @anmolsrv/cortex
 
 # One-time setup (30 seconds)
 cortex init

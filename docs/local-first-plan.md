@@ -119,7 +119,7 @@ Postgres binary sourced via the `embedded-postgres` npm package (which wraps the
 
 ### Phase E — Distribution polish (1-2 days)
 
-1. README: update install instructions (`npm install -g @anmol-srv/cortex` then `cortex init`). Note one-time ~50MB download.
+1. README: update install instructions (`npm install -g @anmolsrv/cortex` then `cortex init`). Note one-time ~50MB download.
 2. Provider picker at `cortex init` (Phase 3 of original plan).
 3. 30-second demo video — now uses real Postgres under the hood, no functional change to the demo.
 

@@ -1,5 +1,5 @@
 {
-  "name": "@anmol-srv/cortex",
+  "name": "@anmolsrv/cortex",
   "version": "0.4.0",
   "type": "module",
   "description": "Persistent memory for Claude Code — local-first, zero-cloud, auto-integrated via hooks and MCP",

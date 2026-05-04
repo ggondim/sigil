@@ -52,9 +52,9 @@ echo
 
 # 1. Uninstall global cortex (if present)
 if command -v cortex >/dev/null 2>&1; then
-  yellow "▸ Uninstalling existing global @anmol-srv/cortex..."
-  npm uninstall -g @anmol-srv/cortex 2>/dev/null || true
-  npm unlink -g @anmol-srv/cortex 2>/dev/null || true
+  yellow "▸ Uninstalling existing global @anmolsrv/cortex..."
+  npm uninstall -g @anmolsrv/cortex 2>/dev/null || true
+  npm unlink -g @anmolsrv/cortex 2>/dev/null || true
   green "  done"
 else
   gray "  no global cortex on PATH — skipping uninstall"

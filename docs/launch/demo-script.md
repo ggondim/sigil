@@ -82,7 +82,7 @@ Time-stamped beat-by-beat:
 0:27–0:30    Wordmark return + URL.
              OVERLAY:
                CORTEX
-               npm i -g @anmol-srv/cortex
+               npm i -g @anmolsrv/cortex
                github.com/Anmol-Srv/cortex
 ```
 

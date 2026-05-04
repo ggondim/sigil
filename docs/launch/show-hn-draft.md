@@ -11,7 +11,7 @@ A few weeks ago I got tired of re-explaining my codebase to Claude Code at the s
 Cortex is a thin local layer that gives Claude Code persistent memory across sessions. It plugs in via Claude Code's UserPromptSubmit hook (auto-injecting relevant facts before every prompt) and the PostToolUse hook (silently capturing decisions and edits worth remembering). MCP tools are exposed for direct agent control. Two commands to install:
 
 ```
-npm install -g @anmol-srv/cortex
+npm install -g @anmolsrv/cortex
 cortex init
 ```
 
@@ -70,7 +70,7 @@ Roughly $0-5/month for solo dev usage on OpenAI gpt-4o-mini + text-embedding-3-l
 - [ ] Demo video uploaded (Loom / YouTube / Twitter — pick one canonical link)
 - [ ] RESULTS.md verified accurate against latest run
 - [ ] README hero shows demo placeholder replaced with real link
-- [ ] `npm install -g @anmol-srv/cortex` confirmed working on a clean machine
+- [ ] `npm install -g @anmolsrv/cortex` confirmed working on a clean machine
 - [ ] First-comment FAQ ready in clipboard
 - [ ] HN account has commented before (avoids "new account" downweighting)
 - [ ] Cleared 4 hours after posting to engage with comments
