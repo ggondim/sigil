@@ -15,10 +15,13 @@ async function findByUid(uid) {
 async function upsert({ sourcePath, sourceType, title = null, contentHash, namespace }) {
   const uid = `doc-${nanoid(16)}`;
 
+  // ON CONFLICT target matches the (source_path, namespace) composite unique
+  // (migration 20260504120000). The same path can live in multiple namespaces;
+  // the upsert only collapses dupes within one.
   const { rows: [doc] } = await cortexDb.raw(`
     INSERT INTO document (uid, source_path, source_type, title, content_hash, namespace, last_ingested_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
-    ON CONFLICT (source_path) DO UPDATE SET
+    ON CONFLICT (source_path, namespace) DO UPDATE SET
       title = EXCLUDED.title,
       content_hash = EXCLUDED.content_hash,
       last_ingested_at = NOW(),
