@@ -12,7 +12,7 @@
  * document vs query usage — measurable quality gain per their benchmarks.
  */
 
-import { chunk } from 'lodash-es';
+import { chunk } from '../../collection.js';
 
 // Voyage's per-request limits. voyage-3 family allows up to 1000 inputs per
 // request, but practical batch size is bounded by total token count (120K-ish).

@@ -1,4 +1,4 @@
-import { keyBy } from 'lodash-es';
+import { keyBy } from '../../lib/collection.js';
 
 import { embed, embedBatch } from '../../ingestion/embedder.js';
 import config from '../../config.js';

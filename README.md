@@ -13,9 +13,9 @@ cortex init
 ```
 
 [![npm](https://img.shields.io/npm/v/@anmolsrv/cortex)](https://www.npmjs.com/package/@anmolsrv/cortex)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
-[![Benchmark](https://img.shields.io/badge/LongMemEval-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
+[![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle%20n%3D100-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
 [![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
 
 [**Quickstart**](#quickstart) · [How it works](#how-it-works) · [Benchmarks](#benchmarks) · [Commands](#commands) · [FAQ](#faq)
@@ -44,7 +44,7 @@ That's the whole pitch. **One command to remember. Zero commands to recall.** Th
 ## What you actually get
 
 - **Persistent memory** across every Claude Code session, every project, every day
-- **Hybrid retrieval** — vector + keyword fused via Reciprocal Rank Fusion, with optional read-time synthesis. **R@10 = 100% on LongMemEval oracle** ([numbers + methodology](./eval/longmemeval/RESULTS.md))
+- **Hybrid retrieval** — vector + keyword fused via Reciprocal Rank Fusion, with optional read-time synthesis. **R@10 = 100%** on LongMemEval oracle split (n=100, ~25 chunks per haystack — full caveats in [RESULTS.md](./eval/longmemeval/RESULTS.md))
 - **Local-first** — embedded PGlite or real Postgres, your choice. No cloud. No telemetry. No vendor lock-in.
 - **Free by default** — Ollama embeddings + Claude Code subscription. No API keys required to start. Voyage / OpenAI / Anthropic supported as paid upgrades for top-tier quality.
 - **Native Claude Code integration** — `UserPromptSubmit` hook injects relevant memory before every prompt; `PostToolUse` hook silently captures decisions; MCP tools for direct agent control
@@ -271,9 +271,15 @@ Then `cortex migrate` to create the schema in your Postgres instance.
 
 Full setup walkthrough (Homebrew, Docker, troubleshooting): [`docs/postgres.md`](docs/postgres.md).
 
-PGlite limitations to be aware of:
-- Single process at a time (multiple cortex CLI invocations or a CLI alongside an MCP server can collide). If a hard kill leaves the DB unreachable: `cortex doctor --kill-stale`.
-- Not visible to standard Postgres tools (Postico, pgAdmin, psql). Switch to real Postgres for those.
+### When to switch to real Postgres
+
+PGlite is a **single-process** embedded database. Only one Cortex process can hold the DB at a time. In practice that means:
+
+- A `cortex` CLI invocation while the MCP server is running for an active Claude Code session **will fail** ("DB busy"). Stop the session, or run the CLI in a different namespace.
+- Two Claude Code windows open against the same Cortex DB → only one will get the hook to fire cleanly. The other's hook will fail-fast and inject nothing.
+- If a process is killed hard (`kill -9`, OOM), the DB lock can be left dangling: `cortex doctor --kill-stale`.
+
+If any of those describe your workflow, run real Postgres instead. PGlite is the right default for a single developer with one active session at a time. It is **not** the right backend for: parallel agent fleets, shared dev machines, or anything that wants Postico/pgAdmin visibility.
 
 ---
 
@@ -296,17 +302,28 @@ Everything lives under `~/.cortex/`. No files in your project directory. No clou
 
 ## Benchmarks
 
-Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac.
+### Retrieval quality — LongMemEval oracle split
 
-| Metric | Cortex | Reference |
-|--------|--------|-----------|
-| Search latency (avg) | **33ms** | Mem0: 1440ms (P95) |
-| Search latency (p95) | **61ms** | Zep: 300ms (P95) |
-| Keyword recall @5 | **77%** | Basic RAG: ~55% |
-| Embedding latency | **26ms** | — |
-| Tokens per query | **~1.5K** | Full context: ~26K |
+| Metric | Cortex | Notes |
+|--------|--------|-------|
+| R@1 / R@3 / R@10 | **100% / 100% / 100%** | n=100, oracle split, OpenAI top-quality stack |
+| Answer correctness (LLM-judged) | **41%** | Bottlenecked by gpt-4o temporal reasoning, not retrieval |
 
-See `benchmark-dashboard.html` for full comparison against Mem0, Zep, SuperLocalMemory, Ogham MCP, and Basic RAG.
+Honest caveats: oracle split is the easy split (no distractor sessions); n=100 is small; per-question haystack is ~25 chunks. Numbers are not directly comparable to published Mem0 / Zep / Letta runs without identical methodology. Full methodology, failure-mode breakdown, and caveats: [eval/longmemeval/RESULTS.md](./eval/longmemeval/RESULTS.md).
+
+### Local latency
+
+Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac. Cortex runs in-process against an embedded PGlite database, so these are **local** numbers — not directly comparable to numbers from cloud-hosted memory services, which include network round-trip. Listed here so you can size your own expectations, not as a competitive claim.
+
+| Metric | Cortex (local) |
+|--------|----------------|
+| Search latency (avg) | **33ms** |
+| Search latency (p95) | **61ms** |
+| Keyword recall @5 | **77%** |
+| Embedding latency | **26ms** |
+| Tokens injected per prompt | **~1.5K** |
+
+Hook hot-path latency (cold Node start + PGlite WASM init + DB connect + search) is higher — typically 200–400ms on first invocation, then warm thereafter while Claude Code keeps the hook process pool alive. We have not formally benchmarked this; see [#hook-performance](#hook-performance) below.
 
 ---
 
@@ -346,11 +363,21 @@ A: Not yet. v1 is single-user. Team features (shared namespaces, sync) are plann
 **Q: How do I debug when something breaks?**
 A: Start with `cortex doctor`. It'll tell you exactly what's wrong — missing provider, hook not registered, DB issue, etc.
 
+<a id="hook-performance"></a>
+**Q: What happens to my prompt if the Cortex hook crashes?**
+A: Nothing — your prompt still goes through. The `UserPromptSubmit` hook is wrapped in a top-level try/catch that fails silently to stderr and returns an empty `additionalContext`. Claude Code will surface the stderr line but won't block on it. Cortex's design rule: **a broken memory layer must never block a working prompt.** If you see `[cortex:user-prompt-submit]` lines in your terminal, run `cortex doctor`.
+
+**Q: How much latency does the hook add to every prompt?**
+A: Cold-path: roughly 200–400ms on first invocation (Node startup + PGlite WASM init + DB open + hybrid search). Warm path is faster, but Claude Code spawns the hook fresh per prompt, so most invocations pay something close to the cold cost. We have not formally benchmarked this end-to-end and the README's "33ms search" figure does **not** include hook overhead — that's just the search call itself. If you find this unacceptable, you can comment the `UserPromptSubmit` hook out of `~/.claude/settings.json` and rely on the hot-context CLAUDE.md + on-demand MCP `search` tool instead.
+
+**Q: How do I uninstall cleanly?**
+A: `npm uninstall -g @anmolsrv/cortex` removes the binary. To remove the data and config: `rm -rf ~/.cortex`. To unwire from Claude Code, edit `~/.claude/settings.json` (remove the cortex hook entries) and `~/.claude/CLAUDE.md` (remove the `@~/.cortex/CLAUDE.md` line). A dedicated `cortex uninstall` command is on the roadmap.
+
 ---
 
 ## Architecture
 
-See `architecture.html` in this repo for a full visual breakdown of the ingestion pipeline, search flow, data model, and LLM provider system.
+See [`PROJECT.md`](./PROJECT.md) and [`architecture.html`](./architecture.html) (in the repo) for a full visual breakdown of the ingestion pipeline, search flow, data model, and LLM provider system.
 
 ---
 

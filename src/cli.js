@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { execSync as _execSync } from 'node:child_process';
+import { execSync as _execSync, spawn as _spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { config as dotenvConfig } from 'dotenv';
 
@@ -34,7 +34,7 @@ Usage:
   cortex <command> [options]
 
 Commands:
-  init                     Set up Cortex (DB, env, hooks, Claude integration)
+  init [--dry-run]         Set up Cortex (DB, env, hooks, Claude integration)
   doctor                   Diagnose Cortex setup (DB, LLM, embeddings, hooks)
   remember "text"          Save a fact or note to memory
   ingest <file|url|glob>   Ingest documents into the knowledge base
@@ -110,14 +110,41 @@ try {
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 async function runInit(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`cortex init — Set up Cortex (DB, env, hooks, Claude integration)
+
+Usage:
+  cortex init [--dry-run]
+
+Options:
+  --dry-run    Walk through every prompt and print the exact files that would
+               be created or modified, but write nothing to disk. Use this on
+               first install to preview the changes Cortex will make to your
+               ~/.cortex/ and ~/.claude/ directories.
+
+Files Cortex touches (originals are backed up to <path>.cortex.bak before write):
+  ~/.cortex/.env                 Cortex config + API keys
+  ~/.cortex/CLAUDE.md            Cortex instructions for Claude
+  ~/.cortex/db/                  Embedded PGlite database
+  ~/.claude/CLAUDE.md            One @import line added (existing content preserved)
+  ~/.claude/settings.json        UserPromptSubmit + PostToolUse hook entries (merged)`);
+    process.exit(0);
+  }
+
+  const dryRun = args.includes('--dry-run');
+
   const clack = await import('@clack/prompts');
   const fs = await import('node:fs/promises');
+  const { safeWrite } = await import('./lib/safe-write.js');
   const { intro, outro, select, text, spinner, confirm, note, cancel, isCancel } = clack;
 
   const cortexHome = join(homedir(), '.cortex');
   const envPath = join(cortexHome, '.env');
 
-  intro('Cortex — persistent memory for Claude');
+  intro(dryRun ? 'Cortex — DRY RUN (no files will be written)' : 'Cortex — persistent memory for Claude');
+
+  const planned = [];
+  const planFile = (action, path, detail) => planned.push({ action, path, detail });
 
   const hasOllama = checkCommand('ollama --version');
 
@@ -187,7 +214,16 @@ async function runInit(args) {
   });
   if (isCancel(embeddingProvider)) { cancel('Setup cancelled.'); process.exit(0); }
 
-  // ── Ollama model pull ─────────────────────────────────────────────────────
+  // ── Ollama health check + model pull ──────────────────────────────────────
+  //
+  // Three states matter, in order:
+  //   1. Binary missing      → block install (no path forward without it)
+  //   2. Binary present, server down → spawn `ollama serve` in background, then pull in parallel
+  //   3. Server reachable    → pull only if model missing
+  //
+  // The previous code only checked the binary, so on a fresh `brew install ollama`
+  // box (where the daemon isn't auto-started) `ollama list` and `ollama pull`
+  // both fail silently and init "succeeds" with a broken embedder.
 
   if (embeddingProvider === 'ollama') {
     if (!hasOllama) {
@@ -200,20 +236,55 @@ async function runInit(args) {
       cancel('Install Ollama then re-run cortex init.');
       process.exit(0);
     }
-    const hasModel = checkCommand('ollama list 2>/dev/null | grep nomic-embed-text');
-    if (!hasModel) {
-      const pull = await confirm({ message: 'Pull nomic-embed-text embedding model now? (~270MB)' });
-      if (isCancel(pull)) { cancel('Setup cancelled.'); process.exit(0); }
-      if (pull) {
+
+    const ollamaHost = existing.OLLAMA_HOST || 'http://localhost:11434';
+
+    if (dryRun) {
+      planFile('check', `ollama server @ ${ollamaHost}`, 'start in background if not running');
+      planFile('pull', 'ollama:nomic-embed-text', '~270MB embedding model (if not already present)');
+    } else {
+      let serverUp = await isOllamaServerRunning(ollamaHost);
+      let serveProc = null;
+
+      if (!serverUp) {
         const s = spinner();
-        s.start('Pulling nomic-embed-text...');
-        try {
-          _execSync('ollama pull nomic-embed-text', { stdio: 'pipe' });
-          s.stop('nomic-embed-text ready');
-        } catch {
-          s.stop('Pull failed — run: ollama pull nomic-embed-text manually');
+        s.start('Starting ollama serve in the background...');
+        serveProc = startOllamaServe();
+        serverUp = await waitForOllamaServer(ollamaHost, 15000);
+        if (serverUp) {
+          s.stop(`Ollama server ready (pid ${serveProc?.pid ?? '?'}, background)`);
+        } else {
+          s.stop('Ollama server did not come up in time');
+          note(
+            'Cortex tried to start `ollama serve` in the background but it did not\n' +
+            'become reachable at ' + ollamaHost + ' within 15s.\n\n' +
+            'Open a new terminal, run `ollama serve`, then re-run `cortex init`.',
+            'Ollama server unreachable',
+          );
+          cancel('Start ollama serve manually then re-run cortex init.');
+          process.exit(0);
         }
       }
+
+      // Server is up. Check for the model and pull in parallel with serve still running.
+      const hasModel = checkCommand('ollama list 2>/dev/null | grep nomic-embed-text');
+      if (!hasModel) {
+        const pull = await confirm({ message: 'Pull nomic-embed-text embedding model now? (~270MB)' });
+        if (isCancel(pull)) { cancel('Setup cancelled.'); process.exit(0); }
+        if (pull) {
+          const s = spinner();
+          s.start('Pulling nomic-embed-text...');
+          try {
+            _execSync('ollama pull nomic-embed-text', { stdio: 'pipe' });
+            s.stop('nomic-embed-text ready');
+          } catch {
+            s.stop('Pull failed — run: ollama pull nomic-embed-text manually');
+          }
+        }
+      }
+
+      // Detach the background serve so it survives this CLI process exit.
+      if (serveProc) serveProc.unref();
     }
   }
 
@@ -229,7 +300,7 @@ async function runInit(args) {
 
   // ── Write config ──────────────────────────────────────────────────────────
 
-  await fs.mkdir(cortexHome, { recursive: true });
+  if (!dryRun) await fs.mkdir(cortexHome, { recursive: true });
   const encryptionKey = existing.CORTEX_ENCRYPTION_KEY || generateSecret(64);
 
   const envContent = [
@@ -246,46 +317,74 @@ async function runInit(args) {
     `CORTEX_ENCRYPTION_KEY=${encryptionKey}`,
   ].join('\n');
 
-  await fs.writeFile(envPath, envContent, 'utf8');
+  const envResult = await safeWrite(envPath, envContent, { dryRun });
+  planFile(envResult.action, envPath, `${envResult.bytes} bytes`);
 
   // ── Database (PGlite — embedded, zero-install) ────────────────────────────
 
-  dotenvConfig({ path: envPath, override: true, quiet: true });
+  if (!dryRun) {
+    dotenvConfig({ path: envPath, override: true, quiet: true });
 
-  const dbSpinner = spinner();
-  dbSpinner.start('Initialising memory database...');
-  try {
-    const { MIGRATIONS_DIR: migrationDir } = await import('./lib/paths.js');
-    const cortexDb = (await import('./db/cortex.js')).default;
-    const [, migrations] = await cortexDb.migrate.latest({ directory: migrationDir });
-    await cortexDb.destroy();
-    dbSpinner.stop(
-      migrations.length ? `Memory database ready (${migrations.length} tables created)` : 'Memory database up to date',
-    );
-  } catch (err) {
-    dbSpinner.stop('Database setup failed');
-    cancel(err.message);
-    process.exit(1);
+    const dbSpinner = spinner();
+    dbSpinner.start('Initialising memory database...');
+    try {
+      const { MIGRATIONS_DIR: migrationDir } = await import('./lib/paths.js');
+      const cortexDb = (await import('./db/cortex.js')).default;
+      const [, migrations] = await cortexDb.migrate.latest({ directory: migrationDir });
+      await cortexDb.destroy();
+      dbSpinner.stop(
+        migrations.length ? `Memory database ready (${migrations.length} tables created)` : 'Memory database up to date',
+      );
+    } catch (err) {
+      dbSpinner.stop('Database setup failed');
+      cancel(err.message);
+      process.exit(1);
+    }
+  } else {
+    planFile('create', join(cortexHome, 'db'), 'PGlite database + run migrations');
   }
 
   // ── ~/.cortex/CLAUDE.md + @import in ~/.claude/CLAUDE.md ─────────────────
 
   const claudeSpinner = spinner();
-  claudeSpinner.start('Configuring Claude Code integration...');
-  await writeCortexMd();
-  await writeClaudeMd();
-  await registerHooks();
-  const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
-  await updateContextSnapshot({ namespace: namespace.toString() }).catch(() => {});
-  claudeSpinner.stop('Claude Code integration configured (memory + hooks)');
+  claudeSpinner.start(dryRun ? 'Computing Claude Code integration plan...' : 'Configuring Claude Code integration...');
+  const cortexMdResult = await writeCortexMd({ dryRun });
+  if (cortexMdResult) planFile(cortexMdResult.action, cortexMdResult.path, `${cortexMdResult.bytes} bytes`);
+  const claudeMdResult = await writeClaudeMd({ dryRun });
+  if (claudeMdResult) planFile(claudeMdResult.action, claudeMdResult.path, claudeMdResult.detail);
+  const hooksResult = await registerHooks({ dryRun });
+  if (hooksResult) planFile(hooksResult.action, hooksResult.path, hooksResult.detail);
+  if (!dryRun) {
+    const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
+    await updateContextSnapshot({ namespace: namespace.toString() }).catch(() => {});
+  }
+  claudeSpinner.stop(dryRun ? 'Plan computed.' : 'Claude Code integration configured (memory + hooks)');
 
   // ── Done ──────────────────────────────────────────────────────────────────
+
+  if (dryRun) {
+    const lines = planned.map((p) => `  ${pad(p.action, 8)} ${p.path}${p.detail ? `  (${p.detail})` : ''}`);
+    note(
+      [
+        'Dry run — no files were written. The following would happen:',
+        '',
+        ...lines,
+        '',
+        'Each existing file would be backed up to <path>.cortex.bak before its first',
+        'modification. Re-run without --dry-run to apply.',
+      ].join('\n'),
+      'Plan',
+    );
+    outro('Dry run complete.');
+    return;
+  }
 
   note(
     [
       `Memory store  ~/.cortex/db  (embedded, no server needed)`,
       `Config        ${envPath}`,
       `Claude        ~/.claude/CLAUDE.md — Cortex is now your memory`,
+      `Backups       any pre-existing files saved to <path>.cortex.bak`,
       '',
       'Claude will search Cortex before answering and save important',
       'facts automatically. Start a new Claude session to begin.',
@@ -300,6 +399,8 @@ async function runInit(args) {
 
   outro('Open a new Claude Code session to start using Cortex.');
 }
+
+function pad(s, n) { return String(s).padEnd(n); }
 
 // ─── Doctor ─────────────────────────────────────────────────────────────────
 
@@ -802,13 +903,14 @@ Examples:
 // ─── CLAUDE.md integration ───────────────────────────────────────────────────
 
 // Step 1: add a single @import line to ~/.claude/CLAUDE.md — done once at init, never touched again.
-async function writeClaudeMd() {
+async function writeClaudeMd({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
+  const { safeWrite } = await import('./lib/safe-write.js');
   const claudeDir = join(homedir(), '.claude');
   const claudeMdPath = join(claudeDir, 'CLAUDE.md');
   const cortexMdPath = join(homedir(), '.cortex', 'CLAUDE.md');
 
-  await fs.mkdir(claudeDir, { recursive: true });
+  if (!dryRun) await fs.mkdir(claudeDir, { recursive: true });
 
   const importLine = `@${cortexMdPath}`;
 
@@ -817,16 +919,21 @@ async function writeClaudeMd() {
     existing = await fs.readFile(claudeMdPath, 'utf8');
   }
 
-  if (!existing.includes(importLine)) {
-    const separator = existing.trim() ? '\n' : '';
-    await fs.writeFile(claudeMdPath, `${existing}${separator}${importLine}\n`, 'utf8');
+  if (existing.includes(importLine)) {
+    return { action: 'skip', path: claudeMdPath, detail: 'already imports cortex CLAUDE.md' };
   }
+
+  const separator = existing.trim() ? '\n' : '';
+  const newContent = `${existing}${separator}${importLine}\n`;
+  const result = await safeWrite(claudeMdPath, newContent, { dryRun });
+  return { action: result.action, path: claudeMdPath, detail: existing ? '+1 @import line' : 'new file' };
 }
 
 // Step 3: register Cortex hooks in ~/.claude/settings.json — idempotent merge.
 // Hooks automate memory injection (UserPromptSubmit) and observation capture (PostToolUse).
-async function registerHooks() {
+async function registerHooks({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
+  const { safeWrite } = await import('./lib/safe-write.js');
   const settingsPath = join(homedir(), '.claude', 'settings.json');
 
   let settings = {};
@@ -860,6 +967,7 @@ async function registerHooks() {
     },
   };
 
+  const existedBefore = existsSync(settingsPath);
   settings.hooks = settings.hooks || {};
 
   for (const [event, cortexEntry] of Object.entries(cortexHooks)) {
@@ -871,23 +979,34 @@ async function registerHooks() {
     settings.hooks[event] = [...filtered, cortexEntry];
   }
 
-  await fs.mkdir(join(homedir(), '.claude'), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  if (!dryRun) await fs.mkdir(join(homedir(), '.claude'), { recursive: true });
+  const newContent = JSON.stringify(settings, null, 2);
+  const result = await safeWrite(settingsPath, newContent, { dryRun });
+  return {
+    action: result.action,
+    path: settingsPath,
+    detail: existedBefore
+      ? '+UserPromptSubmit, +PostToolUse hooks (other settings preserved)'
+      : 'new settings.json with cortex hooks',
+  };
 }
 
 // Step 2: write Cortex instructions to ~/.cortex/CLAUDE.md — Cortex owns this file entirely.
 // Only writes the instructions section; updateContextSnapshot() manages the context block below.
-async function writeCortexMd() {
+async function writeCortexMd({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
+  const { safeWrite } = await import('./lib/safe-write.js');
   const cortexHome = join(homedir(), '.cortex');
   const cortexMdPath = join(cortexHome, 'CLAUDE.md');
 
-  await fs.mkdir(cortexHome, { recursive: true });
+  if (!dryRun) await fs.mkdir(cortexHome, { recursive: true });
 
   // If the instructions are already there, leave the file alone (context block follows below)
   try {
     const existing = await fs.readFile(cortexMdPath, 'utf8');
-    if (existing.includes('## Memory (Cortex)')) return;
+    if (existing.includes('## Memory (Cortex)')) {
+      return { action: 'skip', path: cortexMdPath, bytes: 0 };
+    }
   } catch { /* file doesn't exist yet */ }
 
   const instructions = `## Memory (Cortex)
@@ -919,7 +1038,8 @@ All facts go in one command as separate quoted arguments. \`--bg\` returns immed
 - Cortex is cross-project — memories from one session are available in all sessions
 `;
 
-  await fs.writeFile(cortexMdPath, instructions, 'utf8');
+  const result = await safeWrite(cortexMdPath, instructions, { dryRun });
+  return { action: result.action, path: cortexMdPath, bytes: result.bytes };
 }
 
 // ─── Register MCP ────────────────────────────────────────────────────────────
@@ -1366,6 +1486,34 @@ function checkCommand(cmd) {
   } catch {
     return false;
   }
+}
+
+async function isOllamaServerRunning(host) {
+  try {
+    const res = await fetch(`${host}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function startOllamaServe() {
+  // Detached + ignored stdio so the daemon survives this CLI exit and doesn't
+  // pollute the init UI. Caller is responsible for unref()ing once we're done
+  // talking to it.
+  return _spawn('ollama', ['serve'], {
+    detached: true,
+    stdio: 'ignore',
+  });
+}
+
+async function waitForOllamaServer(host, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isOllamaServerRunning(host)) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
 }
 
 function generateSecret(bytes) {

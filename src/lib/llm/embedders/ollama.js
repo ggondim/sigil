@@ -1,4 +1,4 @@
-import { chunk } from 'lodash-es';
+import { chunk } from '../../collection.js';
 
 const BATCH_SIZE = 50;
 

@@ -1,6 +1,6 @@
 {
   "name": "@anmolsrv/cortex",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Persistent memory for Claude Code — local-first, zero-cloud, auto-integrated via hooks and MCP",
   "bin": {
@@ -19,13 +19,15 @@
     "migrate:make": "knex migrate:make"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "files": [
     "dist/",
     "prompts/",
     "src/db/migrations/",
-    "knexfile.js"
+    "knexfile.js",
+    "LICENSE",
+    "README.md"
   ],
   "keywords": [
     "memory",

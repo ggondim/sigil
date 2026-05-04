@@ -7,6 +7,15 @@ import { join } from 'node:path';
 
 const DIST = 'dist';
 
+// Dep classification rule:
+//   - dependencies      → packages listed in EXTERNAL below. Resolved at runtime
+//                         from the user's node_modules. Anything with native code,
+//                         WASM, or version-sensitive runtime behavior belongs here.
+//   - devDependencies   → everything else imported by src/. Bundled into dist/ at
+//                         publish time, so end users never install them. Adding a
+//                         new import? Decide: bundle (devDep) or external (dep).
+//   - optionalDeps      → SDKs only loaded by some providers (e.g. @anthropic-ai/sdk).
+//
 // Packages we keep external — either binary (WASM), dynamically loaded, or large SDKs
 const EXTERNAL = [
   '@electric-sql/pglite',     // has WASM binary
@@ -43,7 +52,7 @@ async function run() {
       outfile,
       bundle: true,
       platform: 'node',
-      target: 'node18',
+      target: 'node20',
       format: 'esm',
       minify: true,
       sourcemap: false,
