@@ -11,18 +11,19 @@ import { config as dotenvConfig } from 'dotenv';
 // Package root — works whether run from project dir or globally installed
 const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// Load env: global ~/.cortex/.env as the base (provider keys, default namespace,
-// embedding settings), then project .env on top so a per-repo override wins for
-// repo-specific values (DB type, namespace, etc). Layering both ensures global
-// settings still apply when running from inside a project that has its own .env.
+// Env precedence: shell env > project .env > global ~/.cortex/.env.
+// dotenv's default behavior (no `override`) never overwrites existing
+// process.env keys, so loading project FIRST gives it priority over
+// global, and shell-set values (e.g. `DEFAULT_NAMESPACE=demo cortex ...`)
+// always win because they're set before either dotenv call runs.
 const projectEnv = resolve(process.cwd(), '.env');
 const globalEnv = join(homedir(), '.cortex', '.env');
 
-if (existsSync(globalEnv)) {
-  dotenvConfig({ path: globalEnv, quiet: true });
+if (existsSync(projectEnv)) {
+  dotenvConfig({ path: projectEnv, quiet: true });
 }
-if (existsSync(projectEnv) && projectEnv !== globalEnv) {
-  dotenvConfig({ path: projectEnv, quiet: true, override: true });
+if (existsSync(globalEnv) && globalEnv !== projectEnv) {
+  dotenvConfig({ path: globalEnv, quiet: true });
 }
 
 const [command, ...rest] = process.argv.slice(2);
