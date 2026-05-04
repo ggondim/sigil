@@ -202,17 +202,24 @@ Cortex supports four LLM providers with automatic detection:
 
 Embeddings:
 
-| Provider | API key | Model | Dimensions |
-|----------|---------|-------|-----------|
-| **Ollama** (default) | None | `nomic-embed-text` | 768 |
-| **OpenAI** | `OPENAI_API_KEY` | `text-embedding-3-small` | 1536 |
+| Provider | API key | Model | Dimensions | Notes |
+|----------|---------|-------|-----------|-------|
+| **Ollama** (default) | None | `nomic-embed-text` | 768 | Free, local. MTEB ~62. |
+| **OpenAI** | `OPENAI_API_KEY` | `text-embedding-3-small` / `-large` | 1536 / 3072 (truncatable to 1024) | Best quality/cost balance. Set `EMBEDDING_DIMENSIONS=1024` for the truncated `-large`. |
+| **Voyage** | `VOYAGE_API_KEY` | `voyage-3-large` | 1024 | MTEB ~76, Anthropic-recommended. Free tier covers most personal use. |
 
-Auto-detection waterfall:
+Auto-detection waterfall (LLM):
 1. Explicit `LLM_PROVIDER` env var wins
 2. `ANTHROPIC_API_KEY` set → Anthropic
 3. `OPENAI_API_KEY` set → OpenAI
 4. Ollama reachable → Ollama
 5. `claude` CLI installed → Claude Code subscription
+
+Auto-detection waterfall (embeddings):
+1. Explicit `EMBEDDING_PROVIDER` env var wins
+2. `VOYAGE_API_KEY` set → Voyage
+3. Ollama reachable → Ollama
+4. `OPENAI_API_KEY` set → OpenAI
 
 Per-task overrides via `provider:model` syntax:
 
@@ -220,6 +227,32 @@ Per-task overrides via `provider:model` syntax:
 LLM_EXTRACTION_MODEL=claude-cli:haiku     # cheap extraction
 LLM_DECISION_MODEL=anthropic:claude-sonnet-4-6  # accurate AUDM decisions
 ```
+
+---
+
+## Storage
+
+Cortex defaults to **PGlite** — embedded WASM Postgres in `~/.cortex/db/`. No server, no port, no Docker. Right choice for personal single-developer use.
+
+For Postico/pgAdmin visibility, multi-process concurrency, or shared deployments, switch to **real Postgres**:
+
+```
+# ~/.cortex/.env
+CORTEX_DB_TYPE=postgres
+CORTEX_DB_HOST=localhost
+CORTEX_DB_PORT=5432
+CORTEX_DB_NAME=cortex
+CORTEX_DB_USER=cortex_app
+CORTEX_DB_PASSWORD=...
+```
+
+Then `cortex migrate` to create the schema in your Postgres instance.
+
+Full setup walkthrough (Homebrew, Docker, troubleshooting): [`docs/postgres.md`](docs/postgres.md).
+
+PGlite limitations to be aware of:
+- Single process at a time (multiple cortex CLI invocations or a CLI alongside an MCP server can collide). If a hard kill leaves the DB unreachable: `cortex doctor --kill-stale`.
+- Not visible to standard Postgres tools (Postico, pgAdmin, psql). Switch to real Postgres for those.
 
 ---
 
