@@ -35,6 +35,10 @@ vi.mock('../../db/cortex.js', () => ({
   default: Object.assign(vi.fn(() => mockChain), {
     raw: mockRaw,
     fn: { now: () => 'NOW()' },
+    // findSimilar wraps its query in a transaction (SET LOCAL hnsw.ef_search = 40).
+    // The transaction passes a `trx` object that exposes raw — route it back to the
+    // shared mockRaw so existing test fixtures keep working.
+    transaction: vi.fn(async (callback) => callback({ raw: mockRaw })),
   }),
 }));
 
@@ -63,10 +67,12 @@ const baseArgs = {
   sourceSection: 'preference',
 };
 
-// findSimilar uses cortexDb.raw; insertFact also calls cortexDb.raw for search_vector update
+// findSimilar runs inside a transaction that first issues `SET LOCAL hnsw.ef_search = 40`
+// and then the actual SELECT. insertFact then issues an UPDATE for search_vector.
 function mockFindSimilar(rows) {
   mockRaw
-    .mockResolvedValueOnce({ rows })      // findSimilar query
+    .mockResolvedValueOnce({ rows: [] })  // SET LOCAL hnsw.ef_search = 40  (no rows)
+    .mockResolvedValueOnce({ rows })      // findSimilar SELECT
     .mockResolvedValueOnce({ rows: [] }); // UPDATE search_vector (after insertFact)
 }
 
@@ -85,17 +91,20 @@ describe('saveFact — AUDM decision branches', () => {
   });
 
   it('similarity >= 0.88 → SKIP without LLM call', async () => {
-    mockRaw.mockResolvedValueOnce({
-      rows: [{ id: 2, uid: 'fact-existing', content: 'I like mango', similarity: 0.92, status: 'active' }],
-    });
+    mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
+      .mockResolvedValueOnce({
+        rows: [{ id: 2, uid: 'fact-existing', content: 'I like mango', similarity: 0.92, status: 'active' }],
+      });
 
     const result = await saveFact(baseArgs);
     expect(result.action).toBe('SKIP');
     expect(llmPrompt).not.toHaveBeenCalled();
   });
 
-  it('similarity < 0.65 → ADD without LLM call', async () => {
+  it('similarity < 0.78 → ADD without LLM call', async () => {
     mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
       .mockResolvedValueOnce({
         rows: [{ id: 2, uid: 'fact-existing', content: 'completely unrelated', similarity: 0.50, status: 'active' }],
       })
@@ -106,10 +115,11 @@ describe('saveFact — AUDM decision branches', () => {
     expect(llmPrompt).not.toHaveBeenCalled();
   });
 
-  it('similarity in [0.65, 0.88) + LLM says UPDATE → UPDATE (new fact inserted, old superseded)', async () => {
+  it('similarity in [0.78, 0.88) + LLM says UPDATE → UPDATE (new fact inserted, old superseded)', async () => {
     mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
       .mockResolvedValueOnce({
-        rows: [{ id: 2, uid: 'fact-old', content: 'I like apples', similarity: 0.72, status: 'active' }],
+        rows: [{ id: 2, uid: 'fact-old', content: 'I like apples', similarity: 0.82, status: 'active' }],
       })
       .mockResolvedValueOnce({ rows: [] }); // search_vector for inserted fact
     llmPrompt.mockResolvedValueOnce('DECISION: UPDATE — new fact extends existing');
@@ -121,10 +131,11 @@ describe('saveFact — AUDM decision branches', () => {
     expect(llmPrompt).toHaveBeenCalledTimes(1);
   });
 
-  it('similarity in [0.65, 0.88) + LLM says CONTRADICT → CONTRADICT', async () => {
+  it('similarity in [0.78, 0.88) + LLM says CONTRADICT → CONTRADICT', async () => {
     mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
       .mockResolvedValueOnce({
-        rows: [{ id: 3, uid: 'fact-stale', content: 'We use MySQL', similarity: 0.70, status: 'active' }],
+        rows: [{ id: 3, uid: 'fact-stale', content: 'We use MySQL', similarity: 0.80, status: 'active' }],
       })
       .mockResolvedValueOnce({ rows: [] });
     llmPrompt.mockResolvedValueOnce('CONTRADICT — directly contradicts existing fact');
@@ -137,8 +148,9 @@ describe('saveFact — AUDM decision branches', () => {
 
   it('"CONTRADICTION" (longer form) also parses as CONTRADICT', async () => {
     mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
       .mockResolvedValueOnce({
-        rows: [{ id: 4, uid: 'fact-4', content: 'old content', similarity: 0.68, status: 'active' }],
+        rows: [{ id: 4, uid: 'fact-4', content: 'old content', similarity: 0.81, status: 'active' }],
       })
       .mockResolvedValueOnce({ rows: [] });
     llmPrompt.mockResolvedValueOnce('This is a CONTRADICTION of the existing fact');
@@ -147,10 +159,11 @@ describe('saveFact — AUDM decision branches', () => {
     expect(result.action).toBe('CONTRADICT');
   });
 
-  it('similarity in [0.65, 0.88) + LLM returns neither UPDATE nor CONTRADICT → ADD', async () => {
+  it('similarity in [0.78, 0.88) + LLM returns neither UPDATE nor CONTRADICT → ADD', async () => {
     mockRaw
+      .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
       .mockResolvedValueOnce({
-        rows: [{ id: 5, uid: 'fact-5', content: 'related but different', similarity: 0.67, status: 'active' }],
+        rows: [{ id: 5, uid: 'fact-5', content: 'related but different', similarity: 0.79, status: 'active' }],
       })
       .mockResolvedValueOnce({ rows: [] });
     llmPrompt.mockResolvedValueOnce('These are separate facts, add as new');
