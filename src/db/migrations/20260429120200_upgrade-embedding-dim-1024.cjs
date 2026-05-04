@@ -1,56 +1,68 @@
 /**
- * Upgrade embedding columns from vector(768) → vector(1024).
+ * Upgrade embedding columns from vector(768) → vector(N) where N >= 1024.
  *
- * Voyage-3-large outputs 1024 dimensions natively. To use it (or other 1024d
- * models like bge-large-en-v1.5) without quality loss from truncation, the
- * schema needs to match.
+ * CONDITIONAL: only runs when EMBEDDING_DIMENSIONS env >= 1024. The default
+ * (unset or 768) is the Ollama nomic-embed-text dimension; bumping the schema
+ * to 1024 there would mismatch the embedder and break ingest.
  *
- * REFUSES TO RUN if any embedding row exists, because changing the column type
- * would invalidate stored embeddings. Operators upgrading an existing DB must:
- *   1. Export their data (cortex export)
+ * Activates when an operator opts into a 1024d-class model (Voyage 3-large,
+ * OpenAI text-embedding-3-large truncated to 1024d, bge-large-en-v1.5).
+ * They set EMBEDDING_DIMENSIONS=1024 (or higher) and re-run cortex migrate.
+ *
+ * REFUSES TO RUN if any embedding row exists — changing the column type
+ * would invalidate stored embeddings. Operators upgrading an existing DB:
+ *   1. cortex export to back up
  *   2. cortex reset --confirm
- *   3. cortex migrate
- *   4. Re-ingest with the new embedding model
- *
- * For greenfield DBs (the eval harness, fresh installs), this runs cleanly.
+ *   3. set EMBEDDING_DIMENSIONS=1024 in ~/.cortex/.env
+ *   4. cortex migrate
+ *   5. re-ingest with the new embedding model
  */
 
 const TABLES = ['chunk', 'fact', 'entity', 'embedding_cache'];
-const NEW_DIM = 1024;
+const DEFAULT_DIM = 768;
 
 exports.up = async function (knex) {
+  const targetDim = Number(process.env.EMBEDDING_DIMENSIONS) || DEFAULT_DIM;
+
+  if (targetDim <= DEFAULT_DIM) {
+    // No-op for the default 768d (local nomic). Migration is recorded as
+    // applied so it doesn't keep trying on every cortex migrate.
+    return;
+  }
+
   // Safety check — bail loudly if existing embeddings would be invalidated.
   for (const table of TABLES) {
     const { rows } = await knex.raw(`SELECT COUNT(*)::int AS c FROM ${table} WHERE embedding IS NOT NULL`);
     const count = rows[0].c;
     if (count > 0) {
       throw new Error(
-        `Cannot upgrade embedding dim: ${table} has ${count} rows with existing embeddings. ` +
+        `Cannot upgrade embedding dim to ${targetDim}: ${table} has ${count} rows with existing embeddings. ` +
         `Run 'cortex export' to back up, then 'cortex reset --confirm' to wipe, then re-migrate ` +
-        `and re-ingest with the new embedding model. ` +
-        `(Or skip this migration if you're staying at 768d.)`,
+        `and re-ingest with the new embedding model.`,
       );
     }
   }
 
   for (const table of TABLES) {
-    await knex.raw(`ALTER TABLE ${table} ALTER COLUMN embedding TYPE vector(${NEW_DIM}) USING embedding::vector(${NEW_DIM})`);
+    await knex.raw(`ALTER TABLE ${table} ALTER COLUMN embedding TYPE vector(${targetDim}) USING embedding::vector(${targetDim})`);
     // embedding_cache doesn't have an HNSW index — it's a key-value store keyed on sha256.
     if (table === 'embedding_cache') continue;
     await knex.raw(`DROP INDEX IF EXISTS ${table}_embedding_idx`);
     await knex.raw(
-      `CREATE INDEX ${table}_embedding_idx ON ${table} USING hnsw ((embedding::halfvec(${NEW_DIM})) halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)`,
+      `CREATE INDEX ${table}_embedding_idx ON ${table} USING hnsw ((embedding::halfvec(${targetDim})) halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)`,
     );
   }
 };
 
 exports.down = async function (knex) {
+  // The down migration always reverts to 768d — it's the lowest common
+  // denominator and matches the prior halfvec migration's index.
   for (const table of TABLES) {
-    await knex.raw(`ALTER TABLE ${table} ALTER COLUMN embedding TYPE vector(768) USING NULL`);
+    await knex.raw(`ALTER TABLE ${table} ALTER COLUMN embedding TYPE vector(${DEFAULT_DIM}) USING NULL`);
     if (table === 'embedding_cache') continue;
     await knex.raw(`DROP INDEX IF EXISTS ${table}_embedding_idx`);
     await knex.raw(
-      `CREATE INDEX ${table}_embedding_idx ON ${table} USING hnsw ((embedding::halfvec(768)) halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)`,
+      `CREATE INDEX ${table}_embedding_idx ON ${table} USING hnsw ((embedding::halfvec(${DEFAULT_DIM})) halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)`,
     );
   }
 };

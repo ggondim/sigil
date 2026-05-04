@@ -80,20 +80,24 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
 async function synthesizeAnswer(query, { facts, chunks }) {
   const evidence = [];
 
-  facts.slice(0, 8).forEach((f, i) => {
+  facts.slice(0, 10).forEach((f, i) => {
     evidence.push(`[F${i + 1}] (${f.category}) ${f.content}`);
   });
 
   if (chunks.length) {
-    chunks.slice(0, 5).forEach((c, i) => {
+    // Up to 15 chunks at 2000 char each. Modern context windows handle this fine
+    // and the prior 5×600 was starving temporal/compositional questions.
+    chunks.slice(0, 15).forEach((c, i) => {
       const text = (c.content || '').replace(/\s+/g, ' ').trim();
-      if (text) evidence.push(`[C${i + 1}] ${text.slice(0, 600)}`);
+      if (text) evidence.push(`[C${i + 1}] ${text.slice(0, 2000)}`);
     });
   }
 
   if (!evidence.length) return 'No retrieved evidence — nothing to synthesize.';
 
-  const synthPrompt = `You answer questions using ONLY the retrieved memory items below. Each item is labeled [F#] (a stored fact) or [C#] (a raw text chunk).
+  const synthPrompt = `You are answering a question from a personal-memory system.
+Each retrieved item is labeled [F#] (a stored fact) or [C#] (a raw conversation chunk
+that may include user/assistant turns and dates).
 
 Question: ${query}
 
@@ -101,10 +105,11 @@ Retrieved memory items:
 ${evidence.join('\n')}
 
 Instructions:
-- Answer the question directly and concisely.
-- Cite items in square brackets where relevant, e.g. [F1] [C2].
-- If the items don't contain enough information to answer, say "Not in retrieved memory" — do NOT invent details.
-- Plain text only. No headers. 1-3 sentences for simple questions; up to 6 sentences for compositional questions.`;
+- Read the chunks carefully — the answer is often a specific phrase or date inside one of them, not always pre-summarized as a fact.
+- Reason step-by-step internally for temporal questions ("first", "before", "after", "how many days") — compare the dates explicitly.
+- Cite items in square brackets where they directly support the answer, e.g. [C2].
+- Only respond "Not in retrieved memory." if you genuinely cannot find the information after carefully reading every chunk. Prefer a careful answer with citation over refusal.
+- Plain text only, no headers. Direct answer first, then a short justification if needed. 1-4 sentences total.`;
 
   const model = config.search.synthesizeModel || config.llm.extractionModel || undefined;
   return llmPrompt(synthPrompt, { model, caller: 'synthesizer' });
