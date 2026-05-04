@@ -1,6 +1,6 @@
 {
   "name": "@anmol-srv/cortex",
-  "version": "1.0.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Persistent memory for Claude Code — local-first, zero-cloud, auto-integrated via hooks and MCP",
   "bin": {
@@ -24,7 +24,6 @@
   "files": [
     "dist/",
     "prompts/",
-    "skills/",
     "src/db/migrations/",
     "knexfile.js"
   ],
