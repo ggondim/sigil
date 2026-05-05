@@ -1,5 +1,5 @@
 {
-  "name": "smara",
+  "name": "@smara/cli",
   "version": "0.6.0",
   "type": "module",
   "description": "Smara — persistent memory engine for Claude Code. Local-first, zero-cloud, auto-integrated via hooks and MCP. From the Sanskrit for remembrance.",

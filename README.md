@@ -8,11 +8,11 @@ Claude doesn't remember what you decided yesterday. Smara does.<br/>
 Every prompt, every session — your context is already there.
 
 ```bash
-npm install -g smara
+npm install -g @smara/cli
 smara init
 ```
 
-[![npm](https://img.shields.io/npm/v/smara)](https://www.npmjs.com/package/smara)
+[![npm](https://img.shields.io/npm/v/@smara%2Fcli)](https://www.npmjs.com/package/@smara/cli)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle%20n%3D100-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
@@ -66,7 +66,7 @@ No cloud, no subscription, no API key required (with your Claude Code subscripti
 
 ```bash
 # Install globally
-npm install -g smara
+npm install -g @smara/cli
 
 # One-time setup (30 seconds)
 smara init
@@ -371,7 +371,7 @@ A: Nothing — your prompt still goes through. The `UserPromptSubmit` hook is wr
 A: Cold-path: roughly 200–400ms on first invocation (Node startup + PGlite WASM init + DB open + hybrid search). Warm path is faster, but Claude Code spawns the hook fresh per prompt, so most invocations pay something close to the cold cost. We have not formally benchmarked this end-to-end and the README's "33ms search" figure does **not** include hook overhead — that's just the search call itself. If you find this unacceptable, you can comment the `UserPromptSubmit` hook out of `~/.claude/settings.json` and rely on the hot-context CLAUDE.md + on-demand MCP `search` tool instead.
 
 **Q: How do I uninstall cleanly?**
-A: `npm uninstall -g smara` removes the binary. To remove the data and config: `rm -rf ~/.smara`. To unwire from Claude Code, edit `~/.claude/settings.json` (remove the smara hook entries) and `~/.claude/CLAUDE.md` (remove the `@~/.smara/CLAUDE.md` line). A dedicated `smara uninstall` command is on the roadmap.
+A: `npm uninstall -g @smara/cli` removes the binary. To remove the data and config: `rm -rf ~/.smara`. To unwire from Claude Code, edit `~/.claude/settings.json` (remove the smara hook entries) and `~/.claude/CLAUDE.md` (remove the `@~/.smara/CLAUDE.md` line). A dedicated `smara uninstall` command is on the roadmap.
 
 ---
 
