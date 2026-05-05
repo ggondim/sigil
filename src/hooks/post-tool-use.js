@@ -17,7 +17,7 @@ import { maskSecrets } from './secret-mask.js';
 
 // Load env before anything else
 const home = process.env.HOME || process.env.USERPROFILE;
-const globalEnv = join(home, '.cortex', '.env');
+const globalEnv = join(home, '.smara', '.env');
 const localEnv = resolve(process.cwd(), '.env');
 if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
 else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
@@ -33,7 +33,7 @@ const ALWAYS_SKIP_TOOLS = new Set([
 const NOISE_BASH = new Set([
   'ls', 'pwd', 'cd', 'cat', 'head', 'tail', 'wc', 'echo', 'date', 'whoami',
   'which', 'type', 'clear', 'history', 'find', 'grep', 'rg', 'file', 'stat',
-  'diff', 'man', 'cortex', 'vitest',
+  'diff', 'man', 'smara', 'vitest',
 ]);
 
 const GIT_SIGNAL_SUBCOMMANDS = new Set([
@@ -56,7 +56,7 @@ const SIGNAL_KEYWORDS = [
 
 // Session-level dedup: (tool, target) → timestamp
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
-const DEDUP_FILE = join(home, '.cortex', '.hook-dedup.json');
+const DEDUP_FILE = join(home, '.smara', '.hook-dedup.json');
 
 function loadDedup() {
   try {
@@ -191,7 +191,7 @@ async function main() {
     const cortexDb = (await import('../db/cortex.js')).default;
     await cortexDb.destroy();
   } catch (err) {
-    process.stderr.write(`[cortex:post-tool-use] ${err.message}\n`);
+    process.stderr.write(`[smara:post-tool-use] ${err.message}\n`);
     try {
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy();

@@ -1,6 +1,6 @@
 async function embedBatch(texts, { model, openaiApiKey, dimensions } = {}) {
   // text-embedding-3-* support a `dimensions` parameter that truncates the output
-  // via Matryoshka representation learning. Lets us match Cortex's vector(N) schema
+  // via Matryoshka representation learning. Lets us match Smara's vector(N) schema
   // (e.g. truncate text-embedding-3-large from native 3072d to 1024d for our DB)
   // without quality cliff.
   const body = { model, input: texts };

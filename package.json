@@ -1,10 +1,10 @@
 {
-  "name": "@anmolsrv/cortex",
-  "version": "0.5.0",
+  "name": "smara",
+  "version": "0.6.0",
   "type": "module",
-  "description": "Persistent memory for Claude Code — local-first, zero-cloud, auto-integrated via hooks and MCP",
+  "description": "Smara — persistent memory engine for Claude Code. Local-first, zero-cloud, auto-integrated via hooks and MCP. From the Sanskrit for remembrance.",
   "bin": {
-    "cortex": "dist/cli.js"
+    "smara": "dist/cli.js"
   },
   "scripts": {
     "dev": "node --watch src/server.js",
@@ -30,11 +30,17 @@
     "README.md"
   ],
   "keywords": [
+    "smara",
     "memory",
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "claude",
     "claude-code",
+    "ai-memory",
+    "persistent-memory",
     "rag",
+    "knowledge-graph",
     "knowledge-base",
     "llm",
     "context",

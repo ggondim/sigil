@@ -8,7 +8,7 @@ import { textResponse, truncate, FACT_TRUNCATE } from '../utils.js';
 function registerSearchTool(server) {
   server.tool(
     'search',
-    `Search Cortex knowledge base for facts across all ingested documents.
+    `Search Smara knowledge base for facts across all ingested documents.
 Automatically detects entity names and returns entity-centric results.
 Use for: "how does X work", "what is Y?", "what are the rules for Z", domain knowledge, decisions.
 Returns compact facts. Use get_fact_context(factId) for full detail on any fact.

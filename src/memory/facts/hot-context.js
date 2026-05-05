@@ -53,16 +53,16 @@ export async function getHotFacts({ namespace, limit = CONTEXT_LIMIT } = {}) {
 }
 
 /**
- * Regenerates the <!-- cortex-context --> block in ~/.claude/CLAUDE.md.
+ * Regenerates the <!-- smara-context --> block in ~/.claude/CLAUDE.md.
  * Safe to call after every remember/ingest — fast DB read + file write.
  */
 export async function updateContextSnapshot({ namespace, limit } = {}) {
   const fs = await import('node:fs/promises');
-  // Cortex owns ~/.cortex/CLAUDE.md entirely — never touches ~/.claude/CLAUDE.md
-  const cortexMdPath = join(homedir(), '.cortex', 'CLAUDE.md');
+  // Smara owns ~/.smara/CLAUDE.md entirely — never touches ~/.claude/CLAUDE.md
+  const cortexMdPath = join(homedir(), '.smara', 'CLAUDE.md');
 
   const facts = await getHotFacts({ namespace, limit });
-  const marker = '<!-- cortex-context -->';
+  const marker = '<!-- smara-context -->';
 
   if (!facts.length) return 0;
 

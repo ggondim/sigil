@@ -7,14 +7,14 @@
  *
  * Activates when an operator opts into a 1024d-class model (Voyage 3-large,
  * OpenAI text-embedding-3-large truncated to 1024d, bge-large-en-v1.5).
- * They set EMBEDDING_DIMENSIONS=1024 (or higher) and re-run cortex migrate.
+ * They set EMBEDDING_DIMENSIONS=1024 (or higher) and re-run smara migrate.
  *
  * REFUSES TO RUN if any embedding row exists — changing the column type
  * would invalidate stored embeddings. Operators upgrading an existing DB:
- *   1. cortex export to back up
- *   2. cortex reset --confirm
- *   3. set EMBEDDING_DIMENSIONS=1024 in ~/.cortex/.env
- *   4. cortex migrate
+ *   1. smara export to back up
+ *   2. smara reset --confirm
+ *   3. set EMBEDDING_DIMENSIONS=1024 in ~/.smara/.env
+ *   4. smara migrate
  *   5. re-ingest with the new embedding model
  */
 
@@ -26,7 +26,7 @@ exports.up = async function (knex) {
 
   if (targetDim <= DEFAULT_DIM) {
     // No-op for the default 768d (local nomic). Migration is recorded as
-    // applied so it doesn't keep trying on every cortex migrate.
+    // applied so it doesn't keep trying on every smara migrate.
     return;
   }
 
@@ -37,7 +37,7 @@ exports.up = async function (knex) {
     if (count > 0) {
       throw new Error(
         `Cannot upgrade embedding dim to ${targetDim}: ${table} has ${count} rows with existing embeddings. ` +
-        `Run 'cortex export' to back up, then 'cortex reset --confirm' to wipe, then re-migrate ` +
+        `Run 'smara export' to back up, then 'smara reset --confirm' to wipe, then re-migrate ` +
         `and re-ingest with the new embedding model.`,
       );
     }

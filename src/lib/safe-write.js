@@ -1,12 +1,12 @@
 import { copyFile, writeFile, access } from 'node:fs/promises';
 
-const BAK_SUFFIX = '.cortex.bak';
+const BAK_SUFFIX = '.smara.bak';
 
 // Wraps fs.writeFile with two safety guarantees:
-//  - if `path` already exists and a .cortex.bak doesn't, copy the original to .bak
-//    BEFORE writing — preserves the user's pre-cortex content so they can restore
+//  - if `path` already exists and a .smara.bak doesn't, copy the original to .bak
+//    BEFORE writing — preserves the user's pre-smara content so they can restore
 //    by hand if something goes wrong. The .bak is written exactly once per file:
-//    later cortex init runs see it exists and don't clobber the original snapshot.
+//    later smara init runs see it exists and don't clobber the original snapshot.
 //  - if dryRun is true, no filesystem write happens at all; the function returns
 //    the planned action so callers can render a preview.
 export async function safeWrite(path, content, { dryRun = false } = {}) {

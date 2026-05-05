@@ -14,7 +14,7 @@ import { mkdirSync } from 'node:fs';
 const _require = createRequire(import.meta.url);
 const ClientPG = _require('knex/lib/dialects/postgres/index.js');
 
-export const PGLITE_DB_PATH = process.env.CORTEX_PGLITE_PATH || join(homedir(), '.cortex', 'db');
+export const PGLITE_DB_PATH = process.env.CORTEX_PGLITE_PATH || join(homedir(), '.smara', 'db');
 
 let pgliteInstance = null;
 

@@ -19,7 +19,7 @@ import { PROMPTS_DIR } from '../lib/paths.js';
 const DEFAULT_PROMPT_PATH = join(PROMPTS_DIR, 'default-extraction.md');
 
 /**
- * Ingest a document into the Cortex knowledge base.
+ * Ingest a document into the Smara knowledge base.
  *
  * This is the single public API for ingestion. All sources (file, URL, raw)
  * produce a source object that gets passed here.

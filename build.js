@@ -42,7 +42,7 @@ async function run() {
   await mkdir(DIST, { recursive: true });
   await mkdir(join(DIST, 'hooks'), { recursive: true });
 
-  console.log('Building Cortex bundles...\n');
+  console.log('Building Smara bundles...\n');
 
   for (const entry of ENTRIES) {
     const outfile = join(DIST, entry.out);

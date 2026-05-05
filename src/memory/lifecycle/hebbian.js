@@ -67,7 +67,7 @@ async function getCoRetrievedFacts(factId, { limit = 5, minStrength = 2 } = {}) 
 
 /**
  * Optional housekeeping: drop edges that haven't been reinforced in a long
- * time. Keeps the graph from growing unboundedly. Run from `cortex maintain`.
+ * time. Keeps the graph from growing unboundedly. Run from `smara maintain`.
  */
 async function consolidateCoRetrievalEdges({ floor = 1, decayDays = 90 } = {}) {
   const { rows } = await cortexDb.raw(`
