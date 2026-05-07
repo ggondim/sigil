@@ -512,10 +512,13 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
       const hooks = settings.hooks || {};
       const hasUPS = hooks.UserPromptSubmit?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('user-prompt-submit')));
       const hasPTU = hooks.PostToolUse?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('post-tool-use')));
+      const hasStop = hooks.Stop?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') && i.command?.includes('stop.js')));
       if (hasUPS) log('ok', 'UserPromptSubmit hook', 'registered');
       else log('warn', 'UserPromptSubmit hook', `not registered — run 'sigil init' to enable auto-context injection`);
       if (hasPTU) log('ok', 'PostToolUse hook', 'registered');
       else log('warn', 'PostToolUse hook', `not registered — run 'sigil init' to enable auto-capture`);
+      if (hasStop) log('ok', 'Stop hook', 'registered (auto-saves memorable user statements)');
+      else log('warn', 'Stop hook', `not registered — run 'sigil init' to enable auto-extraction`);
     } catch (err) {
       log('warn', 'Claude Code hooks', `could not parse settings.json: ${err.message}`);
     }
@@ -982,6 +985,14 @@ async function registerHooks({ dryRun = false } = {}) {
         async: true,
       }],
     },
+    Stop: {
+      hooks: [{
+        type: 'command',
+        command: `node ${join(hookDir, 'stop.js')}`,
+        timeout: 30,
+        async: true,
+      }],
+    },
   };
 
   const existedBefore = existsSync(settingsPath);
@@ -1037,20 +1048,36 @@ or anything that might have been discussed before — search Sigil first:
 ! sigil search "relevant query"
 \`\`\`
 
-**When the user shares something worth remembering** — save it in the background (non-blocking):
+### Saving — DO THIS PROACTIVELY
+
+**Before generating your response to ANY user message, scan it for:**
+- **Preferences** — "I prefer X", "I always X", "I never X", "I like X"
+- **Decisions** — "we use X", "we picked X", "we don't use X", "we moved off X"
+- **Constraints** — "we can't use X because…", "X is blocked", "X must support Y"
+- **Corrections** — "actually it's X, not Y", "we changed X to Y"
+- **Factual claims** about the user's project / codebase / team / tools / conventions
+
+**If ANY of those signals are present, call \`sigil remember --bg "..."\` BEFORE generating your response.** This is non-negotiable. Do not skip a save because:
+- The conversation feels casual or short
+- The fact seems obvious or generic
+- You think Claude Code might "remember" within this session (it won't carry over)
+- You're not sure if it's important enough — when in doubt, save
+
 \`\`\`
-! sigil remember --bg "fact one" "fact two" "fact three"
+! sigil remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
 \`\`\`
 
-All facts go in one command as separate quoted arguments. \`--bg\` returns immediately so the conversation continues.
+The \`--bg\` flag returns immediately so the conversation isn't blocked. Batch multiple facts into ONE command (separate quoted arguments) rather than several calls. Sigil also runs a Stop-hook safety net that auto-extracts memorable content after every turn — so if you forget, it gets caught — but you should still try to save proactively. AUDM dedup handles any overlap, so duplicate saves are harmless.
 
-**When the user explicitly asks you to remember something** — save it right away.
+**When the user explicitly asks you to remember something** — save it right away, before doing anything else.
 
-**Rules:**
+### Rules
+
 - Search Sigil before answering context-dependent questions (not factual/general ones)
 - Save facts as short, self-contained statements — never summaries of the conversation
-- Batch all facts into a single \`sigil remember --bg\` call — never multiple separate calls
-- Skip trivial exchanges (greetings, simple calculations)
+- Each fact must make sense in isolation, without the conversation context
+- Batch all facts in one user-turn into a single \`sigil remember --bg\` call
+- Skip trivial exchanges (greetings, "thanks", "ok", simple math)
 - If search returns nothing, answer from your own knowledge and say so
 - Sigil is cross-project — memories from one session are available in all sessions
 `;
