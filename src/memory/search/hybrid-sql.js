@@ -54,8 +54,19 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
   //   M+2. overfetchLimit               -- keyword LIMIT
   //   final: RRF_K (twice), weights, fallback ranks, RRF_K sort, limit
 
-  const semanticParams = [vec, vec, namespaces, ...filterParams, vec, overfetchLimit];
-  const keywordParams  = [query, query, namespaces, ...filterParams, query, overfetchLimit];
+  // filterParams = [minRank, ...extras] where extras are the temporal+category
+  // params. Semantic CTE places extras BETWEEN minRank and the closing
+  // ORDER BY/LIMIT — so [minRank, ...extras] flows naturally. Keyword CTE
+  // places the @@ tsquery BETWEEN minRank and extras (because the @@ filter
+  // is a WHERE clause that comes textually before ${temporalClause} and
+  // ${categoryClause} in the SQL), so the @@ query param has to be inserted
+  // after minRank but BEFORE extras. Splatting filterParams blindly here is
+  // what caused the previous "Invalid input for string type" error when a
+  // categories array landed where the @@ tsquery placeholder lived.
+  const [minRank, ...extraFilterParams] = filterParams;
+
+  const semanticParams = [vec, vec, namespaces, minRank, ...extraFilterParams, vec, overfetchLimit];
+  const keywordParams  = [query, query, namespaces, minRank, query, ...extraFilterParams, overfetchLimit];
   const rrfParams = [
     overfetchLimit, // COALESCE fallback for semantic rank_ix
     overfetchLimit, // COALESCE fallback for keyword rank_ix
