@@ -1,6 +1,6 @@
 {
   "name": "@anmolsrv/sigil",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Sigil — persistent memory engine for Claude Code. Local-first, zero-cloud, auto-integrated via hooks and MCP. A sigil is a mark carved with meaning; that's what every fact in your knowledge base is.",
   "bin": {

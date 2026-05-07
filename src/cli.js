@@ -1548,11 +1548,12 @@ Hooks in ~/.claude/settings.json are re-registered by init (idempotent).`);
   try { _execSync('pkill -f "sigil/dist/server.js --mcp"', { stdio: 'pipe' }); } catch {}
   try { _execSync('pkill -f ".sigil/db" ', { stdio: 'pipe' }); } catch {}
 
-  // Drop any DB handle this process is holding before deleting the dir.
-  try {
-    const cortexDb = (await import('./db/cortex.js')).default;
-    await cortexDb.destroy();
-  } catch { /* not connected */ }
+  // Deliberately do NOT import db/cortex.js here. That module exports a
+  // singleton knex pool initialised at first import; touching it now caches
+  // a pool bound to the directory we're about to delete, and the later
+  // runInit() re-import returns that same dead instance from the module
+  // cache → "Unable to acquire a connection" on the very next migrate.
+  // Letting init be the first importer in this process gets a clean pool.
 
   // Wipe ~/.sigil/ entirely.
   const fs = await import('node:fs/promises');
