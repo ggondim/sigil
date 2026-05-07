@@ -1497,46 +1497,79 @@ Usage:
 
 async function runReset(args) {
   if (args.includes('--help')) {
-    console.log(`sigil reset — Reset the database and unwire the @import from ~/.claude/CLAUDE.md
+    console.log(`sigil reset — Wipe Sigil's setup and re-run init
 
 Usage:
-  sigil reset [--confirm]
+  sigil reset           Show a confirmation prompt before wiping
+  sigil reset --yes     Skip the prompt (for scripting); same as --confirm
 
-Drops all data and removes the '@~/.sigil/CLAUDE.md' import line from
-~/.claude/CLAUDE.md so Claude Code stops loading the (now stale) hot-context
-snapshot. Hooks in ~/.claude/settings.json are NOT touched — they keep
-firing against the empty DB until you re-run 'sigil init'.
+Wipes:
+  ~/.sigil/                      entire data directory (DB + config + CLAUDE.md)
+  ~/.claude/CLAUDE.md            removes the @~/.sigil/CLAUDE.md import line
 
-Requires --confirm flag to prevent accidental data loss.`);
+Then automatically runs 'sigil init' to walk you through fresh setup.
+Hooks in ~/.claude/settings.json are re-registered by init (idempotent).`);
     process.exit(0);
   }
 
-  if (!args.includes('--confirm')) {
-    console.error('This will delete ALL data. Run with --confirm to proceed.');
-    process.exit(1);
+  const skipConfirm = args.includes('--confirm') || args.includes('--yes') || args.includes('-y');
+  const home = homedir();
+  const sigilDir = join(home, '.sigil');
+  const claudeMdPath = join(home, '.claude', 'CLAUDE.md');
+
+  if (!skipConfirm) {
+    const clack = await import('@clack/prompts');
+    clack.intro('Sigil — reset');
+    clack.note(
+      [
+        'This will:',
+        `  - delete ${sigilDir} (DB, config, CLAUDE.md, all stored facts)`,
+        `  - remove the @~/.sigil/CLAUDE.md import line from ${claudeMdPath}`,
+        '  - re-run sigil init from scratch (you will be re-prompted for provider + key)',
+        '',
+        'Hooks in ~/.claude/settings.json stay registered — init refreshes them.',
+      ].join('\n'),
+      'About to reset',
+    );
+
+    const proceed = await clack.confirm({
+      message: 'Wipe everything and re-init?',
+      initialValue: false,
+    });
+
+    if (clack.isCancel(proceed) || proceed !== true) {
+      clack.cancel('Reset cancelled. Nothing changed.');
+      process.exit(0);
+    }
   }
 
-  const cortexDb = (await import('./db/cortex.js')).default;
-  const { MIGRATIONS_DIR: migrationDir } = await import('./lib/paths.js');
+  // Kill any running Sigil MCP servers before nuking their DB out from under them.
+  // Best effort — pkill returning non-zero (no matches) is fine.
+  try { _execSync('pkill -f "sigil/dist/server.js --mcp"', { stdio: 'pipe' }); } catch {}
+  try { _execSync('pkill -f ".sigil/db" ', { stdio: 'pipe' }); } catch {}
 
-  await cortexDb.migrate.rollback({ directory: migrationDir }, true);
-  await cortexDb.migrate.latest({ directory: migrationDir });
-  await cortexDb.destroy();
+  // Drop any DB handle this process is holding before deleting the dir.
+  try {
+    const cortexDb = (await import('./db/cortex.js')).default;
+    await cortexDb.destroy();
+  } catch { /* not connected */ }
 
-  // Unwire the @import from ~/.claude/CLAUDE.md so Claude Code stops loading
-  // the now-empty hot-context snapshot. Idempotent — silently no-ops if the
-  // line is absent or the file doesn't exist.
-  const importRemoved = await removeClaudeMdImport();
+  // Wipe ~/.sigil/ entirely.
+  const fs = await import('node:fs/promises');
+  if (existsSync(sigilDir)) {
+    await fs.rm(sigilDir, { recursive: true, force: true });
+  }
 
-  // Wipe the hot-context block inside ~/.sigil/CLAUDE.md too, since Active
-  // Context referencing facts that no longer exist would mislead anyone who
-  // reads the file directly. The instructions block is preserved.
-  await clearHotContextBlock();
+  // Strip the @import line from ~/.claude/CLAUDE.md (init will re-add it at end).
+  await removeClaudeMdImport();
 
-  const lines = ['Database reset complete. All migrations re-applied.'];
-  if (importRemoved) lines.push('Removed @import from ~/.claude/CLAUDE.md.');
-  lines.push("Run 'sigil init' to re-register Claude integration.");
-  console.log(lines.join('\n'));
+  console.log('');
+  console.log('Wipe complete. Starting init...');
+  console.log('');
+
+  // Hand off to the regular init flow. runInit handles its own success message
+  // and process.exit, so we return cleanly from here.
+  await runInit([]);
 }
 
 // Strip exactly the cortex/smara/sigil @import lines from ~/.claude/CLAUDE.md.
