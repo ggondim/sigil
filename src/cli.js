@@ -1048,6 +1048,24 @@ or anything that might have been discussed before — search Sigil first:
 ! sigil search "relevant query"
 \`\`\`
 
+### Acknowledge what you know
+
+When your response is shaped by a fact pulled from Sigil — a stored preference, decision, constraint, or piece of project history — **briefly call it out in plain language so the user sees their context being applied.** One short clause is enough; don't lecture.
+
+Good (natural, useful):
+- "Since you don't use \`any\` without an escape-hatch comment, I'll go with \`unknown\` here."
+- "Per your ADR-001 I've wrapped the response in \`{ok, data, error}\`."
+- "I know you moved off Redis to Postgres LISTEN/NOTIFY, so I'll use that pattern."
+- "Going with named exports since you prefer those."
+
+Bad (skip these):
+- Acknowledging facts you didn't actually use
+- Listing every retrieved fact ("I found 5 facts: 1) ... 2) ...")
+- Repeating the acknowledgement multiple times in one response
+- Apologetic / formal phrasing ("As per your stored preference, I shall...")
+
+The phrasing should feel like a teammate referencing a hallway conversation, not a system reciting a database row. If a fact didn't materially shape the answer, don't mention it.
+
 ### Saving — DO THIS PROACTIVELY
 
 **Before generating your response to ANY user message, scan it for:**
