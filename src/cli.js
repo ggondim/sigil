@@ -1350,8 +1350,7 @@ Examples:
   if (facts.length) {
     console.log(`\nFacts (${facts.length}):`);
     for (const fact of facts) {
-      const score = fact.rrfScore ? ` [${fact.rrfScore}]` : '';
-      console.log(`  ${fact.content}${score}`);
+      console.log(`  ${fact.content}${formatRelevance(fact)}`);
     }
   }
 
@@ -1359,8 +1358,7 @@ Examples:
     console.log(`\nChunks (${chunks.length}):`);
     for (const chunk of chunks) {
       const preview = chunk.content?.slice(0, 120).replace(/\n/g, ' ');
-      const score = chunk.rrfScore ? ` [${chunk.rrfScore}]` : '';
-      console.log(`  ${preview}...${score}`);
+      console.log(`  ${preview}...${formatRelevance(chunk)}`);
     }
   }
 
@@ -1369,6 +1367,28 @@ Examples:
   }
 
   await cortexDb.destroy();
+}
+
+// Display a meaningful relevance signal for a search hit.
+//   - Prefer raw cosine similarity (0..1) — same scale across queries, no
+//     misleading "always 1.0 for the top result" effect of a per-batch
+//     normalization.
+//   - similarity == 0 means the row matched only via keyword (FULL OUTER
+//     JOIN with the vector side missing), which is real signal worth
+//     flagging differently from a low-cosine match. We tag it [kw].
+//   - Fall back to the legacy rrfScore only when neither is available.
+function formatRelevance(row) {
+  const sim = Number(row?.similarity);
+  if (Number.isFinite(sim) && sim > 0) {
+    return ` [sim ${sim.toFixed(2)}]`;
+  }
+  if (Number.isFinite(sim) && sim === 0) {
+    return ' [kw]';
+  }
+  if (row?.rrfScore != null) {
+    return ` [${row.rrfScore}]`;
+  }
+  return '';
 }
 
 // ─── Context ─────────────────────────────────────────────────────────────────
