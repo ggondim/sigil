@@ -1,18 +1,18 @@
 <div align="center">
 
-# Smara
+# Sigil
 
 ### Persistent memory for Claude Code.<br/>Local-first. Zero-cloud. Two commands to install.
 
-Claude doesn't remember what you decided yesterday. Smara does.<br/>
+Claude doesn't remember what you decided yesterday. Sigil does.<br/>
 Every prompt, every session — your context is already there.
 
 ```bash
-npm install -g @smara/cli
-smara init
+npm install -g sigil
+sigil init
 ```
 
-[![npm](https://img.shields.io/npm/v/@smara%2Fcli)](https://www.npmjs.com/package/@smara/cli)
+[![npm](https://img.shields.io/npm/v/sigil)](https://www.npmjs.com/package/sigil)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle%20n%3D100-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
@@ -27,13 +27,13 @@ smara init
 ## The 30-second demo
 
 ```bash
-# Tell Smara something once
-smara remember "We use canary deploys: 5% for 30min, then 25%, then full cutover. Rollback via LaunchDarkly killswitch."
+# Tell Sigil something once
+sigil remember "We use canary deploys: 5% for 30min, then 25%, then full cutover. Rollback via LaunchDarkly killswitch."
 
 # Open a brand-new Claude Code session in any project. Ask it:
 #   "What's our deployment strategy?"
 
-# Claude answers immediately — Smara auto-injected the fact via the
+# Claude answers immediately — Sigil auto-injected the fact via the
 # UserPromptSubmit hook before Claude ever saw your prompt.
 ```
 
@@ -56,7 +56,7 @@ That's the whole pitch. **One command to remember. Zero commands to recall.** Th
 
 Every time you open Claude Code, it starts from zero. You re-explain the same architecture, watch Claude repeat mistakes you corrected last week, lose hours to context-loading that should be instant.
 
-Smara is a thin local layer that fixes this. It runs invisibly via Claude Code hooks and the Model Context Protocol — your memory is just *there*, in every session, on every machine you install it on.
+Sigil is a thin local layer that fixes this. It runs invisibly via Claude Code hooks and the Model Context Protocol — your memory is just *there*, in every session, on every machine you install it on.
 
 No cloud, no subscription, no API key required (with your Claude Code subscription).
 
@@ -66,38 +66,38 @@ No cloud, no subscription, no API key required (with your Claude Code subscripti
 
 ```bash
 # Install globally
-npm install -g @smara/cli
+npm install -g sigil
 
 # One-time setup (30 seconds)
-smara init
+sigil init
 
 # That's it. Open Claude Code and start a new session.
 ```
 
-`smara init` runs an interactive wizard that:
+`sigil init` runs an interactive wizard that:
 1. Asks for your LLM provider (Claude Code subscription is default — zero API key needed)
-2. Sets up a local PGlite database at `~/.smara/db` (no Docker, no Postgres server)
+2. Sets up a local PGlite database at `~/.sigil/db` (no Docker, no Postgres server)
 3. Registers hooks in `~/.claude/settings.json` so Claude auto-uses memory
-4. Adds `@~/.smara/CLAUDE.md` to your global Claude config
+4. Adds `@~/.sigil/CLAUDE.md` to your global Claude config
 
 No other steps. No cloud setup.
 
 ```bash
 # Verify everything works
-smara doctor
+sigil doctor
 ```
 
 ```
-Smara diagnostic
+Sigil diagnostic
 
-  ✓ Config file — ~/.smara/.env
-  ✓ Database — PGlite (~/.smara/db)
+  ✓ Config file — ~/.sigil/.env
+  ✓ Database — PGlite (~/.sigil/db)
   ✓ Stored data — 53 docs, 47 chunks, 249 facts
   ✓ LLM provider — claude-cli (Claude Code subscription)
   ✓ Embedding provider — ollama / nomic-embed-text
   ✓ UserPromptSubmit hook — registered
   ✓ PostToolUse hook — registered
-  ✓ Smara CLAUDE.md — ~/.smara/CLAUDE.md
+  ✓ Sigil CLAUDE.md — ~/.sigil/CLAUDE.md
 
 All checks passed.
 ```
@@ -106,7 +106,7 @@ All checks passed.
 
 ## How it works
 
-Smara is three layers of knowledge, not a flat vector store:
+Sigil is three layers of knowledge, not a flat vector store:
 
 | Layer | What's stored | Good for |
 |-------|--------------|----------|
@@ -145,30 +145,30 @@ Results in ~30ms on a knowledge base of thousands of facts.
 
 ## Claude Code integration
 
-Smara integrates with Claude Code in three complementary ways:
+Sigil integrates with Claude Code in three complementary ways:
 
 ### 1. Hooks (automatic, invisible)
 
-`smara init` registers two hooks in `~/.claude/settings.json`:
+`sigil init` registers two hooks in `~/.claude/settings.json`:
 
-- **`UserPromptSubmit`** — On every user prompt, searches Smara for relevant facts and injects them as `additionalContext`. Claude sees the memory automatically.
+- **`UserPromptSubmit`** — On every user prompt, searches Sigil for relevant facts and injects them as `additionalContext`. Claude sees the memory automatically.
 - **`PostToolUse`** — On every Edit/Write/Bash, captures a lightweight observation in the background.
 
-No `! smara search` or `! smara remember` commands needed. Memory is invisible.
+No `! sigil search` or `! sigil remember` commands needed. Memory is invisible.
 
 ### 2. Hot context (passive)
 
-`smara init` writes a top-20 hot-facts snapshot to `~/.smara/CLAUDE.md`, auto-imported into every Claude session via `@~/.smara/CLAUDE.md` in `~/.claude/CLAUDE.md`. Facts are ranked by importance × access count × recency.
+`sigil init` writes a top-20 hot-facts snapshot to `~/.sigil/CLAUDE.md`, auto-imported into every Claude session via `@~/.sigil/CLAUDE.md` in `~/.claude/CLAUDE.md`. Facts are ranked by importance × access count × recency.
 
-Refreshed automatically after every `smara remember` and `smara ingest`. Manual refresh:
+Refreshed automatically after every `sigil remember` and `sigil ingest`. Manual refresh:
 
 ```bash
-smara context
+sigil context
 ```
 
 ### 3. MCP tools (on-demand)
 
-Smara registers as an MCP server with 7 tools for deep knowledge access:
+Sigil registers as an MCP server with 7 tools for deep knowledge access:
 
 | Tool | Purpose |
 |------|---------|
@@ -183,7 +183,7 @@ Smara registers as an MCP server with 7 tools for deep knowledge access:
 To register:
 
 ```bash
-smara register
+sigil register
 ```
 
 ---
@@ -192,27 +192,27 @@ smara register
 
 | Command | Description |
 |---------|-------------|
-| `smara init` | Interactive setup — provider, DB, hooks, Claude integration |
-| `smara doctor` | Diagnose setup (DB, LLM, embeddings, hooks) |
-| `smara remember "text"` | Save one or more facts to memory (use `--bg` for background) |
-| `smara ingest <file\|url\|glob>` | Ingest documents into the knowledge base |
-| `smara search "query"` | Search the knowledge base |
-| `smara facts [--limit=N]` | List stored facts with IDs |
-| `smara forget <id>` | Delete a fact by ID |
-| `smara namespace list` | List all namespaces with fact counts |
-| `smara namespace delete <ns> --confirm` | Delete a namespace and all its data |
-| `smara export [--format=json\|markdown]` | Export knowledge base (backup/portability) |
-| `smara context` | Refresh hot-context snapshot |
-| `smara status` | Knowledge base statistics |
-| `smara migrate` | Run database migrations |
-| `smara reset --confirm` | Reset the database (drops all data) |
-| `smara register` | Register as a Claude Code MCP server |
+| `sigil init` | Interactive setup — provider, DB, hooks, Claude integration |
+| `sigil doctor` | Diagnose setup (DB, LLM, embeddings, hooks) |
+| `sigil remember "text"` | Save one or more facts to memory (use `--bg` for background) |
+| `sigil ingest <file\|url\|glob>` | Ingest documents into the knowledge base |
+| `sigil search "query"` | Search the knowledge base |
+| `sigil facts [--limit=N]` | List stored facts with IDs |
+| `sigil forget <id>` | Delete a fact by ID |
+| `sigil namespace list` | List all namespaces with fact counts |
+| `sigil namespace delete <ns> --confirm` | Delete a namespace and all its data |
+| `sigil export [--format=json\|markdown]` | Export knowledge base (backup/portability) |
+| `sigil context` | Refresh hot-context snapshot |
+| `sigil status` | Knowledge base statistics |
+| `sigil migrate` | Run database migrations |
+| `sigil reset --confirm` | Reset the database (drops all data) |
+| `sigil register` | Register as a Claude Code MCP server |
 
 ---
 
 ## Providers
 
-Smara supports four LLM providers with automatic detection:
+Sigil supports four LLM providers with automatic detection:
 
 | Provider | API key needed | Cost | Notes |
 |----------|---------------|------|-------|
@@ -253,50 +253,50 @@ LLM_DECISION_MODEL=anthropic:claude-sonnet-4-6  # accurate AUDM decisions
 
 ## Storage
 
-Smara defaults to **PGlite** — embedded WASM Postgres in `~/.smara/db/`. No server, no port, no Docker. Right choice for personal single-developer use.
+Sigil defaults to **PGlite** — embedded WASM Postgres in `~/.sigil/db/`. No server, no port, no Docker. Right choice for personal single-developer use.
 
 For Postico/pgAdmin visibility, multi-process concurrency, or shared deployments, switch to **real Postgres**:
 
 ```
-# ~/.smara/.env
-SMARA_DB_TYPE=postgres
-SMARA_DB_HOST=localhost
-SMARA_DB_PORT=5432
-SMARA_DB_NAME=smara
-SMARA_DB_USER=smara_app
-SMARA_DB_PASSWORD=...
+# ~/.sigil/.env
+SIGIL_DB_TYPE=postgres
+SIGIL_DB_HOST=localhost
+SIGIL_DB_PORT=5432
+SIGIL_DB_NAME=sigil
+SIGIL_DB_USER=sigil_app
+SIGIL_DB_PASSWORD=...
 ```
 
-Then `smara migrate` to create the schema in your Postgres instance.
+Then `sigil migrate` to create the schema in your Postgres instance.
 
 Full setup walkthrough (Homebrew, Docker, troubleshooting): [`docs/postgres.md`](docs/postgres.md).
 
 ### When to switch to real Postgres
 
-PGlite is a **single-process** embedded database. Only one Smara process can hold the DB at a time. In practice that means:
+PGlite is a **single-process** embedded database. Only one Sigil process can hold the DB at a time. In practice that means:
 
-- A `smara` CLI invocation while the MCP server is running for an active Claude Code session **will fail** ("DB busy"). Stop the session, or run the CLI in a different namespace.
-- Two Claude Code windows open against the same Smara DB → only one will get the hook to fire cleanly. The other's hook will fail-fast and inject nothing.
-- If a process is killed hard (`kill -9`, OOM), the DB lock can be left dangling: `smara doctor --kill-stale`.
+- A `sigil` CLI invocation while the MCP server is running for an active Claude Code session **will fail** ("DB busy"). Stop the session, or run the CLI in a different namespace.
+- Two Claude Code windows open against the same Sigil DB → only one will get the hook to fire cleanly. The other's hook will fail-fast and inject nothing.
+- If a process is killed hard (`kill -9`, OOM), the DB lock can be left dangling: `sigil doctor --kill-stale`.
 
 If any of those describe your workflow, run real Postgres instead. PGlite is the right default for a single developer with one active session at a time. It is **not** the right backend for: parallel agent fleets, shared dev machines, or anything that wants Postico/pgAdmin visibility.
 
 ---
 
-## Files Smara owns
+## Files Sigil owns
 
 ```
-~/.smara/
+~/.sigil/
 ├── .env              # Config, API keys (if any), namespace
 ├── db/               # PGlite embedded database (auto-created)
 └── CLAUDE.md         # Instructions + hot-context snapshot for Claude
 
 ~/.claude/
-├── CLAUDE.md         # @import line to ~/.smara/CLAUDE.md (one line added)
+├── CLAUDE.md         # @import line to ~/.sigil/CLAUDE.md (one line added)
 └── settings.json     # UserPromptSubmit + PostToolUse hooks (merged, not overwritten)
 ```
 
-Everything lives under `~/.smara/`. No files in your project directory. No cloud. No external services (except Ollama for embeddings if you choose it).
+Everything lives under `~/.sigil/`. No files in your project directory. No cloud. No external services (except Ollama for embeddings if you choose it).
 
 ---
 
@@ -304,7 +304,7 @@ Everything lives under `~/.smara/`. No files in your project directory. No cloud
 
 ### Retrieval quality — LongMemEval oracle split
 
-| Metric | Smara | Notes |
+| Metric | Sigil | Notes |
 |--------|--------|-------|
 | R@1 / R@3 / R@10 | **100% / 100% / 100%** | n=100, oracle split, OpenAI top-quality stack |
 | Answer correctness (LLM-judged) | **41%** | Bottlenecked by gpt-4o temporal reasoning, not retrieval |
@@ -313,9 +313,9 @@ Honest caveats: oracle split is the easy split (no distractor sessions); n=100 i
 
 ### Local latency
 
-Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac. Smara runs in-process against an embedded PGlite database, so these are **local** numbers — not directly comparable to numbers from cloud-hosted memory services, which include network round-trip. Listed here so you can size your own expectations, not as a competitive claim.
+Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac. Sigil runs in-process against an embedded PGlite database, so these are **local** numbers — not directly comparable to numbers from cloud-hosted memory services, which include network round-trip. Listed here so you can size your own expectations, not as a competitive claim.
 
-| Metric | Smara (local) |
+| Metric | Sigil (local) |
 |--------|----------------|
 | Search latency (avg) | **33ms** |
 | Search latency (p95) | **61ms** |
@@ -327,9 +327,9 @@ Hook hot-path latency (cold Node start + PGlite WASM init + DB connect + search)
 
 ---
 
-## What makes Smara different
+## What makes Sigil different
 
-| | Smara | Mem0 | claude-mem | Obsidian |
+| | Sigil | Mem0 | claude-mem | Obsidian |
 |---|--------|------|------------|----------|
 | Atomic fact extraction | ✓ | Basic | ✗ (session logs) | ✗ (manual) |
 | Entity graph + relationships | ✓ | Paid only | ✗ | Manual |
@@ -345,14 +345,14 @@ Hook hot-path latency (cold Node start + PGlite WASM init + DB connect + search)
 
 ## FAQ
 
-**Q: Does Smara work with Cursor / Windsurf / other MCP clients?**
+**Q: Does Sigil work with Cursor / Windsurf / other MCP clients?**
 A: The MCP interface works with any MCP client. The hooks are Claude Code specific. Cursor integration requires manual MCP registration.
 
 **Q: Does my data leave my machine?**
 A: No. Everything runs locally by default (PGlite + Ollama). If you pick the OpenAI or Anthropic LLM provider, the text sent for fact extraction leaves your machine during ingestion. Embeddings with Ollama stay local. Claude Code provider uses your existing subscription without extra data egress.
 
 **Q: Can I back up my knowledge base?**
-A: Yes. `smara export --format=json --output=backup.json` exports all facts, entities, and documents. Or copy `~/.smara/db/` to another machine.
+A: Yes. `sigil export --format=json --output=backup.json` exports all facts, entities, and documents. Or copy `~/.sigil/db/` to another machine.
 
 **Q: What happens when my knowledge base gets large?**
 A: Vector search on pgvector stays fast up to millions of vectors. Tested with thousands of facts without noticeable slowdown. Use namespaces to scope search when relevant.
@@ -361,17 +361,17 @@ A: Vector search on pgvector stays fast up to millions of vectors. Tested with t
 A: Not yet. v1 is single-user. Team features (shared namespaces, sync) are planned for v2.
 
 **Q: How do I debug when something breaks?**
-A: Start with `smara doctor`. It'll tell you exactly what's wrong — missing provider, hook not registered, DB issue, etc.
+A: Start with `sigil doctor`. It'll tell you exactly what's wrong — missing provider, hook not registered, DB issue, etc.
 
 <a id="hook-performance"></a>
-**Q: What happens to my prompt if the Smara hook crashes?**
-A: Nothing — your prompt still goes through. The `UserPromptSubmit` hook is wrapped in a top-level try/catch that fails silently to stderr and returns an empty `additionalContext`. Claude Code will surface the stderr line but won't block on it. Smara's design rule: **a broken memory layer must never block a working prompt.** If you see `[smara:user-prompt-submit]` lines in your terminal, run `smara doctor`.
+**Q: What happens to my prompt if the Sigil hook crashes?**
+A: Nothing — your prompt still goes through. The `UserPromptSubmit` hook is wrapped in a top-level try/catch that fails silently to stderr and returns an empty `additionalContext`. Claude Code will surface the stderr line but won't block on it. Sigil's design rule: **a broken memory layer must never block a working prompt.** If you see `[sigil:user-prompt-submit]` lines in your terminal, run `sigil doctor`.
 
 **Q: How much latency does the hook add to every prompt?**
 A: Cold-path: roughly 200–400ms on first invocation (Node startup + PGlite WASM init + DB open + hybrid search). Warm path is faster, but Claude Code spawns the hook fresh per prompt, so most invocations pay something close to the cold cost. We have not formally benchmarked this end-to-end and the README's "33ms search" figure does **not** include hook overhead — that's just the search call itself. If you find this unacceptable, you can comment the `UserPromptSubmit` hook out of `~/.claude/settings.json` and rely on the hot-context CLAUDE.md + on-demand MCP `search` tool instead.
 
 **Q: How do I uninstall cleanly?**
-A: `npm uninstall -g @smara/cli` removes the binary. To remove the data and config: `rm -rf ~/.smara`. To unwire from Claude Code, edit `~/.claude/settings.json` (remove the smara hook entries) and `~/.claude/CLAUDE.md` (remove the `@~/.smara/CLAUDE.md` line). A dedicated `smara uninstall` command is on the roadmap.
+A: `npm uninstall -g sigil` removes the binary. To remove the data and config: `rm -rf ~/.sigil`. To unwire from Claude Code, edit `~/.claude/settings.json` (remove the sigil hook entries) and `~/.claude/CLAUDE.md` (remove the `@~/.sigil/CLAUDE.md` line). A dedicated `sigil uninstall` command is on the roadmap.
 
 ---
 

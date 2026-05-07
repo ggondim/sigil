@@ -1,10 +1,10 @@
 {
-  "name": "@smara/cli",
-  "version": "0.6.0",
+  "name": "sigil",
+  "version": "0.7.0",
   "type": "module",
-  "description": "Smara — persistent memory engine for Claude Code. Local-first, zero-cloud, auto-integrated via hooks and MCP. From the Sanskrit for remembrance.",
+  "description": "Sigil — persistent memory engine for Claude Code. Local-first, zero-cloud, auto-integrated via hooks and MCP. A sigil is a mark carved with meaning; that's what every fact in your knowledge base is.",
   "bin": {
-    "smara": "dist/cli.js"
+    "sigil": "dist/cli.js"
   },
   "scripts": {
     "dev": "node --watch src/server.js",
@@ -30,7 +30,7 @@
     "README.md"
   ],
   "keywords": [
-    "smara",
+    "sigil",
     "memory",
     "mcp",
     "mcp-server",

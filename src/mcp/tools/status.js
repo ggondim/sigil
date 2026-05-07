@@ -9,7 +9,7 @@ import { textResponse, truncate } from '../utils.js';
 function registerStatusTool(server) {
   server.tool(
     'status',
-    `Show Smara knowledge base statistics — documents, chunks, facts, entities, relations.
+    `Show Sigil knowledge base statistics — documents, chunks, facts, entities, relations.
 Use when: checking system health, verifying ingestion, reviewing knowledge graph size.`,
     {
       namespace: z.string().optional().describe('Filter by namespace. Omit for global stats.'),
@@ -27,7 +27,7 @@ Use when: checking system health, verifying ingestion, reviewing knowledge graph
 
       const scope = namespace ? ` (${namespace})` : '';
       const text = [
-        `Smara KB${scope}: ${docStats.documentCount} docs, ${docStats.totalChunks} chunks, ${factCount} facts`,
+        `Sigil KB${scope}: ${docStats.documentCount} docs, ${docStats.totalChunks} chunks, ${factCount} facts`,
         `Entities: ${documents} documents, ${people} people, ${topics} topics`,
         `Relations: ${relations}`,
         `Hot facts (top ${hotFacts.length}): ${hotFacts.map((f) => `${truncate(f.content, 60)} (${f.accessCount}x)`).join(', ') || 'none yet'}`,

@@ -1,17 +1,17 @@
-// Env-var precedence: SMARA_* > CORTEX_* (legacy from pre-rename releases) > default.
-// Existing 0.5.x users keep working without editing their .env; new users see only SMARA_*.
+// Env-var precedence: SIGIL_* > CORTEX_* (legacy from pre-rename releases) > default.
+// Existing 0.5.x users keep working without editing their .env; new users see only SIGIL_*.
 const env = (key, legacyKey, fallback) =>
   process.env[key] ?? (legacyKey && process.env[legacyKey]) ?? fallback;
 
 const config = {
   db: {
     // 'pglite' (default) — embedded, zero-install. 'postgres' — external Postgres via env vars.
-    type: env('SMARA_DB_TYPE', 'CORTEX_DB_TYPE', 'pglite'),
-    host: env('SMARA_DB_HOST', 'CORTEX_DB_HOST', 'localhost'),
-    port: Number(env('SMARA_DB_PORT', 'CORTEX_DB_PORT', 5432)),
-    database: env('SMARA_DB_NAME', 'CORTEX_DB_NAME', 'smara'),
-    user: env('SMARA_DB_USER', 'CORTEX_DB_USER', 'smara_app'),
-    password: env('SMARA_DB_PASSWORD', 'CORTEX_DB_PASSWORD', ''),
+    type: env('SIGIL_DB_TYPE', 'CORTEX_DB_TYPE', 'pglite'),
+    host: env('SIGIL_DB_HOST', 'CORTEX_DB_HOST', 'localhost'),
+    port: Number(env('SIGIL_DB_PORT', 'CORTEX_DB_PORT', 5432)),
+    database: env('SIGIL_DB_NAME', 'CORTEX_DB_NAME', 'sigil'),
+    user: env('SIGIL_DB_USER', 'CORTEX_DB_USER', 'sigil_app'),
+    password: env('SIGIL_DB_PASSWORD', 'CORTEX_DB_PASSWORD', ''),
   },
 
   embedding: {
@@ -90,16 +90,16 @@ const config = {
     // answer that cites which items it used. Lifts hit@1 by ~9 points and gives the system a
     // natural way to refuse out-of-corpus queries ("Not in retrieved memory.") instead of
     // producing confidently-wrong answers from tangentially related facts.
-    // Trade: +~$0.00015 and +~2.2s per search. Set SMARA_SYNTHESIZE=false to disable.
-    synthesize: env('SMARA_SYNTHESIZE', 'CORTEX_SYNTHESIZE', 'true') !== 'false',
+    // Trade: +~$0.00015 and +~2.2s per search. Set SIGIL_SYNTHESIZE=false to disable.
+    synthesize: env('SIGIL_SYNTHESIZE', 'CORTEX_SYNTHESIZE', 'true') !== 'false',
     // Model for the synthesis pass — defaults to LLM_EXTRACTION_MODEL.
-    synthesizeModel: env('SMARA_SYNTH_MODEL', 'CORTEX_SYNTH_MODEL', ''),
+    synthesizeModel: env('SIGIL_SYNTH_MODEL', 'CORTEX_SYNTH_MODEL', ''),
   },
 
   ingest: {
     // false → skip per-chunk fact extraction during ingest (Ogham-style lazy mode).
     // Trades ~17× cheaper writes for ~4 points of hit@1 on narrow queries.
-    eagerExtract: env('SMARA_EAGER_EXTRACT', 'CORTEX_EAGER_EXTRACT', 'true') !== 'false',
+    eagerExtract: env('SIGIL_EAGER_EXTRACT', 'CORTEX_EAGER_EXTRACT', 'true') !== 'false',
   },
 };
 

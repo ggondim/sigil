@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * UserPromptSubmit hook — injects relevant Smara facts into Claude's context.
+ * UserPromptSubmit hook — injects relevant Sigil facts into Claude's context.
  *
  * Reads the user's prompt from stdin (JSON from Claude Code),
- * searches Smara for matching facts, and returns them as additionalContext.
+ * searches Sigil for matching facts, and returns them as additionalContext.
  */
 
 import { resolve, dirname, join } from 'node:path';
@@ -16,7 +16,7 @@ import { maskSecrets } from './secret-mask.js';
 
 // Load env before anything else
 const home = process.env.HOME || process.env.USERPROFILE;
-const globalEnv = join(home, '.smara', '.env');
+const globalEnv = join(home, '.sigil', '.env');
 const localEnv = resolve(process.cwd(), '.env');
 if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
 else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
@@ -55,7 +55,7 @@ async function main() {
     }
 
     const context = maskSecrets([
-      `Smara memory (${facts.length} relevant facts):`,
+      `Sigil memory (${facts.length} relevant facts):`,
       ...facts.map((f) => `- ${f.content}`),
     ].join('\n'));
 
@@ -64,7 +64,7 @@ async function main() {
     return respond(context);
   } catch (err) {
     // Never block Claude — fail silently
-    process.stderr.write(`[smara:user-prompt-submit] ${err.message}\n`);
+    process.stderr.write(`[sigil:user-prompt-submit] ${err.message}\n`);
     try {
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy();

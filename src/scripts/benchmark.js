@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Smara Benchmark Suite
+ * Sigil Benchmark Suite
  *
  * Measures: ingestion throughput, search latency, search quality, AUDM accuracy.
  * Usage: node src/scripts/benchmark.js
@@ -15,7 +15,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { performance } from 'node:perf_hooks';
 
 const home = process.env.HOME || process.env.USERPROFILE;
-const globalEnv = join(home, '.smara', '.env');
+const globalEnv = join(home, '.sigil', '.env');
 const localEnv = resolve(process.cwd(), '.env');
 if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
 else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
@@ -384,7 +384,7 @@ async function benchmarkAUDM() {
 
 async function run() {
   console.log('╔══════════════════════════════════════╗');
-  console.log('║     Smara Benchmark Suite           ║');
+  console.log('║     Sigil Benchmark Suite           ║');
   console.log('╚══════════════════════════════════════╝');
 
   const ns = config.defaults.namespace;

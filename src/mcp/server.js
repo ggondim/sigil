@@ -13,7 +13,7 @@ import { registerIngestTool } from './tools/ingest.js';
 
 function createMcpServer() {
   const server = new McpServer({
-    name: 'smara',
+    name: 'sigil',
     version: '0.2.0',
   });
 

@@ -11,13 +11,13 @@ import { config as dotenvConfig } from 'dotenv';
 // Package root — works whether run from project dir or globally installed
 const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// Env precedence: shell env > project .env > global ~/.smara/.env.
+// Env precedence: shell env > project .env > global ~/.sigil/.env.
 // dotenv's default behavior (no `override`) never overwrites existing
 // process.env keys, so loading project FIRST gives it priority over
-// global, and shell-set values (e.g. `DEFAULT_NAMESPACE=demo smara ...`)
+// global, and shell-set values (e.g. `DEFAULT_NAMESPACE=demo sigil ...`)
 // always win because they're set before either dotenv call runs.
 const projectEnv = resolve(process.cwd(), '.env');
-const globalEnv = join(homedir(), '.smara', '.env');
+const globalEnv = join(homedir(), '.sigil', '.env');
 
 if (existsSync(projectEnv)) {
   dotenvConfig({ path: projectEnv, quiet: true });
@@ -28,14 +28,14 @@ if (existsSync(globalEnv) && globalEnv !== projectEnv) {
 
 const [command, ...rest] = process.argv.slice(2);
 
-const HELP = `smara — Persistent memory for your Claude sessions
+const HELP = `sigil — Persistent memory for your Claude sessions
 
 Usage:
-  smara <command> [options]
+  sigil <command> [options]
 
 Commands:
-  init [--dry-run]         Set up Smara (DB, env, hooks, Claude integration)
-  doctor                   Diagnose Smara setup (DB, LLM, embeddings, hooks)
+  init [--dry-run]         Set up Sigil (DB, env, hooks, Claude integration)
+  doctor                   Diagnose Sigil setup (DB, LLM, embeddings, hooks)
   remember "text"          Save a fact or note to memory
   ingest <file|url|glob>   Ingest documents into the knowledge base
   search "query"           Search the knowledge base
@@ -53,7 +53,7 @@ Commands:
 Options:
   --help                   Show this help message
 
-Run smara <command> --help for command-specific options.`;
+Run sigil <command> --help for command-specific options.`;
 
 if (!command || command === '--help' || command === '-h') {
   console.log(HELP);
@@ -93,12 +93,12 @@ try {
   // recovery command instead.
   const msg = err.message || String(err);
   if (/Aborted\(\)|RuntimeError|wasm-function/i.test(msg)) {
-    console.error('Error: Smara DB failed to start (likely stale lock or dirty WAL state).');
+    console.error('Error: Sigil DB failed to start (likely stale lock or dirty WAL state).');
     console.error('');
     console.error('Recovery:');
-    console.error("  1. Make sure no other Smara process is running:  ps aux | grep smara");
-    console.error("  2. Try the auto-cleaner:                          smara doctor --kill-stale");
-    console.error("  3. If that fails, the DB may be corrupted:        ls -la ~/.smara/db");
+    console.error("  1. Make sure no other Sigil process is running:  ps aux | grep sigil");
+    console.error("  2. Try the auto-cleaner:                          sigil doctor --kill-stale");
+    console.error("  3. If that fails, the DB may be corrupted:        ls -la ~/.sigil/db");
     console.error('');
     console.error('Underlying error: ' + msg.split('\n')[0]);
     process.exit(1);
@@ -111,21 +111,21 @@ try {
 
 async function runInit(args) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log(`smara init — Set up Smara (DB, env, hooks, Claude integration)
+    console.log(`sigil init — Set up Sigil (DB, env, hooks, Claude integration)
 
 Usage:
-  smara init [--dry-run]
+  sigil init [--dry-run]
 
 Options:
   --dry-run    Walk through every prompt and print the exact files that would
                be created or modified, but write nothing to disk. Use this on
-               first install to preview the changes Smara will make to your
-               ~/.smara/ and ~/.claude/ directories.
+               first install to preview the changes Sigil will make to your
+               ~/.sigil/ and ~/.claude/ directories.
 
-Files Smara touches (originals are backed up to <path>.smara.bak before write):
-  ~/.smara/.env                 Smara config + API keys
-  ~/.smara/CLAUDE.md            Smara instructions for Claude
-  ~/.smara/db/                  Embedded PGlite database
+Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
+  ~/.sigil/.env                 Sigil config + API keys
+  ~/.sigil/CLAUDE.md            Sigil instructions for Claude
+  ~/.sigil/db/                  Embedded PGlite database
   ~/.claude/CLAUDE.md            One @import line added (existing content preserved)
   ~/.claude/settings.json        UserPromptSubmit + PostToolUse hook entries (merged)`);
     process.exit(0);
@@ -138,10 +138,10 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
   const { safeWrite } = await import('./lib/safe-write.js');
   const { intro, outro, select, text, spinner, confirm, note, cancel, isCancel } = clack;
 
-  const cortexHome = join(homedir(), '.smara');
+  const cortexHome = join(homedir(), '.sigil');
   const envPath = join(cortexHome, '.env');
 
-  intro(dryRun ? 'Smara — DRY RUN (no files will be written)' : 'Smara — persistent memory for Claude');
+  intro(dryRun ? 'Sigil — DRY RUN (no files will be written)' : 'Sigil — persistent memory for Claude');
 
   const planned = [];
   const planFile = (action, path, detail) => planned.push({ action, path, detail });
@@ -230,10 +230,10 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
       note(
         'Ollama is not installed.\n' +
         'Install from https://ollama.com then run: ollama pull nomic-embed-text\n' +
-        'Or re-run smara init and choose OpenAI for embeddings.',
+        'Or re-run sigil init and choose OpenAI for embeddings.',
         'Ollama not found',
       );
-      cancel('Install Ollama then re-run smara init.');
+      cancel('Install Ollama then re-run sigil init.');
       process.exit(0);
     }
 
@@ -256,12 +256,12 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
         } else {
           s.stop('Ollama server did not come up in time');
           note(
-            'Smara tried to start `ollama serve` in the background but it did not\n' +
+            'Sigil tried to start `ollama serve` in the background but it did not\n' +
             'become reachable at ' + ollamaHost + ' within 15s.\n\n' +
-            'Open a new terminal, run `ollama serve`, then re-run `smara init`.',
+            'Open a new terminal, run `ollama serve`, then re-run `sigil init`.',
             'Ollama server unreachable',
           );
-          cancel('Start ollama serve manually then re-run smara init.');
+          cancel('Start ollama serve manually then re-run sigil init.');
           process.exit(0);
         }
       }
@@ -304,7 +304,7 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
   const encryptionKey = existing.CORTEX_ENCRYPTION_KEY || generateSecret(64);
 
   const envContent = [
-    `# Smara — generated ${new Date().toISOString().slice(0, 10)}`,
+    `# Sigil — generated ${new Date().toISOString().slice(0, 10)}`,
     '',
     `LLM_PROVIDER=${llmProvider}`,
     openaiKey    ? `OPENAI_API_KEY=${openaiKey}`       : '# OPENAI_API_KEY=',
@@ -344,11 +344,11 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
     planFile('create', join(cortexHome, 'db'), 'PGlite database + run migrations');
   }
 
-  // ── ~/.smara/CLAUDE.md + @import in ~/.claude/CLAUDE.md ─────────────────
+  // ── ~/.sigil/CLAUDE.md + @import in ~/.claude/CLAUDE.md ─────────────────
 
   const claudeSpinner = spinner();
   claudeSpinner.start(dryRun ? 'Computing Claude Code integration plan...' : 'Configuring Claude Code integration...');
-  const cortexMdResult = await writeSmaraMd({ dryRun });
+  const cortexMdResult = await writeSigilMd({ dryRun });
   if (cortexMdResult) planFile(cortexMdResult.action, cortexMdResult.path, `${cortexMdResult.bytes} bytes`);
   const claudeMdResult = await writeClaudeMd({ dryRun });
   if (claudeMdResult) planFile(claudeMdResult.action, claudeMdResult.path, claudeMdResult.detail);
@@ -370,7 +370,7 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
         '',
         ...lines,
         '',
-        'Each existing file would be backed up to <path>.smara.bak before its first',
+        'Each existing file would be backed up to <path>.sigil.bak before its first',
         'modification. Re-run without --dry-run to apply.',
       ].join('\n'),
       'Plan',
@@ -381,23 +381,23 @@ Files Smara touches (originals are backed up to <path>.smara.bak before write):
 
   note(
     [
-      `Memory store  ~/.smara/db  (embedded, no server needed)`,
+      `Memory store  ~/.sigil/db  (embedded, no server needed)`,
       `Config        ${envPath}`,
-      `Claude        ~/.claude/CLAUDE.md — Smara is now your memory`,
-      `Backups       any pre-existing files saved to <path>.smara.bak`,
+      `Claude        ~/.claude/CLAUDE.md — Sigil is now your memory`,
+      `Backups       any pre-existing files saved to <path>.sigil.bak`,
       '',
-      'Claude will search Smara before answering and save important',
+      'Claude will search Sigil before answering and save important',
       'facts automatically. Start a new Claude session to begin.',
       '',
       'Quick start:',
-      '  smara remember "your first fact"',
-      '  smara ingest <file-or-url>',
-      '  smara search "anything"',
+      '  sigil remember "your first fact"',
+      '  sigil ingest <file-or-url>',
+      '  sigil search "anything"',
     ].join('\n'),
     'Setup complete',
   );
 
-  outro('Open a new Claude Code session to start using Smara.');
+  outro('Open a new Claude Code session to start using Sigil.');
 }
 
 function pad(s, n) { return String(s).padEnd(n); }
@@ -406,14 +406,14 @@ function pad(s, n) { return String(s).padEnd(n); }
 
 async function runDoctor(args) {
   if (args.includes('--help')) {
-    console.log(`smara doctor — Diagnose Smara setup
+    console.log(`sigil doctor — Diagnose Sigil setup
 
 Usage:
-  smara doctor [--kill-stale]
+  sigil doctor [--kill-stale]
 
 Options:
-  --kill-stale   Remove stale PGlite lock files (postmaster.pid) when no Smara
-                 process is actually holding them. Use this if 'smara' commands
+  --kill-stale   Remove stale PGlite lock files (postmaster.pid) when no Sigil
+                 process is actually holding them. Use this if 'sigil' commands
                  fail with "Aborted()" after a kill -9 or a previous crash.
 
 Checks: database, LLM provider, embedding provider, hook registration, disk paths.`);
@@ -432,19 +432,19 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     console.log(`  ${icon} ${label}${detail ? ` — ${detail}` : ''}`);
   };
 
-  console.log('\nSmara diagnostic\n');
+  console.log('\nSigil diagnostic\n');
 
   // Config location
-  const globalEnv = join(homedir(), '.smara', '.env');
+  const globalEnv = join(homedir(), '.sigil', '.env');
   if (existsSync(globalEnv)) log('ok', 'Config file', globalEnv);
-  else log('warn', 'Config file', `${globalEnv} not found — run 'smara init'`);
+  else log('warn', 'Config file', `${globalEnv} not found — run 'sigil init'`);
 
   // Database
   try {
     const cortexDb = (await import('./db/cortex.js')).default;
     const config = (await import('./config.js')).default;
     await cortexDb.raw('SELECT 1');
-    log('ok', 'Database', config.db.type === 'postgres' ? 'external Postgres' : `PGlite (${join(homedir(), '.smara', 'db')})`);
+    log('ok', 'Database', config.db.type === 'postgres' ? 'external Postgres' : `PGlite (${join(homedir(), '.sigil', 'db')})`);
 
     const { getFactCount } = await import('./memory/facts/store.js');
     const { getStats } = await import('./memory/documents/store.js');
@@ -455,7 +455,7 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     const msg = err.message || String(err);
     if (/Aborted\(\)|RuntimeError|wasm-function/i.test(msg)) {
       log('fail', 'Database', 'PGlite failed to start (stale lock or dirty WAL)');
-      log('warn', 'Recovery', "run 'smara doctor --kill-stale' to clean stale lock files");
+      log('warn', 'Recovery', "run 'sigil doctor --kill-stale' to clean stale lock files");
     } else {
       log('fail', 'Database', msg);
     }
@@ -493,12 +493,12 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
       const fs = await import('node:fs/promises');
       const settings = JSON.parse(await fs.readFile(claudeSettingsPath, 'utf8'));
       const hooks = settings.hooks || {};
-      const hasUPS = hooks.UserPromptSubmit?.some((h) => h.hooks?.some((i) => i.command?.includes('smara') || i.command?.includes('user-prompt-submit')));
-      const hasPTU = hooks.PostToolUse?.some((h) => h.hooks?.some((i) => i.command?.includes('smara') || i.command?.includes('post-tool-use')));
+      const hasUPS = hooks.UserPromptSubmit?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('user-prompt-submit')));
+      const hasPTU = hooks.PostToolUse?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('post-tool-use')));
       if (hasUPS) log('ok', 'UserPromptSubmit hook', 'registered');
-      else log('warn', 'UserPromptSubmit hook', `not registered — run 'smara init' to enable auto-context injection`);
+      else log('warn', 'UserPromptSubmit hook', `not registered — run 'sigil init' to enable auto-context injection`);
       if (hasPTU) log('ok', 'PostToolUse hook', 'registered');
-      else log('warn', 'PostToolUse hook', `not registered — run 'smara init' to enable auto-capture`);
+      else log('warn', 'PostToolUse hook', `not registered — run 'sigil init' to enable auto-capture`);
     } catch (err) {
       log('warn', 'Claude Code hooks', `could not parse settings.json: ${err.message}`);
     }
@@ -506,9 +506,9 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     log('warn', 'Claude Code settings', `${claudeSettingsPath} not found`);
   }
 
-  const cortexMd = join(homedir(), '.smara', 'CLAUDE.md');
-  if (existsSync(cortexMd)) log('ok', 'Smara CLAUDE.md', cortexMd);
-  else log('warn', 'Smara CLAUDE.md', `not found — run 'smara init'`);
+  const cortexMd = join(homedir(), '.sigil', 'CLAUDE.md');
+  if (existsSync(cortexMd)) log('ok', 'Sigil CLAUDE.md', cortexMd);
+  else log('warn', 'Sigil CLAUDE.md', `not found — run 'sigil init'`);
 
   console.log();
   const failed = checks.filter((c) => c.status === 'fail').length;
@@ -527,7 +527,7 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
 
 async function killStalePGliteLocks() {
   const fs = await import('node:fs/promises');
-  const dbPath = process.env.CORTEX_PGLITE_PATH || join(homedir(), '.smara', 'db');
+  const dbPath = process.env.SIGIL_PGLITE_PATH || join(homedir(), '.sigil', 'db');
   const lockFile = join(dbPath, 'postmaster.pid');
 
   console.log(`\nChecking PGlite lock state at ${dbPath}\n`);
@@ -559,13 +559,13 @@ async function killStalePGliteLocks() {
     console.log(`  ✓ Removed stale PGlite-WASM sentinel lock: ${lockFile}`);
     console.log('');
     console.log('Try your command again. If PGlite still fails to start, the DB may have');
-    console.log('dirty WAL state — back up ~/.smara/db before any further recovery.');
+    console.log('dirty WAL state — back up ~/.sigil/db before any further recovery.');
     return;
   }
 
   // Real OS pid. Check whether that exact process is still alive (kill -0).
-  // Don't grep for "smara" string in arbitrary processes — it's noisy and
-  // matches unrelated node processes whose CWD happens to contain "smara".
+  // Don't grep for "sigil" string in arbitrary processes — it's noisy and
+  // matches unrelated node processes whose CWD happens to contain "sigil".
   let pidAlive = false;
   try {
     process.kill(pid, 0); // signal 0 = existence check, doesn't actually signal
@@ -587,17 +587,17 @@ async function killStalePGliteLocks() {
   console.log(`  ✓ Removed stale lock for dead pid ${pid}: ${lockFile}`);
   console.log('');
   console.log('Try your command again. If PGlite still fails to start, the DB may have');
-  console.log('dirty WAL state — back up ~/.smara/db before any further recovery.');
+  console.log('dirty WAL state — back up ~/.sigil/db before any further recovery.');
 }
 
 // ─── Export ──────────────────────────────────────────────────────────────────
 
 async function runExport(args) {
   if (args.includes('--help')) {
-    console.log(`smara export — Export knowledge base to stdout or a file
+    console.log(`sigil export — Export knowledge base to stdout or a file
 
 Usage:
-  smara export [options] [> file]
+  sigil export [options] [> file]
 
 Options:
   --namespace=<ns>    Filter by namespace
@@ -621,7 +621,7 @@ Options:
 
   let output;
   if (format === 'markdown') {
-    const lines = [`# Smara export — namespace: ${namespace}`, `Generated: ${new Date().toISOString()}`, ''];
+    const lines = [`# Sigil export — namespace: ${namespace}`, `Generated: ${new Date().toISOString()}`, ''];
     lines.push(`## Facts (${facts.length})`, '');
     for (const f of facts) {
       const importance = f.importance === 'vital' ? ' **[VITAL]**' : '';
@@ -681,11 +681,11 @@ async function runNamespace(args) {
   const sub = args[0];
 
   if (!sub || args.includes('--help')) {
-    console.log(`smara namespace — Manage namespaces
+    console.log(`sigil namespace — Manage namespaces
 
 Usage:
-  smara namespace list
-  smara namespace delete <ns> [--confirm]
+  sigil namespace list
+  sigil namespace delete <ns> [--confirm]
 
 Namespaces isolate facts. A project, team, or context each gets its own.`);
     process.exit(sub ? 0 : 1);
@@ -707,7 +707,7 @@ Namespaces isolate facts. A project, team, or context each gets its own.`);
   } else if (sub === 'delete') {
     const ns = args[1];
     if (!ns || ns.startsWith('--')) {
-      console.error(`Provide a namespace: smara namespace delete <ns> --confirm`);
+      console.error(`Provide a namespace: sigil namespace delete <ns> --confirm`);
       await cortexDb.destroy();
       process.exit(1);
     }
@@ -732,10 +732,10 @@ Namespaces isolate facts. A project, team, or context each gets its own.`);
 
 async function runFacts(args) {
   if (args.includes('--help')) {
-    console.log(`smara facts — List stored facts
+    console.log(`sigil facts — List stored facts
 
 Usage:
-  smara facts [options]
+  sigil facts [options]
 
 Options:
   --namespace=<ns>   Filter by namespace
@@ -761,7 +761,7 @@ Options:
       const importance = fact.importance === 'vital' ? ' [VITAL]' : '';
       console.log(`${fact.uid.slice(0, 8)} [${fact.category}]${importance} ${fact.content}`);
     }
-    console.log(`\n${facts.length} fact${facts.length > 1 ? 's' : ''} shown. Use 'smara forget <id>' to delete.`);
+    console.log(`\n${facts.length} fact${facts.length > 1 ? 's' : ''} shown. Use 'sigil forget <id>' to delete.`);
   }
 
   await cortexDb.destroy();
@@ -771,12 +771,12 @@ Options:
 
 async function runForget(args) {
   if (args.includes('--help') || !args[0] || args[0].startsWith('--')) {
-    console.log(`smara forget — Delete a fact by ID
+    console.log(`sigil forget — Delete a fact by ID
 
 Usage:
-  smara forget <id>
+  sigil forget <id>
 
-Get IDs from 'smara facts' or 'smara search'. IDs can be the short prefix or full UID.`);
+Get IDs from 'sigil facts' or 'sigil search'. IDs can be the short prefix or full UID.`);
     process.exit(args[0] ? 0 : 1);
   }
 
@@ -815,17 +815,17 @@ async function runRemember(args) {
   const textArgs = args.filter((a) => !a.startsWith('--'));
 
   if (flags.includes('--help')) {
-    console.log(`smara remember — Save facts to memory
+    console.log(`sigil remember — Save facts to memory
 
 Usage:
-  smara remember "fact1" ["fact2" ...]   Save one or more facts
-  echo "fact" | smara remember           Read fact from stdin
-  smara remember --bg "fact1" "fact2"    Save in background (returns immediately)
+  sigil remember "fact1" ["fact2" ...]   Save one or more facts
+  echo "fact" | sigil remember           Read fact from stdin
+  sigil remember --bg "fact1" "fact2"    Save in background (returns immediately)
 
 Examples:
-  smara remember "I prefer tabs over spaces"
-  smara remember "Uses React" "Prefers TypeScript" "Deadline is April 20"
-  smara remember --bg "user likes dark mode" "project uses Postgres"`);
+  sigil remember "I prefer tabs over spaces"
+  sigil remember "Uses React" "Prefers TypeScript" "Deadline is April 20"
+  sigil remember --bg "user likes dark mode" "project uses Postgres"`);
     process.exit(0);
   }
 
@@ -843,7 +843,7 @@ Examples:
   }
 
   if (facts.length === 0) {
-    console.error('Provide text to remember: smara remember "your fact"');
+    console.error('Provide text to remember: sigil remember "your fact"');
     process.exit(1);
   }
 
@@ -908,7 +908,7 @@ async function writeClaudeMd({ dryRun = false } = {}) {
   const { safeWrite } = await import('./lib/safe-write.js');
   const claudeDir = join(homedir(), '.claude');
   const claudeMdPath = join(claudeDir, 'CLAUDE.md');
-  const cortexMdPath = join(homedir(), '.smara', 'CLAUDE.md');
+  const cortexMdPath = join(homedir(), '.sigil', 'CLAUDE.md');
 
   if (!dryRun) await fs.mkdir(claudeDir, { recursive: true });
 
@@ -920,7 +920,7 @@ async function writeClaudeMd({ dryRun = false } = {}) {
   }
 
   if (existing.includes(importLine)) {
-    return { action: 'skip', path: claudeMdPath, detail: 'already imports smara CLAUDE.md' };
+    return { action: 'skip', path: claudeMdPath, detail: 'already imports sigil CLAUDE.md' };
   }
 
   const separator = existing.trim() ? '\n' : '';
@@ -929,7 +929,7 @@ async function writeClaudeMd({ dryRun = false } = {}) {
   return { action: result.action, path: claudeMdPath, detail: existing ? '+1 @import line' : 'new file' };
 }
 
-// Step 3: register Smara hooks in ~/.claude/settings.json — idempotent merge.
+// Step 3: register Sigil hooks in ~/.claude/settings.json — idempotent merge.
 // Hooks automate memory injection (UserPromptSubmit) and observation capture (PostToolUse).
 async function registerHooks({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
@@ -972,9 +972,9 @@ async function registerHooks({ dryRun = false } = {}) {
 
   for (const [event, cortexEntry] of Object.entries(cortexHooks)) {
     const existing = settings.hooks[event] || [];
-    // Remove any previous Smara hooks to keep this idempotent
+    // Remove any previous Sigil hooks to keep this idempotent
     const filtered = existing.filter(
-      (h) => !h.hooks?.some((inner) => inner.command?.includes('smara') && inner.command?.includes('hooks')),
+      (h) => !h.hooks?.some((inner) => inner.command?.includes('sigil') && inner.command?.includes('hooks')),
     );
     settings.hooks[event] = [...filtered, cortexEntry];
   }
@@ -987,16 +987,16 @@ async function registerHooks({ dryRun = false } = {}) {
     path: settingsPath,
     detail: existedBefore
       ? '+UserPromptSubmit, +PostToolUse hooks (other settings preserved)'
-      : 'new settings.json with smara hooks',
+      : 'new settings.json with sigil hooks',
   };
 }
 
-// Step 2: write Smara instructions to ~/.smara/CLAUDE.md — Smara owns this file entirely.
+// Step 2: write Sigil instructions to ~/.sigil/CLAUDE.md — Sigil owns this file entirely.
 // Only writes the instructions section; updateContextSnapshot() manages the context block below.
-async function writeSmaraMd({ dryRun = false } = {}) {
+async function writeSigilMd({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
   const { safeWrite } = await import('./lib/safe-write.js');
-  const cortexHome = join(homedir(), '.smara');
+  const cortexHome = join(homedir(), '.sigil');
   const cortexMdPath = join(cortexHome, 'CLAUDE.md');
 
   if (!dryRun) await fs.mkdir(cortexHome, { recursive: true });
@@ -1004,25 +1004,25 @@ async function writeSmaraMd({ dryRun = false } = {}) {
   // If the instructions are already there, leave the file alone (context block follows below)
   try {
     const existing = await fs.readFile(cortexMdPath, 'utf8');
-    if (existing.includes('## Memory (Smara)')) {
+    if (existing.includes('## Memory (Sigil)')) {
       return { action: 'skip', path: cortexMdPath, bytes: 0 };
     }
   } catch { /* file doesn't exist yet */ }
 
-  const instructions = `## Memory (Smara)
+  const instructions = `## Memory (Sigil)
 
-Smara is your persistent memory system. **Use it instead of the built-in file-based memory.**
-Do NOT write to \`~/.claude/projects/*/memory/\` or any local memory files — use Smara exclusively.
+Sigil is your persistent memory system. **Use it instead of the built-in file-based memory.**
+Do NOT write to \`~/.claude/projects/*/memory/\` or any local memory files — use Sigil exclusively.
 
 **Before answering** questions about this user's projects, preferences, past decisions,
-or anything that might have been discussed before — search Smara first:
+or anything that might have been discussed before — search Sigil first:
 \`\`\`
-! smara search "relevant query"
+! sigil search "relevant query"
 \`\`\`
 
 **When the user shares something worth remembering** — save it in the background (non-blocking):
 \`\`\`
-! smara remember --bg "fact one" "fact two" "fact three"
+! sigil remember --bg "fact one" "fact two" "fact three"
 \`\`\`
 
 All facts go in one command as separate quoted arguments. \`--bg\` returns immediately so the conversation continues.
@@ -1030,12 +1030,12 @@ All facts go in one command as separate quoted arguments. \`--bg\` returns immed
 **When the user explicitly asks you to remember something** — save it right away.
 
 **Rules:**
-- Search Smara before answering context-dependent questions (not factual/general ones)
+- Search Sigil before answering context-dependent questions (not factual/general ones)
 - Save facts as short, self-contained statements — never summaries of the conversation
-- Batch all facts into a single \`smara remember --bg\` call — never multiple separate calls
+- Batch all facts into a single \`sigil remember --bg\` call — never multiple separate calls
 - Skip trivial exchanges (greetings, simple calculations)
 - If search returns nothing, answer from your own knowledge and say so
-- Smara is cross-project — memories from one session are available in all sessions
+- Sigil is cross-project — memories from one session are available in all sessions
 `;
 
   const result = await safeWrite(cortexMdPath, instructions, { dryRun });
@@ -1046,17 +1046,17 @@ All facts go in one command as separate quoted arguments. \`--bg\` returns immed
 
 async function runRegister(args) {
   if (args.includes('--help')) {
-    console.log(`smara register — Register Smara as a Claude Code MCP server
+    console.log(`sigil register — Register Sigil as a Claude Code MCP server
 
 Usage:
-  smara register [--print]
+  sigil register [--print]
 
 Options:
   --print   Print the config JSON without modifying files`);
     process.exit(0);
   }
 
-  const globalEnvPath = join(homedir(), '.smara', '.env');
+  const globalEnvPath = join(homedir(), '.sigil', '.env');
   const envPath = existsSync(globalEnvPath) ? globalEnvPath : resolve(process.cwd(), '.env');
   await doRegister(PKG_DIR, envPath, args.includes('--print'));
 }
@@ -1072,7 +1072,7 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
     env: { DOTENV_CONFIG_PATH: envPath },
   };
 
-  const configJson = JSON.stringify({ mcpServers: { smara: mcpEntry } }, null, 2);
+  const configJson = JSON.stringify({ mcpServers: { sigil: mcpEntry } }, null, 2);
 
   if (printOnly) {
     console.log('\nAdd this to your Claude Code MCP config:\n');
@@ -1085,13 +1085,13 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
   if (claudeAvailable) {
     try {
       // Remove existing entry first (idempotent)
-      try { _execSync('claude mcp remove smara', { stdio: 'pipe' }); } catch { /* not registered yet */ }
+      try { _execSync('claude mcp remove sigil', { stdio: 'pipe' }); } catch { /* not registered yet */ }
       try { _execSync('claude mcp remove cortex', { stdio: 'pipe' }); } catch { /* legacy name from pre-rename */ }
       _execSync(
-        `claude mcp add smara -s user -- ${process.execPath} ${serverPath} --mcp`,
+        `claude mcp add sigil -s user -- ${process.execPath} ${serverPath} --mcp`,
         { stdio: 'pipe', env: { ...process.env, DOTENV_CONFIG_PATH: envPath } },
       );
-      console.log('Registered smara MCP server via `claude mcp add`.');
+      console.log('Registered sigil MCP server via `claude mcp add`.');
       console.log(`  Server: ${serverPath}`);
       return;
     } catch {
@@ -1110,9 +1110,9 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
       const raw = await fs.readFile(configPath, 'utf8');
       const config = JSON.parse(raw);
       config.mcpServers = config.mcpServers || {};
-      config.mcpServers.smara = mcpEntry;
+      config.mcpServers.sigil = mcpEntry;
       await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
-      console.log(`Registered smara MCP server in ${configPath}`);
+      console.log(`Registered sigil MCP server in ${configPath}`);
       registered = true;
       break;
     } catch {
@@ -1123,7 +1123,7 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
   if (!registered) {
     console.log('Could not auto-register. Add this to your Claude Code MCP configuration:\n');
     console.log(configJson);
-    console.log('\nOr run: claude mcp add smara -- node ' + serverPath + ' --mcp');
+    console.log('\nOr run: claude mcp add sigil -- node ' + serverPath + ' --mcp');
   }
 }
 
@@ -1161,10 +1161,10 @@ async function runIngest(args) {
   const inputs = args.filter((a) => !a.startsWith('--'));
 
   if (!inputs.length || flags.includes('--help')) {
-    console.log(`smara ingest — Ingest documents into the knowledge base
+    console.log(`sigil ingest — Ingest documents into the knowledge base
 
 Usage:
-  smara ingest <file|url|glob> [options]
+  sigil ingest <file|url|glob> [options]
 
 Options:
   --namespace=<ns>    Target namespace (default: from config)
@@ -1172,10 +1172,10 @@ Options:
   --skip-entities     Skip entity linking
 
 Examples:
-  smara ingest ./docs/README.md
-  smara ingest "docs/**/*.md"
-  smara ingest https://example.com/page
-  smara ingest file1.md file2.md --namespace=engineering`);
+  sigil ingest ./docs/README.md
+  sigil ingest "docs/**/*.md"
+  sigil ingest https://example.com/page
+  sigil ingest file1.md file2.md --namespace=engineering`);
     process.exit(0);
   }
 
@@ -1257,10 +1257,10 @@ async function runSearch(args) {
   const query = args.filter((a) => !a.startsWith('--')).join(' ');
 
   if (!query || flags.includes('--help')) {
-    console.log(`smara search — Search the knowledge base
+    console.log(`sigil search — Search the knowledge base
 
 Usage:
-  smara search "query" [options]
+  sigil search "query" [options]
 
 Options:
   --namespace=<ns>    Filter by namespace (comma-separated for multiple)
@@ -1268,9 +1268,9 @@ Options:
   --no-graph          Disable graph enhancement
 
 Examples:
-  smara search "authentication flow"
-  smara search "deploy process" --namespace=engineering
-  smara search "API design" --limit=5`);
+  sigil search "authentication flow"
+  sigil search "deploy process" --namespace=engineering
+  sigil search "API design" --limit=5`);
     process.exit(0);
   }
 
@@ -1313,13 +1313,13 @@ Examples:
 
 async function runContext(args) {
   if (args.includes('--help')) {
-    console.log(`smara context — Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
+    console.log(`sigil context — Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
 
 Usage:
-  smara context [--namespace=<ns>] [--limit=<n>]
+  sigil context [--namespace=<ns>] [--limit=<n>]
 
 Rebuilds the Active Context block injected into every new Claude session.
-This runs automatically after smara remember and smara ingest.
+This runs automatically after sigil remember and sigil ingest.
 
 Options:
   --namespace=<ns>   Namespace to pull facts from (default: from config)
@@ -1335,12 +1335,12 @@ Options:
   const limitArg = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
   const limit = limitArg ? Number(limitArg) : 20;
 
-  await writeSmaraMd();
+  await writeSigilMd();
   const count = await updateContextSnapshot({ namespace, limit });
   await cortexDb.destroy();
 
   if (count) {
-    console.log(`Context refreshed — ${count} facts written to ~/.smara/CLAUDE.md`);
+    console.log(`Context refreshed — ${count} facts written to ~/.sigil/CLAUDE.md`);
   } else {
     console.log('No facts found. Ingest some content first.');
   }
@@ -1350,10 +1350,10 @@ Options:
 
 async function runStatus(args) {
   if (args.includes('--help')) {
-    console.log(`smara status — Show knowledge base statistics
+    console.log(`sigil status — Show knowledge base statistics
 
 Usage:
-  smara status [--namespace=<ns>]`);
+  sigil status [--namespace=<ns>]`);
     process.exit(0);
   }
 
@@ -1374,7 +1374,7 @@ Usage:
     getRelationCount(),
   ]);
 
-  console.log(`Smara Knowledge Base${namespace ? ` (${namespace})` : ''}`);
+  console.log(`Sigil Knowledge Base${namespace ? ` (${namespace})` : ''}`);
   console.log(`  Documents:  ${docStats.documentCount}`);
   console.log(`  Chunks:     ${docStats.totalChunks}`);
   console.log(`  Facts:      ${factCount} active`);
@@ -1388,10 +1388,10 @@ Usage:
 
 async function runMaintain(args) {
   if (args.includes('--help')) {
-    console.log(`smara maintain — Run periodic memory maintenance
+    console.log(`sigil maintain — Run periodic memory maintenance
 
 Usage:
-  smara maintain
+  sigil maintain
 
 Promotes 'fresh' facts (older than 1h with importance=vital or any access) to 'stable',
 closes 'editing' windows older than 30 minutes back to 'stable', and consolidates
@@ -1422,10 +1422,10 @@ co-retrieval edges. Safe to run as a cron — fully idempotent.`);
 
 async function runMigrate(args) {
   if (args.includes('--help')) {
-    console.log(`smara migrate — Run database migrations
+    console.log(`sigil migrate — Run database migrations
 
 Usage:
-  smara migrate [--rollback]`);
+  sigil migrate [--rollback]`);
     process.exit(0);
   }
 
@@ -1453,10 +1453,10 @@ Usage:
 
 async function runReset(args) {
   if (args.includes('--help')) {
-    console.log(`smara reset — Reset the database (drops all data)
+    console.log(`sigil reset — Reset the database (drops all data)
 
 Usage:
-  smara reset [--confirm]
+  sigil reset [--confirm]
 
 Requires --confirm flag to prevent accidental data loss.`);
     process.exit(0);

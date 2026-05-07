@@ -2,7 +2,7 @@
  * Lifecycle stage manager — runs the periodic transitions between
  * fresh → stable → editing → stable for facts.
  *
- * These run as batch jobs (`smara maintain`), not on hot paths. The hot-path
+ * These run as batch jobs (`sigil maintain`), not on hot paths. The hot-path
  * transition is `stable → editing` on search-hit, which `recordAccess` does
  * inline.
  *
@@ -58,7 +58,7 @@ async function closeEditingWindows() {
 
 /**
  * Snapshot of how facts are distributed across stages — useful for
- * `smara status` and the maintenance summary.
+ * `sigil status` and the maintenance summary.
  */
 async function getLifecycleStats() {
   const rows = await cortexDb('fact_lifecycle')

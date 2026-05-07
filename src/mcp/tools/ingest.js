@@ -7,7 +7,7 @@ import { textResponse } from '../utils.js';
 function registerIngestTool(server) {
   server.tool(
     'ingest',
-    `Ingest a document into the Smara knowledge base. Accepts raw content, a file path, or a URL.
+    `Ingest a document into the Sigil knowledge base. Accepts raw content, a file path, or a URL.
 Parses the content, chunks it, embeds it, extracts facts, links entities, and stores everything for search.
 Use when: adding documents to the knowledge base, ingesting files, URLs, or raw text.`,
     {
