@@ -208,11 +208,26 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     message: 'Embedding provider (for semantic search)',
     options: [
       { value: 'ollama', label: 'Ollama', hint: 'nomic-embed-text — free, runs locally' },
-      { value: 'openai', label: 'OpenAI', hint: 'text-embedding-3-small — requires API key' },
+      { value: 'openai', label: 'OpenAI', hint: 'text-embedding-3-large — requires API key' },
     ],
     initialValue: existing.EMBEDDING_PROVIDER || (hasOllama ? 'ollama' : 'openai'),
   });
   if (isCancel(embeddingProvider)) { cancel('Setup cancelled.'); process.exit(0); }
+
+  // Provider-specific model + dimensions. The DB schema is conditional on
+  // EMBEDDING_DIMENSIONS at migrate time (vector(768) by default; upgrade
+  // migration fires when EMBEDDING_DIMENSIONS >= 1024). Writing both here
+  // BEFORE the migrate step lets the schema match the embedder.
+  //
+  //   Ollama nomic-embed-text → 768d (matches default schema)
+  //   OpenAI text-embedding-3-large → truncated to 1024d via the `dimensions`
+  //   parameter (Matryoshka). Migration upgrades schema vector(768) → vector(1024).
+  const embeddingDefaults = {
+    ollama: { model: 'nomic-embed-text', dimensions: 768 },
+    openai: { model: 'text-embedding-3-large', dimensions: 1024 },
+  };
+  const embeddingModel = existing.EMBEDDING_MODEL || embeddingDefaults[embeddingProvider].model;
+  const embeddingDimensions = Number(existing.EMBEDDING_DIMENSIONS) || embeddingDefaults[embeddingProvider].dimensions;
 
   // ── Ollama health check + model pull ──────────────────────────────────────
   //
@@ -311,6 +326,8 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     anthropicKey ? `ANTHROPIC_API_KEY=${anthropicKey}` : '# ANTHROPIC_API_KEY=',
     '',
     `EMBEDDING_PROVIDER=${embeddingProvider}`,
+    `EMBEDDING_MODEL=${embeddingModel}`,
+    `EMBEDDING_DIMENSIONS=${embeddingDimensions}`,
     `OLLAMA_HOST=http://localhost:11434`,
     '',
     `DEFAULT_NAMESPACE=${namespace}`,
