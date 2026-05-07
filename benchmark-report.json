@@ -1,0 +1,120 @@
+{
+  "timestamp": "2026-04-24T07:33:16.034Z",
+  "config": {
+    "llmProvider": "openai",
+    "embeddingProvider": "auto-detect",
+    "embeddingModel": "nomic-embed-text"
+  },
+  "knowledgeBase": {
+    "documentsBefore": 53,
+    "documentsAfter": 53,
+    "factsBefore": 289,
+    "factsAfter": 289
+  },
+  "ingestion": {
+    "totalTimeMs": 13,
+    "documents": 5,
+    "chunks": 0,
+    "factsExtracted": 0,
+    "avgPerDocMs": 3
+  },
+  "search": {
+    "avgMs": 41,
+    "p50Ms": 37,
+    "p95Ms": 81,
+    "minMs": 34,
+    "maxMs": 81,
+    "queries": 10
+  },
+  "quality": {
+    "overallRecall": 76.9,
+    "tests": [
+      {
+        "query": "what database do we use",
+        "recall": 100,
+        "hits": 2,
+        "total": 2,
+        "missing": []
+      },
+      {
+        "query": "how does authentication work",
+        "recall": 100,
+        "hits": 3,
+        "total": 3,
+        "missing": []
+      },
+      {
+        "query": "what frontend framework",
+        "recall": 50,
+        "hits": 1,
+        "total": 2,
+        "missing": [
+          "14"
+        ]
+      },
+      {
+        "query": "deployment process",
+        "recall": 67,
+        "hits": 2,
+        "total": 3,
+        "missing": [
+          "rollback"
+        ]
+      },
+      {
+        "query": "testing strategy",
+        "recall": 33,
+        "hits": 1,
+        "total": 3,
+        "missing": [
+          "Playwright",
+          "mock"
+        ]
+      },
+      {
+        "query": "what are my coding preferences",
+        "recall": 67,
+        "hits": 2,
+        "total": 3,
+        "missing": [
+          "tab"
+        ]
+      },
+      {
+        "query": "how to rollback a deploy",
+        "recall": 100,
+        "hits": 3,
+        "total": 3,
+        "missing": []
+      },
+      {
+        "query": "rate limiting",
+        "recall": 100,
+        "hits": 3,
+        "total": 3,
+        "missing": []
+      },
+      {
+        "query": "why did we choose PostgreSQL",
+        "recall": 67,
+        "hits": 2,
+        "total": 3,
+        "missing": [
+          "MySQL"
+        ]
+      },
+      {
+        "query": "message queue",
+        "recall": 100,
+        "hits": 1,
+        "total": 1,
+        "missing": []
+      }
+    ]
+  },
+  "audm": {
+    "reingestionSkipped": "5/5",
+    "paraphraseAction": "SKIP",
+    "newFactAction": "SKIP"
+  }
+}

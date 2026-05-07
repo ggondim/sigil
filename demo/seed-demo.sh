@@ -141,7 +141,7 @@ sigil remember \
   "API responses wrap in {ok, data?, error?} per ADR-001 (March 2026)" \
   "Canary deploys: 5% for 30min, then 25%, then full cutover; rollback via LaunchDarkly killswitch" \
   "Use property-based tests via fast-check for any pure function with a non-trivial input space" \
-  "I always pair with Rohan on auth work; he owns the @platform/auth package" \
+  "On auth work I always pair with Rohan; Rohan owns the @platform/auth package" \
   "When stuck on a Postgres migration, check pgbouncer pool exhaustion before query plans" \
   >/dev/null
 

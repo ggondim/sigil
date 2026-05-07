@@ -23,12 +23,44 @@ async function insertEntity({ name, entityType, description, namespace, external
   return entity;
 }
 
+// Find an active entity by canonical name OR by any of its aliases.
+// Aliases are stored already-lowercased (see pushAlias), so the alias side
+// of the OR is a direct array containment check; no LOWER() needed there.
 async function findByName(name, namespace) {
+  const ns = namespace || config.defaults.namespace;
+  const lower = name.toLowerCase();
+
   return cortexDb('entity')
-    .whereRaw('LOWER(name) = LOWER(?)', [name])
-    .where({ namespace: namespace || config.defaults.namespace })
+    .where({ namespace: ns })
     .whereNull('mergedWith')
+    .where(function () {
+      this.whereRaw('LOWER(name) = ?', [lower])
+          .orWhereRaw('aliases @> ARRAY[?]::text[]', [lower]);
+    })
     .first() || null;
+}
+
+// Push an old name into the entity's aliases array. Idempotent — won't
+// duplicate if already present. Always stores lowercased; the canonical
+// `name` field keeps the as-authored case.
+async function pushAlias(entityId, oldName) {
+  if (!oldName) return;
+  const lower = oldName.toLowerCase();
+  await cortexDb.raw(`
+    UPDATE entity
+    SET aliases = (
+      SELECT ARRAY(SELECT DISTINCT unnest(aliases || ARRAY[?]::text[]))
+    )
+    WHERE id = ?
+  `, [lower, entityId]);
+}
+
+// Update the canonical display name. Caller is responsible for pushing
+// the prior name into aliases first if continuity matters.
+async function updateName(entityId, newName) {
+  await cortexDb('entity')
+    .where({ id: entityId })
+    .update({ name: newName });
 }
 
 async function findByUid(uid) {
@@ -144,4 +176,6 @@ export {
   listByType,
   getEntityCount,
   searchByName,
+  pushAlias,
+  updateName,
 };

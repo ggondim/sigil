@@ -884,12 +884,19 @@ Examples:
   const config = (await import('./config.js')).default;
   const cortexDb = (await import('./db/cortex.js')).default;
 
-  // Ingest all facts in parallel
-  const results = await Promise.all(
-    facts.map((text) =>
-      ingestDocument({ content: text, namespace: config.defaults.namespace, classify: true }),
-    ),
-  );
+  // Ingest sequentially. Parallel ingests with shared topics ("auth",
+  // "TypeScript", "Smara") race on entity creation AND on entity-rename
+  // updates — Stage 4's insert-on-conflict handles the create race, but
+  // updateName can still hit a unique-violation when two ingests try to
+  // rename different entity rows to the same canonical name. Sequential
+  // is ~Nx slower for N facts but eliminates the contention class entirely
+  // and preserves AUDM's pairwise dedup invariants. (`sigil remember A B C`
+  // typical: 3 facts × ~1.5s = 4.5s, fine for any UX.)
+  const results = [];
+  for (const text of facts) {
+    const result = await ingestDocument({ content: text, namespace: config.defaults.namespace, classify: true });
+    results.push(result);
+  }
 
   let totalAdded = 0;
   let totalUpdated = 0;

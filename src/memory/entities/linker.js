@@ -59,15 +59,22 @@ async function linkCustomEntities({ entityDefs, factObjects, firstFactId, namesp
   const resolvedByName = {};
   let relationCount = 0;
 
-  // Resolve all declared entities
+  const episodeText = factObjects.map((f) => f.content).filter(Boolean).join('\n');
+
+  // Resolve all declared entities; thread the cohort so each resolveEntity
+  // can consider previously-resolved entities as Stage 3 candidates.
+  const cohort = [];
   for (const item of entityDefs.items) {
     const entity = await resolveEntity({
       name: item.name,
       entityType: item.type,
       description: item.description,
       namespace,
+      episodeText,
+      episodeEntityIds: cohort,
     });
     resolvedByName[item.name] = entity;
+    if (entity?.id) cohort.push(entity.id);
   }
 
   // Create declared relations
@@ -92,9 +99,7 @@ async function linkCustomEntities({ entityDefs, factObjects, firstFactId, namesp
   let factEntityLinks = 0;
 
   for (const fact of factObjects) {
-    const mentioned = allEntities.filter(
-      (e) => fact.content?.toLowerCase().includes(e.name.toLowerCase()),
-    );
+    const mentioned = allEntities.filter((e) => factMentionsEntity(fact.content, e));
     if (mentioned.length) {
       await linkEntitiesToFact(fact.id, mentioned);
       factEntityLinks += mentioned.length;
@@ -111,23 +116,42 @@ async function linkCustomEntities({ entityDefs, factObjects, firstFactId, namesp
 
 async function linkDefaultEntities({ title, sourceType, metadata, factObjects, firstFactId, namespace, today }) {
   if (!title) {
-    // Thoughts have no title — skip document entity, only resolve topics
+    // Thoughts have no title — skip the document entity creation, but
+    // still resolve topics AND link them to the underlying facts so that
+    // search-time graph traversal can find a thought via its topic
+    // entity. (Earlier behaviour returned early without linking, leaving
+    // every thought-route fact orphaned in fact_entity. Renames in
+    // particular relied on these links being present so that the renamed
+    // entity's UUID still points at the historical text.)
     const topics = factObjects.length
       ? await resolveTopicsFromFacts(factObjects, { promptPath: ENTITY_PROMPT, namespace })
       : [];
+
+    let factEntityLinks = 0;
+    for (const fact of factObjects) {
+      const mentioned = topics.filter((e) => factMentionsEntity(fact.content, e));
+      if (mentioned.length) {
+        await linkEntitiesToFact(fact.id, mentioned);
+        factEntityLinks += mentioned.length;
+      }
+    }
+
     return {
       entityCount: topics.length,
       relationCount: 0,
-      factEntityLinks: 0,
+      factEntityLinks,
       topics: topics.map((e) => e.name),
     };
   }
+
+  const docEpisodeText = factObjects.map((f) => f.content).filter(Boolean).join('\n').slice(0, 2000);
 
   const docEntity = await resolveEntity({
     name: title,
     entityType: 'document',
     description: `${sourceType} document: ${title}`,
     namespace,
+    episodeText: docEpisodeText,
   });
 
   let authorEntity = null;
@@ -136,6 +160,8 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
       name: metadata.author,
       entityType: 'person',
       namespace,
+      episodeText: docEpisodeText,
+      episodeEntityIds: docEntity?.id ? [docEntity.id] : [],
     });
   }
 
@@ -172,9 +198,7 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
   let factEntityLinks = 0;
 
   for (const fact of factObjects) {
-    const mentioned = allEntities.filter(
-      (e) => fact.content?.toLowerCase().includes(e.name.toLowerCase()),
-    );
+    const mentioned = allEntities.filter((e) => factMentionsEntity(fact.content, e));
     if (mentioned.length) {
       await linkEntitiesToFact(fact.id, mentioned);
       factEntityLinks += mentioned.length;
@@ -193,6 +217,25 @@ function findFactMentioning(facts, term) {
   if (!term) return null;
   const lower = term.toLowerCase();
   return facts.find((f) => f.content?.toLowerCase().includes(lower)) || null;
+}
+
+// True if a fact's text mentions an entity by its canonical name OR by any
+// stored alias. Word-boundary check on the fact text — using includes() would
+// give false positives ("Sigil" matching "Sigilum"). Aliases are already
+// lowercased in storage; the canonical name is lowercased here.
+function factMentionsEntity(content, entity) {
+  if (!content || !entity?.name) return false;
+  const text = content.toLowerCase();
+  const candidates = [entity.name.toLowerCase(), ...(entity.aliases || [])];
+  return candidates.some((c) => {
+    if (!c) return false;
+    const re = new RegExp(`\\b${escapeRegex(c)}\\b`);
+    return re.test(text);
+  });
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export { linkDocumentEntities };
