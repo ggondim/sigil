@@ -2,14 +2,15 @@
 
 # Sigil
 
-### Persistent memory for Claude Code.<br/>Local-first. Zero-cloud. Two commands to install.
+### Persistent memory for AI coding agents.
 
-Claude doesn't remember what you decided yesterday. Sigil does.<br/>
-Every prompt, every session — your context is already there.
+Local-first knowledge engine. Atomic facts, entity graph, hybrid retrieval.<br/>
+**Auto-integrated with Claude Code** via hooks. **Works with any MCP client** — Cursor, Continue, Cline, Windsurf, anything that speaks the protocol.
 
 ```bash
 npm install -g @anmolsrv/sigil
-sigil init
+sigil init        # Claude Code: full auto-integration
+sigil register    # any other agent: get the MCP server config
 ```
 
 [![npm](https://img.shields.io/npm/v/@anmolsrv%2Fsigil)](https://www.npmjs.com/package/@anmolsrv/sigil)
@@ -18,13 +19,13 @@ sigil init
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle%20n%3D100-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
 [![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
 
-[**Quickstart**](#quickstart) · [How it works](#how-it-works) · [Benchmarks](#benchmarks) · [Commands](#commands) · [FAQ](#faq)
+[**Quickstart**](#quickstart) · [How it works](#how-it-works) · [Other agents](#use-with-other-agents) · [Benchmarks](#benchmarks) · [Commands](#commands) · [FAQ](#faq)
 
 </div>
 
 ---
 
-## The 30-second demo
+## The 30-second demo (Claude Code)
 
 ```bash
 # Tell Sigil something once
@@ -39,52 +40,58 @@ sigil remember "We use canary deploys: 5% for 30min, then 25%, then full cutover
 
 That's the whole pitch. **One command to remember. Zero commands to recall.** The hook handles it.
 
+For Cursor / Continue / Cline / etc., the CLI half is the same — only the recall mechanism changes. Your agent calls the `search` MCP tool when it needs context. See [Use with other agents](#use-with-other-agents) below.
+
 ---
 
 ## What you actually get
 
-- **Persistent memory** across every Claude Code session, every project, every day
+- **Persistent memory** across every session, every project, every day — regardless of which agent you're using
 - **Hybrid retrieval** — vector + keyword fused via Reciprocal Rank Fusion, with optional read-time synthesis. **R@10 = 100%** on LongMemEval oracle split (n=100, ~25 chunks per haystack — full caveats in [RESULTS.md](./eval/longmemeval/RESULTS.md))
 - **Local-first** — embedded PGlite or real Postgres, your choice. No cloud. No telemetry. No vendor lock-in.
 - **Free by default** — Ollama embeddings + Claude Code subscription. No API keys required to start. Voyage / OpenAI / Anthropic supported as paid upgrades for top-tier quality.
-- **Native Claude Code integration** — `UserPromptSubmit` hook injects relevant memory before every prompt; `PostToolUse` hook silently captures decisions; MCP tools for direct agent control
+- **MCP-native** — 7-tool MCP server works with Claude Code, Cursor, Continue, Cline, Windsurf, ChatGPT desktop, or any other tool that speaks the [Model Context Protocol](https://modelcontextprotocol.io/)
+- **Deep Claude Code integration** — three hooks on top of MCP: `UserPromptSubmit` injects relevant memory before every prompt, `PostToolUse` captures observations from Edit/Write/Bash, `Stop` auto-extracts memorable user statements. No `! sigil remember` calls needed.
 - **Three-layer knowledge model** — chunks (raw text), facts (atomic statements with confidence/importance/temporal validity), entity graph (typed nodes + relations). Not a flat vector store.
 
 ---
 
 ## Why it exists
 
-Every time you open Claude Code, it starts from zero. You re-explain the same architecture, watch Claude repeat mistakes you corrected last week, lose hours to context-loading that should be instant.
+Every time you open an AI coding agent — Claude Code, Cursor, Continue, anything — it starts from zero. You re-explain the same architecture. You watch the agent repeat mistakes you corrected last week. You lose hours to context-loading that should be instant.
 
-Sigil is a thin local layer that fixes this. It runs invisibly via Claude Code hooks and the Model Context Protocol — your memory is just *there*, in every session, on every machine you install it on.
+Sigil is a thin local layer that fixes this. The memory is *just there*, in every session, on every project, on every machine you install it on. With Claude Code it runs invisibly via hooks. With other MCP clients it shows up as a tool the agent can call. With anything else there's a CLI and REST API.
 
-No cloud, no subscription, no API key required (with your Claude Code subscription).
+No cloud, no subscription, no API key required to get started.
 
 ---
 
 ## Quickstart
 
 ```bash
-# Install globally
 npm install -g @anmolsrv/sigil
-
-# One-time setup (30 seconds)
-sigil init
-
-# That's it. Open Claude Code and start a new session.
 ```
+
+Then pick the path for your agent.
+
+### Claude Code (full auto-integration)
+
+```bash
+sigil init
+```
+
+That's it. Open Claude Code and start a new session — your memory is already wired in.
 
 `sigil init` runs an interactive wizard that:
 1. Asks for your LLM provider (Claude Code subscription is default — zero API key needed)
 2. Sets up a local PGlite database at `~/.sigil/db` (no Docker, no Postgres server)
-3. Registers hooks in `~/.claude/settings.json` so Claude auto-uses memory
-4. Adds `@~/.sigil/CLAUDE.md` to your global Claude config
+3. Registers three hooks in `~/.claude/settings.json` (UserPromptSubmit, PostToolUse, Stop) so Claude reads, writes, and updates memory automatically
+4. Adds `@~/.sigil/CLAUDE.md` to your global Claude config so a top-20 hot-facts snapshot is always in context
 
 No other steps. No cloud setup.
 
 ```bash
-# Verify everything works
-sigil doctor
+sigil doctor   # verify everything works
 ```
 
 ```
@@ -97,10 +104,24 @@ Sigil diagnostic
   ✓ Embedding provider — ollama / nomic-embed-text
   ✓ UserPromptSubmit hook — registered
   ✓ PostToolUse hook — registered
+  ✓ Stop hook — registered (auto-saves memorable user statements)
   ✓ Sigil CLAUDE.md — ~/.sigil/CLAUDE.md
 
 All checks passed.
 ```
+
+### Cursor / Continue / Cline / any other MCP client
+
+```bash
+sigil init           # set up the DB + LLM provider (skip the Claude integration step when prompted)
+sigil register --print
+```
+
+`sigil register --print` outputs the standard MCP server config JSON. Drop it into your client's MCP config — see the [Use with other agents](#use-with-other-agents) section for per-client paths and exact snippets.
+
+### CLI only / programmatic / other
+
+The CLI works in any terminal regardless of agent — `sigil remember`, `sigil search`, `sigil ingest`. There's also a REST API (`node $(npm root -g)/@anmolsrv/sigil/dist/server.js`) for programmatic integration.
 
 ---
 
@@ -145,14 +166,15 @@ Results in ~30ms on a knowledge base of thousands of facts.
 
 ## Claude Code integration
 
-Sigil integrates with Claude Code in three complementary ways:
+Sigil's Claude Code integration is the deepest of any agent because Claude Code exposes hooks. With other agents you get the MCP tools (good) but not the auto-injection (better). Three complementary layers:
 
 ### 1. Hooks (automatic, invisible)
 
-`sigil init` registers two hooks in `~/.claude/settings.json`:
+`sigil init` registers three hooks in `~/.claude/settings.json`:
 
 - **`UserPromptSubmit`** — On every user prompt, searches Sigil for relevant facts and injects them as `additionalContext`. Claude sees the memory automatically.
 - **`PostToolUse`** — On every Edit/Write/Bash, captures a lightweight observation in the background.
+- **`Stop`** — After every assistant turn, an LLM classifier scans the latest user message for preferences, decisions, constraints, and corrections, then calls `sigil remember` for anything memorable. Reliable saving without depending on Claude to remember to call it.
 
 No `! sigil search` or `! sigil remember` commands needed. Memory is invisible.
 
@@ -166,9 +188,9 @@ Refreshed automatically after every `sigil remember` and `sigil ingest`. Manual 
 sigil context
 ```
 
-### 3. MCP tools (on-demand)
+### 3. MCP tools (on-demand, also available to other clients)
 
-Sigil registers as an MCP server with 7 tools for deep knowledge access:
+Sigil exposes a 7-tool MCP server for deep knowledge access. Claude Code can call these directly; so can Cursor, Continue, and any other MCP client.
 
 | Tool | Purpose |
 |------|---------|
@@ -178,13 +200,75 @@ Sigil registers as an MCP server with 7 tools for deep knowledge access:
 | `get_fact_context` | Full detail on a fact (provenance, source document, entities) |
 | `get_entity_context` | Full detail on an entity (relations, facts, mentions) |
 | `status` | Knowledge base statistics |
-| `ingest` | Ingest content via Claude |
+| `ingest` | Ingest content via the agent |
 
-To register:
+For Claude Code, `sigil register` wires it up via `claude mcp add`. For other clients see [Use with other agents](#use-with-other-agents) below.
+
+---
+
+## Use with other agents
+
+Anything that speaks the [Model Context Protocol](https://modelcontextprotocol.io/) can use Sigil. The MCP server is the same regardless of host; only the registration path differs.
+
+`sigil register --print` outputs the standard config snippet:
+
+```json
+{
+  "mcpServers": {
+    "sigil": {
+      "command": "/usr/local/bin/node",
+      "args": ["/path/to/global/node_modules/@anmolsrv/sigil/dist/server.js", "--mcp"],
+      "env": { "DOTENV_CONFIG_PATH": "/Users/you/.sigil/.env" }
+    }
+  }
+}
+```
+
+Drop the inner `sigil: {...}` object into your client's `mcpServers` config:
+
+| Client | Config file |
+|--------|-------------|
+| **Cursor** | `~/.cursor/mcp.json` (or Settings → MCP) |
+| **Continue.dev** | `~/.continue/config.json` under `experimental.modelContextProtocolServers` |
+| **Cline** (VS Code) | `cline_mcp_settings.json` in your VS Code user dir |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
+| **ChatGPT desktop** | Settings → Integrations → MCP servers |
+| **Anything else** | Any MCP-spec client; use `sigil register --print` to get the JSON |
+
+Once registered, your agent gets the 7 tools above. Behaviorally:
+
+- **The agent must choose to call them.** Unlike Claude Code's hooks, there's no auto-injection layer — your agent sees the tools and decides when to use them. Most agents do this well if their system prompt mentions the available tools; some need explicit nudging.
+- **Capture relies on the agent.** Without Claude Code's `Stop` hook, you'll need to either tell your agent to call `ingest`/`remember` when something noteworthy comes up, or run `sigil remember` from the CLI yourself.
+- **Hot-context is Claude Code only.** Other clients don't have a `@import`-style mechanism for always-loaded context. The MCP `search` tool gives equivalent on-demand capability.
+
+If your agent supports custom system prompts or per-session instructions, paste this in to encourage proactive memory use:
+
+> You have access to a persistent memory system called Sigil. Before answering questions about the user's projects, preferences, or past decisions, call `sigil_search` with a relevant query. When the user shares preferences ("I prefer X"), decisions ("we use X"), or constraints ("we can't use X because…"), call `sigil_ingest` to save them.
+
+### CLI-only mode
+
+You don't need an MCP client at all. The CLI is fully functional standalone:
 
 ```bash
-sigil register
+sigil remember "Project uses Postgres 15 with pgbouncer"
+sigil search "database conventions"
+sigil ingest ./docs/architecture.md
+sigil ingest "https://example.com/postmortem"
 ```
+
+This is the right mode for: scripts, CI pipelines, agent fleets that don't speak MCP, or just keeping a personal knowledge base.
+
+### REST API
+
+For programmatic access from your own code:
+
+```bash
+node $(npm root -g)/@anmolsrv/sigil/dist/server.js
+# Listens on PORT (default 4000)
+# POST /api/ingest, GET /api/search, GET /api/entities, etc.
+```
+
+Auth via `sigil keys create --name=myapp`. Full route list: `src/api/routes/`.
 
 ---
 
@@ -206,7 +290,7 @@ sigil register
 | `sigil status` | Knowledge base statistics |
 | `sigil migrate` | Run database migrations |
 | `sigil reset --confirm` | Reset the database (drops all data) |
-| `sigil register` | Register as a Claude Code MCP server |
+| `sigil register [--print]` | Register the MCP server (auto for Claude Code; `--print` outputs JSON for any other client) |
 
 ---
 
@@ -345,8 +429,8 @@ Hook hot-path latency (cold Node start + PGlite WASM init + DB connect + search)
 
 ## FAQ
 
-**Q: Does Sigil work with Cursor / Windsurf / other MCP clients?**
-A: The MCP interface works with any MCP client. The hooks are Claude Code specific. Cursor integration requires manual MCP registration.
+**Q: Does Sigil work with Cursor / Windsurf / Continue / Cline / ChatGPT desktop?**
+A: Yes — anything that speaks MCP can use Sigil's 7-tool server. See [Use with other agents](#use-with-other-agents) for per-client config paths and the JSON snippet to drop in. You lose Claude Code's auto-injection (UserPromptSubmit hook) and auto-saving (Stop hook); your agent calls the MCP tools when it decides to. In practice this means a slightly less invisible experience — the agent has to remember to call `search` and `ingest` — but the underlying memory engine is the same.
 
 **Q: Does my data leave my machine?**
 A: No. Everything runs locally by default (PGlite + Ollama). If you pick the OpenAI or Anthropic LLM provider, the text sent for fact extraction leaves your machine during ingestion. Embeddings with Ollama stay local. Claude Code provider uses your existing subscription without extra data egress.
@@ -387,4 +471,4 @@ ISC. Use it. Fork it. Ship with it.
 
 ---
 
-Made by [Anmol](https://github.com/Anmol-Srv). Built because every AI coding session starting from zero was driving me crazy.
+Made by [Anmol](https://github.com/Anmol-Srv). Built because every AI coding session starting from zero was driving me crazy. Started Claude-Code-first because that's where I work; built MCP-native from day one because I expected to switch tools eventually and didn't want to rewrite the memory layer.
