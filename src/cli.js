@@ -1497,10 +1497,15 @@ Usage:
 
 async function runReset(args) {
   if (args.includes('--help')) {
-    console.log(`sigil reset — Reset the database (drops all data)
+    console.log(`sigil reset — Reset the database and unwire the @import from ~/.claude/CLAUDE.md
 
 Usage:
   sigil reset [--confirm]
+
+Drops all data and removes the '@~/.sigil/CLAUDE.md' import line from
+~/.claude/CLAUDE.md so Claude Code stops loading the (now stale) hot-context
+snapshot. Hooks in ~/.claude/settings.json are NOT touched — they keep
+firing against the empty DB until you re-run 'sigil init'.
 
 Requires --confirm flag to prevent accidental data loss.`);
     process.exit(0);
@@ -1516,9 +1521,66 @@ Requires --confirm flag to prevent accidental data loss.`);
 
   await cortexDb.migrate.rollback({ directory: migrationDir }, true);
   await cortexDb.migrate.latest({ directory: migrationDir });
-
-  console.log('Database reset complete. All migrations re-applied.');
   await cortexDb.destroy();
+
+  // Unwire the @import from ~/.claude/CLAUDE.md so Claude Code stops loading
+  // the now-empty hot-context snapshot. Idempotent — silently no-ops if the
+  // line is absent or the file doesn't exist.
+  const importRemoved = await removeClaudeMdImport();
+
+  // Wipe the hot-context block inside ~/.sigil/CLAUDE.md too, since Active
+  // Context referencing facts that no longer exist would mislead anyone who
+  // reads the file directly. The instructions block is preserved.
+  await clearHotContextBlock();
+
+  const lines = ['Database reset complete. All migrations re-applied.'];
+  if (importRemoved) lines.push('Removed @import from ~/.claude/CLAUDE.md.');
+  lines.push("Run 'sigil init' to re-register Claude integration.");
+  console.log(lines.join('\n'));
+}
+
+// Strip exactly the cortex/smara/sigil @import lines from ~/.claude/CLAUDE.md.
+// Matches all three legacy paths so a reset under sigil cleans up after a
+// pre-rename install too. Returns true if anything was removed.
+async function removeClaudeMdImport() {
+  const fs = await import('node:fs/promises');
+  const claudeMdPath = join(homedir(), '.claude', 'CLAUDE.md');
+  if (!existsSync(claudeMdPath)) return false;
+
+  const before = await fs.readFile(claudeMdPath, 'utf8');
+  const home = homedir();
+  const importPaths = [
+    join(home, '.sigil', 'CLAUDE.md'),
+    join(home, '.smara', 'CLAUDE.md'),
+    join(home, '.cortex', 'CLAUDE.md'),
+  ];
+
+  let after = before;
+  for (const p of importPaths) {
+    const re = new RegExp(`^@${escapeRegex(p)}\\s*\\n?`, 'gm');
+    after = after.replace(re, '');
+  }
+
+  if (after === before) return false;
+  await fs.writeFile(claudeMdPath, after, 'utf8');
+  return true;
+}
+
+// Clear only the <!-- sigil-context --> block from ~/.sigil/CLAUDE.md.
+// The instructions block above it is preserved so 'sigil init' won't need
+// to re-write the file from scratch on the next run.
+async function clearHotContextBlock() {
+  const fs = await import('node:fs/promises');
+  const cortexMdPath = join(homedir(), '.sigil', 'CLAUDE.md');
+  if (!existsSync(cortexMdPath)) return;
+
+  const before = await fs.readFile(cortexMdPath, 'utf8');
+  const after = before.replace(/<!-- sigil-context -->[\s\S]*?<!-- sigil-context -->\s*/g, '');
+  if (after !== before) await fs.writeFile(cortexMdPath, after, 'utf8');
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 
