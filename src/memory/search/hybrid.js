@@ -130,24 +130,51 @@ async function detectEntity(query, namespaces) {
   return results[0] || null;
 }
 
-// Entity detected: fetch entity facts + relations in parallel with hybrid search, then merge
+// Entity detected: fetch entity facts + relations in parallel with hybrid
+// search across the canonical name + every alias, then merge.
+//
+// This is the bridge across renames. When the user asks "Sigil" and the
+// canonical entity has aliases=["smara"], the original cosine/keyword
+// search for "Sigil" can't see fact text that still says "Smara." Running
+// a parallel search for each alias and merging the result sets lets those
+// historical facts surface — without rewriting fact text.
 async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories }) {
-  const [entityFacts, entityRelations, hybridResult] = await Promise.all([
+  const queryVariants = buildAliasQueryVariants(query, entity);
+
+  const variantEmbeddings = await embedBatch(queryVariants, { inputType: 'query' });
+
+  const [entityFacts, entityRelations, ...hybridResults] = await Promise.all([
     getFactsForEntity(entity.id, { limit }),
     listRelationsForEntity(entity.id, { limit: 15 }),
-    coreHybridSearch(query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories }),
+    ...queryVariants.map((q, i) => coreHybridSearch(q, {
+      queryEmbedding: variantEmbeddings[i],
+      namespaces, limit, minConfidence, includeChunks, pointInTime, categories,
+    })),
   ]);
 
   // Entity-linked facts get highest priority
   const entityFactsMarked = entityFacts.map((f) => ({ ...f, source: 'entity' }));
 
-  // Hybrid facts fill remaining slots, deduped against entity facts
+  // Merge facts across all query variants (canonical + each alias) by RRF.
+  // multiQueryMerge already handles inter-variant ranking — duplicates the
+  // same fact across variants accumulate score, which is what we want for
+  // facts that match multiple alias forms.
+  const mergedHybridFacts = multiQueryMerge(hybridResults.map((r) => r.facts), limit * 2);
+
+  // Then dedupe the merged hybrid set against the entity-linked facts so
+  // facts already pulled by entity_id don't get listed twice.
   const seenIds = new Set(entityFactsMarked.map((f) => f.id));
-  const hybridExtra = hybridResult.facts
+  const hybridExtra = mergedHybridFacts
     .filter((f) => !seenIds.has(f.id))
     .map((f) => ({ ...f, source: 'search' }));
 
   const facts = [...entityFactsMarked, ...hybridExtra].slice(0, limit);
+
+  // Same merge for chunks (chunks aren't entity-linked, so this is the
+  // ONLY way historical-name chunks surface for a renamed query).
+  const chunks = includeChunks
+    ? multiQueryMerge(hybridResults.map((r) => r.chunks || []), limit)
+    : [];
 
   const relatedEntities = entityRelations.map((r) => ({
     id: r.entityId,
@@ -160,16 +187,66 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
 
   return {
     facts,
-    chunks: includeChunks ? hybridResult.chunks : [],
+    chunks,
     matchedEntity: {
       id: entity.id,
       name: entity.name,
       type: entity.entityType,
       mentions: entity.mentionCount,
       description: entity.description || null,
+      aliases: entity.aliases || [],
     },
     relatedEntities,
   };
+}
+
+// Generate query variants by substituting the canonical entity name with
+// each alias. If the original query doesn't contain the canonical name as
+// a word (e.g. user typed an alias directly), fall back to running a
+// search for the alias as-is so chunks/facts using either form still
+// surface.
+//
+// Original  : "What did we decide about Sigil?"
+// Variants  : ["What did we decide about Sigil?", "What did we decide about smara?"]
+//
+// Original  : "Smara"   (alias typed directly; entity has canonical name "Sigil")
+// Variants  : ["Smara"]   — no canonical-name occurrence to substitute, but the
+//                          query already matches the alias, so the original is fine.
+function buildAliasQueryVariants(query, entity) {
+  const variants = [query];
+  const aliases = (entity.aliases || []).filter((a) => typeof a === 'string' && a.trim());
+  if (!aliases.length) return variants;
+
+  const canonical = (entity.name || '').trim();
+  const seen = new Set([query.toLowerCase()]);
+
+  for (const alias of aliases) {
+    let v = query;
+    if (canonical) {
+      const re = new RegExp(`\\b${escapeRegex(canonical)}\\b`, 'gi');
+      if (re.test(v)) {
+        v = v.replace(re, alias);
+      } else {
+        // No canonical occurrence to replace — also include the alias as
+        // a bare query so vector/keyword can hit historical text.
+        if (!seen.has(alias.toLowerCase())) {
+          variants.push(alias);
+          seen.add(alias.toLowerCase());
+        }
+        continue;
+      }
+    }
+    if (!seen.has(v.toLowerCase())) {
+      variants.push(v);
+      seen.add(v.toLowerCase());
+    }
+  }
+
+  return variants;
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // No entity match: expand query into variants, search all in parallel, merge
