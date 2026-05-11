@@ -129,7 +129,7 @@ sigil migrate >/dev/null
 # timeline. The remember calls themselves run today, but the FACTS reference
 # decisions made over the past two months.
 
-echo "▸ Saving 12 preference / decision facts..."
+echo "▸ Saving preference / decision facts..."
 sigil remember \
   "I prefer TypeScript strict mode; never use 'any' without an escape-hatch '// reason: ...' comment" \
   "Named exports only — never default exports" \
@@ -143,12 +143,30 @@ sigil remember \
   "Use property-based tests via fast-check for any pure function with a non-trivial input space" \
   "On auth work I always pair with Rohan; Rohan owns the @platform/auth package" \
   "When stuck on a Postgres migration, check pgbouncer pool exhaustion before query plans" \
+  "New services start from the github.com/our-org/service-template repo — never hand-bootstrap" \
+  "API framework for new services is Hono on Bun; we picked Hono over Fastify in February for faster cold-start on Fly.io" \
+  "Use Drizzle ORM, never Prisma — Prisma prepared-statement cache fights pgbouncer transaction-pooling under load" \
+  "Package manager is pnpm; workspaces support is non-negotiable" \
+  "Lint and format via Biome — replaced ESLint + Prettier in March 2026" \
+  "Deploy target is Fly.io; new services start at min_machines_running=1, max_machines=3" \
+  "Every service ships with /health endpoint returning {ok, version, uptime, dependencies}; BetterStack pings it every 30s" \
+  "Structured logging via pino in every service; no console.log in production paths" \
+  "Graceful SIGTERM handler is mandatory — Fly deploys lose in-flight requests without it" \
+  "Frontend framework is Next.js 15 App Router; server components by default, opt into 'use client' deliberately" \
   >/dev/null
 
 # ─── 5. Ingest the corpus documents ──────────────────────────────────────────
 
-echo "▸ Ingesting 4 corpus documents..."
-for doc in adr-001-response-envelope.md adr-008-removed-redis.md postmortem-stripe-webhook-2026-04-25.md style-guide.md; do
+echo "▸ Ingesting corpus documents..."
+for doc in \
+  adr-001-response-envelope.md \
+  adr-008-removed-redis.md \
+  postmortem-stripe-webhook-2026-04-25.md \
+  style-guide.md \
+  tech-stack.md \
+  new-service-checklist.md \
+  bootstrap-lessons.md
+do
   echo "    - $doc"
   sigil ingest "$CORPUS/$doc" >/dev/null
 done

@@ -1026,6 +1026,32 @@ async function registerHooks({ dryRun = false } = {}) {
   };
 }
 
+// Resolves the command Claude should use to call sigil from a Bash tool.
+// Claude Code's Bash subprocess doesn't always inherit the user's shell PATH
+// (it doesn't source nvm, brew, etc.), so a bare `sigil` reference fails
+// with "command not found." We bake the absolute install path into the
+// template at init time so every call from the model lands a real binary.
+//
+// Detection order:
+//   1. `which sigil` — finds the installed bin symlink (preferred — uses
+//      the user's regular shell PATH at the moment init runs).
+//   2. `process.argv[1]` — the path to the running CLI script. Always
+//      absolute, executable via shebang. Used as `node <path>` if the
+//      script isn't directly executable.
+function resolveSigilInvocation() {
+  // Try `which sigil` first
+  try {
+    const path = _execSync('which sigil', { stdio: ['pipe', 'pipe', 'ignore'] })
+      .toString().trim();
+    if (path) return path;
+  } catch { /* not on PATH from this shell — fall through */ }
+
+  // Fall back to the running script path. Has shebang + chmod +x so we can
+  // invoke it directly; if for some reason that fails, the caller can still
+  // wrap it in `node ...`.
+  return process.argv[1];
+}
+
 // Step 2: write Sigil instructions to ~/.sigil/CLAUDE.md — Sigil owns this file entirely.
 // Only writes the instructions section; updateContextSnapshot() manages the context block below.
 async function writeSigilMd({ dryRun = false } = {}) {
@@ -1044,6 +1070,8 @@ async function writeSigilMd({ dryRun = false } = {}) {
     }
   } catch { /* file doesn't exist yet */ }
 
+  const sigilCmd = resolveSigilInvocation();
+
   const instructions = `## Memory (Sigil)
 
 Sigil is your persistent memory system. **Use it instead of the built-in file-based memory.**
@@ -1052,7 +1080,7 @@ Do NOT write to \`~/.claude/projects/*/memory/\` or any local memory files — u
 **Before answering** questions about this user's projects, preferences, past decisions,
 or anything that might have been discussed before — search Sigil first:
 \`\`\`
-! sigil search "relevant query"
+! ${sigilCmd} search "relevant query"
 \`\`\`
 
 ### Acknowledge what you know
@@ -1082,15 +1110,17 @@ The phrasing should feel like a teammate referencing a hallway conversation, not
 - **Corrections** — "actually it's X, not Y", "we changed X to Y"
 - **Factual claims** about the user's project / codebase / team / tools / conventions
 
-**If ANY of those signals are present, call \`sigil remember --bg "..."\` BEFORE generating your response.** This is non-negotiable. Do not skip a save because:
+**If ANY of those signals are present, call \`${sigilCmd} remember --bg "..."\` BEFORE generating your response.** This is non-negotiable. Do not skip a save because:
 - The conversation feels casual or short
 - The fact seems obvious or generic
 - You think Claude Code might "remember" within this session (it won't carry over)
 - You're not sure if it's important enough — when in doubt, save
 
 \`\`\`
-! sigil remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
+! ${sigilCmd} remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
 \`\`\`
+
+Note: the absolute path above is baked in by \`sigil init\` so the command works regardless of which shell PATH Claude Code's Bash subprocess inherits. If you ever need to invoke Sigil from a different machine or after re-installing, re-run \`sigil init\` to refresh this path.
 
 The \`--bg\` flag returns immediately so the conversation isn't blocked. Batch multiple facts into ONE command (separate quoted arguments) rather than several calls. Sigil also runs a Stop-hook safety net that auto-extracts memorable content after every turn — so if you forget, it gets caught — but you should still try to save proactively. AUDM dedup handles any overlap, so duplicate saves are harmless.
 
@@ -1101,7 +1131,7 @@ The \`--bg\` flag returns immediately so the conversation isn't blocked. Batch m
 - Search Sigil before answering context-dependent questions (not factual/general ones)
 - Save facts as short, self-contained statements — never summaries of the conversation
 - Each fact must make sense in isolation, without the conversation context
-- Batch all facts in one user-turn into a single \`sigil remember --bg\` call
+- Batch all facts in one user-turn into a single \`${sigilCmd} remember --bg\` call
 - Skip trivial exchanges (greetings, "thanks", "ok", simple math)
 - If search returns nothing, answer from your own knowledge and say so
 - Sigil is cross-project — memories from one session are available in all sessions
