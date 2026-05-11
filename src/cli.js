@@ -796,7 +796,10 @@ async function runForget(args) {
 Usage:
   sigil forget <id>
 
-Get IDs from 'sigil facts' or 'sigil search'. IDs can be the short prefix or full UID.`);
+The <id> can be any of:
+  - A numeric row id (e.g. 165) — shown by 'sigil facts' and 'sigil search'
+  - A full UID (e.g. fact-eehjLrKb80s-TQHy)
+  - A short UID prefix (e.g. fact-eeh)`);
     process.exit(args[0] ? 0 : 1);
   }
 
@@ -804,20 +807,29 @@ Get IDs from 'sigil facts' or 'sigil search'. IDs can be the short prefix or ful
   const cortexDb = (await import('./db/cortex.js')).default;
 
   const idArg = args[0];
-  // Support short prefix by matching UID prefix
-  let deleted;
-  if (idArg.length < 20) {
-    const [match] = await cortexDb('fact').where('uid', 'like', `${idArg}%`).limit(1);
-    if (!match) {
-      console.error(`No fact matches: ${idArg}`);
-      await cortexDb.destroy();
-      process.exit(1);
-    }
-    deleted = await deleteFact(match.uid);
+
+  // Resolve to a UID — accept three input forms so users can paste whatever
+  // they see in `sigil facts` / `sigil search` output without thinking
+  // about which kind of identifier it is.
+  let match;
+  if (/^\d+$/.test(idArg)) {
+    // Pure-numeric → numeric row id
+    [match] = await cortexDb('fact').where({ id: Number(idArg) }).limit(1);
+  } else if (idArg.startsWith('fact-')) {
+    // UID or UID prefix
+    [match] = await cortexDb('fact').where('uid', 'like', `${idArg}%`).limit(1);
   } else {
-    deleted = await deleteFact(idArg);
+    // Bare prefix fallback
+    [match] = await cortexDb('fact').where('uid', 'like', `${idArg}%`).limit(1);
   }
 
+  if (!match) {
+    console.error(`No fact matches: ${idArg}`);
+    await cortexDb.destroy();
+    process.exit(1);
+  }
+
+  const deleted = await deleteFact(match.uid);
   if (!deleted) {
     console.error(`No fact matches: ${idArg}`);
     await cortexDb.destroy();

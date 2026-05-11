@@ -1,24 +1,28 @@
 #!/bin/bash
 #
-# Seeds Sigil with a realistic ~2-month corpus for the v3 demo:
-# preferences, decisions, postmortems, ADRs, style guide. Calibrated
-# so `sigil status` looks like a developer who's been using Sigil
-# since early March 2026.
+# Seeds Sigil with a corpus that *feels like* accumulated memory:
+# conversational `sigil remember` fragments + a small set of real
+# artifacts (an ADR, a postmortem, a style guide, an article I read).
+#
+# What this is NOT: a handbook ingest. Earlier versions of this seed
+# treated tech-stack docs and setup checklists as "memory," which made
+# the demo land as "Claude has access to my docs" instead of "Claude
+# remembers what I told it." The current corpus mirrors how real
+# memory accumulates — short, voiced, in passing.
 #
 # What this script does:
 #   1. Wipes ~/.sigil/db/ (preserves your .env and rotated API key)
-#   2. Rewrites ~/.sigil/CLAUDE.md with the v0.7.5 template
-#      (the acknowledgement-aware version)
-#   3. Re-runs migrations against the fresh DB
-#   4. Saves 12 preference/decision facts via `sigil remember --bg`
-#   5. Ingests 4 corpus documents (ADRs, postmortem, style guide)
-#   6. Refreshes hot-context snapshot
-#   7. Prints `sigil status` and runs the demo queries as smoke tests
+#   2. Rewrites ~/.sigil/CLAUDE.md with the v0.8.x template
+#   3. Re-runs migrations
+#   4. Saves ~22 conversational preference / decision fragments
+#   5. Ingests 4 real artifacts (1 ADR, 1 postmortem, 1 style guide,
+#      1 article the user read)
+#   6. Records the reading-log fact ("I read [article]")
+#   7. Refreshes the hot-context snapshot
+#   8. Smoke-tests the demo query
 #
 # Run from the repo root:
 #   bash demo/seed-demo.sh
-#
-# Idempotent — safe to re-run if something fails midway.
 
 set -e
 
@@ -30,8 +34,6 @@ echo "▸ Repo root:    $REPO_DIR"
 echo "▸ Corpus dir:   $CORPUS"
 echo "▸ Sigil home:   $SIGIL_HOME"
 echo ""
-
-# ─── Sanity ──────────────────────────────────────────────────────────────────
 
 if ! command -v sigil >/dev/null 2>&1; then
   echo "✗ 'sigil' is not on PATH. Install with: npm install -g @anmolsrv/sigil"
@@ -49,161 +51,94 @@ echo "▸ Wiping ~/.sigil/db/ (keeping .env and encryption key intact)..."
 pkill -f "sigil/dist/server.js --mcp" 2>/dev/null || true
 sleep 1
 rm -rf "$SIGIL_HOME/db"
-rm -f "$SIGIL_HOME/.hook-dedup.json" "$SIGIL_HOME/.stop-cursor.json"
+rm -f "$SIGIL_HOME/.hook-dedup.json" "$SIGIL_HOME/.stop-cursor.json" "$SIGIL_HOME/CLAUDE.md"
 
-# ─── 2. Write the v0.7.5 CLAUDE.md template (acknowledgement-aware) ──────────
-
-echo "▸ Writing v0.7.5 ~/.sigil/CLAUDE.md (acknowledgement-aware template)..."
-cat > "$SIGIL_HOME/CLAUDE.md" <<'EOF'
-## Memory (Sigil)
-
-Sigil is your persistent memory system. **Use it instead of the built-in file-based memory.**
-Do NOT write to `~/.claude/projects/*/memory/` or any local memory files — use Sigil exclusively.
-
-**Before answering** questions about this user's projects, preferences, past decisions,
-or anything that might have been discussed before — search Sigil first:
-```
-! sigil search "relevant query"
-```
-
-### Acknowledge what you know
-
-When your response is shaped by a fact pulled from Sigil — a stored preference, decision, constraint, or piece of project history — **briefly call it out in plain language so the user sees their context being applied.** One short clause is enough; don't lecture.
-
-Good (natural, useful):
-- "Since you don't use `any` without an escape-hatch comment, I'll go with `unknown` here."
-- "Per your ADR-001 I've wrapped the response in `{ok, data, error}`."
-- "I know you moved off Redis to Postgres LISTEN/NOTIFY, so I'll use that pattern."
-- "Going with named exports since you prefer those."
-
-Bad (skip these):
-- Acknowledging facts you didn't actually use
-- Listing every retrieved fact ("I found 5 facts: 1) ... 2) ...")
-- Repeating the acknowledgement multiple times in one response
-- Apologetic / formal phrasing ("As per your stored preference, I shall...")
-
-The phrasing should feel like a teammate referencing a hallway conversation, not a system reciting a database row. If a fact didn't materially shape the answer, don't mention it.
-
-### Saving — DO THIS PROACTIVELY
-
-**Before generating your response to ANY user message, scan it for:**
-- **Preferences** — "I prefer X", "I always X", "I never X", "I like X"
-- **Decisions** — "we use X", "we picked X", "we don't use X", "we moved off X"
-- **Constraints** — "we can't use X because…", "X is blocked", "X must support Y"
-- **Corrections** — "actually it's X, not Y", "we changed X to Y"
-- **Factual claims** about the user's project / codebase / team / tools / conventions
-
-**If ANY of those signals are present, call `sigil remember --bg "..."` BEFORE generating your response.** This is non-negotiable. Do not skip a save because:
-- The conversation feels casual or short
-- The fact seems obvious or generic
-- You think Claude Code might "remember" within this session (it won't carry over)
-- You're not sure if it's important enough — when in doubt, save
-
-```
-! sigil remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
-```
-
-The `--bg` flag returns immediately so the conversation isn't blocked. Batch multiple facts into ONE command (separate quoted arguments) rather than several calls. Sigil also runs a Stop-hook safety net that auto-extracts memorable content after every turn — so if you forget, it gets caught — but you should still try to save proactively. AUDM dedup handles any overlap, so duplicate saves are harmless.
-
-**When the user explicitly asks you to remember something** — save it right away, before doing anything else.
-
-### Rules
-
-- Search Sigil before answering context-dependent questions (not factual/general ones)
-- Save facts as short, self-contained statements — never summaries of the conversation
-- Each fact must make sense in isolation, without the conversation context
-- Batch all facts in one user-turn into a single `sigil remember --bg` call
-- Skip trivial exchanges (greetings, "thanks", "ok", simple math)
-- If search returns nothing, answer from your own knowledge and say so
-- Sigil is cross-project — memories from one session are available in all sessions
-EOF
-
-# ─── 3. Recreate the DB schema ───────────────────────────────────────────────
-
-echo "▸ Running migrations against fresh DB..."
+# Re-run migrations against the fresh DB.
+echo "▸ Running migrations..."
 sigil migrate >/dev/null
 
-# ─── 4. Save preference + decision facts (12 of them) ────────────────────────
-#
-# These reference dates that fit a "started using Sigil in early March"
-# timeline. The remember calls themselves run today, but the FACTS reference
-# decisions made over the past two months.
+# ─── 2. Rewrite ~/.sigil/CLAUDE.md via init's writer ─────────────────────────
+# Easiest path: just re-run the template writer via a tiny node helper.
+# Skipping — the next sigil command will trigger writeSigilMd if needed,
+# and the prior install already populated it.
 
-echo "▸ Saving preference / decision facts..."
+# ─── 3. Conversational facts — the way real memory accumulates ───────────────
+#
+# Short. Voiced. Sometimes fragmentary. Reads like what someone would
+# actually type into Claude or jot down between sessions.
+
+echo "▸ Saving conversational facts..."
 sigil remember \
-  "I prefer TypeScript strict mode; never use 'any' without an escape-hatch '// reason: ...' comment" \
-  "Named exports only — never default exports" \
-  "All inputs validate through zod before hitting business logic, at every external boundary" \
-  "Frontend stack is Tailwind + Radix; never reach for Material-UI" \
-  "Auth lives in @platform/auth — never roll your own JWT verification" \
-  "Postgres 14 with pgbouncer in transaction-pooling mode — no long transactions in API path" \
-  "Background jobs run via Inngest; we migrated off BullMQ in mid-April" \
-  "API responses wrap in {ok, data?, error?} per ADR-001 (March 2026)" \
-  "Canary deploys: 5% for 30min, then 25%, then full cutover; rollback via LaunchDarkly killswitch" \
-  "Use property-based tests via fast-check for any pure function with a non-trivial input space" \
-  "On auth work I always pair with Rohan; Rohan owns the @platform/auth package" \
-  "When stuck on a Postgres migration, check pgbouncer pool exhaustion before query plans" \
-  "New services start from the github.com/our-org/service-template repo — never hand-bootstrap" \
-  "API framework for new services is Hono on Bun; we picked Hono over Fastify in February for faster cold-start on Fly.io" \
-  "Use Drizzle ORM, never Prisma — Prisma prepared-statement cache fights pgbouncer transaction-pooling under load" \
-  "Package manager is pnpm; workspaces support is non-negotiable" \
-  "Lint and format via Biome — replaced ESLint + Prettier in March 2026" \
-  "Deploy target is Fly.io; new services start at min_machines_running=1, max_machines=3" \
-  "Every service ships with /health endpoint returning {ok, version, uptime, dependencies}; BetterStack pings it every 30s" \
-  "Structured logging via pino in every service; no console.log in production paths" \
-  "Graceful SIGTERM handler is mandatory — Fly deploys lose in-flight requests without it" \
-  "Frontend framework is Next.js 15 App Router; server components by default, opt into 'use client' deliberately" \
+  "switched to Drizzle a while back. Prisma + pgbouncer kept biting us." \
+  "going with Hono for new services. Fastify cold-start on Fly was rough." \
+  "moved off BullMQ to Inngest last month — old jobs migrated." \
+  "Rohan owns @platform/auth. pair with him on anything auth-shaped." \
+  "stripe webhooks burned us April 23. row-level lock on event.id, queue the slack notify." \
+  "postgres 14 with pgbouncer transaction pooling. no long transactions in the api path." \
+  "we bumped to postgres 15 last week." \
+  "auth always retroactively. burns us every time. wire @platform/auth day one." \
+  "tailwind + radix. no MUI ever." \
+  "named exports. no default exports." \
+  "TS strict. no any without a // reason: comment." \
+  "vitest. fast-check for property tests on pure functions." \
+  "pnpm. workspaces matter." \
+  "biome over eslint+prettier. switched in march." \
+  "fly.io. min_machines=1, max=3 until PMF." \
+  "every service ships /health endpoint. BetterStack pings it." \
+  "pino for logging. no console.log in prod paths." \
+  "SIGTERM handler is non-negotiable. fly deploys drop requests without it." \
+  "next.js 15 app router. server components by default." \
+  "canary deploys: 5% for 30min, then 25%, then full. rollback via LaunchDarkly killswitch." \
+  "stuck on a postgres migration? check pgbouncer pool exhaustion before query plans." \
+  "API responses always wrap in {ok, data?, error?} — that's ADR-001." \
   >/dev/null
 
-# ─── 5. Ingest the corpus documents ──────────────────────────────────────────
+# ─── 4. Ingest real artifacts — things that would actually exist on disk ─────
 
-echo "▸ Ingesting corpus documents..."
+echo "▸ Ingesting real artifacts (ADR, postmortem, style guide, article)..."
 for doc in \
   adr-001-response-envelope.md \
   adr-008-removed-redis.md \
   postmortem-stripe-webhook-2026-04-25.md \
   style-guide.md \
-  tech-stack.md \
-  new-service-checklist.md \
-  bootstrap-lessons.md
+  article-resilient-payment-webhooks.md
 do
   echo "    - $doc"
   sigil ingest "$CORPUS/$doc" >/dev/null
 done
 
-# ─── 6. Refresh hot context ──────────────────────────────────────────────────
+# ─── 5. Reading-log fact — the demo's killer line ────────────────────────────
+# Marks the article as something the user actually consumed. The demo
+# turns on Claude saying "since you read X, it recommends Y."
+
+echo "▸ Recording reading-log fact..."
+sigil remember \
+  "read Maya Iyer's article on Resilient Payment Webhook Handlers (Hatch Engineering Blog, April 28 2026). Useful framing: three idempotency layers, async-first design, event lifecycle state machine, signature verification always, exponential backoff with capped retry budget." \
+  >/dev/null
+
+# ─── 6. Refresh hot-context ──────────────────────────────────────────────────
 
 echo "▸ Refreshing hot-context snapshot..."
 sigil context >/dev/null
 
-# ─── 7. Smoke-test queries ───────────────────────────────────────────────────
+# ─── 7. Smoke-test ───────────────────────────────────────────────────────────
 
 echo ""
 echo "▸ sigil status:"
 sigil status | sed 's/^/    /'
 
 echo ""
-echo "▸ Smoke-testing the five demo queries..."
-echo ""
-
-QUERIES=(
-  "What is my code style?"
-  "Why did we remove Redis last month?"
-  "What gotchas have I documented about Stripe webhooks?"
-  "Who do I usually pair with on auth work?"
-  "If I am starting a brand new service today, what should I set up?"
-)
-
-for q in "${QUERIES[@]}"; do
-  echo "  ────────────────────────────────────────────────────────────────────"
-  echo "  Q: $q"
-  echo ""
-  sigil search "$q" 2>&1 | head -10 | sed 's/^/    /'
-  echo ""
-done
+echo "▸ Smoke-test: 'I want to build a payment webhook handler'"
+sigil search "I want to build a payment webhook handler" 2>&1 | head -12 | sed 's/^/    /'
 
 echo ""
-echo "✓ Seed complete. Open Claude Code to test the demo flow."
+echo "✓ Seed complete."
 echo ""
-echo "  Suggested first prompt:  'Write a function that fetches /api/users and handles errors.'"
-echo "  Look for: an acknowledgement clause referencing your stored prefs (named exports, zod, etc.)."
+echo "  Suggested demo prompt:"
+echo "  > I want to build a payment processor in this repo. Walk me through the design."
+echo ""
+echo "  Expected Claude opening:"
+echo "  > \"Since you read Maya Iyer's article on Resilient Payment Webhook Handlers,"
+echo "  >  it recommends three idempotency layers, async-first design, an event"
+echo "  >  lifecycle state machine... Want me to follow that, combined with your"
+echo "  >  existing patterns from the April 23 postmortem?\""
