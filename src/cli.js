@@ -1077,11 +1077,26 @@ async function writeSigilMd({ dryRun = false } = {}) {
 Sigil is your persistent memory system. **Use it instead of the built-in file-based memory.**
 Do NOT write to \`~/.claude/projects/*/memory/\` or any local memory files — use Sigil exclusively.
 
-**Before answering** questions about this user's projects, preferences, past decisions,
-or anything that might have been discussed before — search Sigil first:
-\`\`\`
-! ${sigilCmd} search "relevant query"
-\`\`\`
+### Memory is auto-injected — don't re-search by default
+
+Two hooks do the work for you before you ever see a prompt:
+
+- **UserPromptSubmit hook**: runs hybrid search against Sigil on every user message and injects the top-K relevant facts into your context as \`additionalContext\` at the top of the conversation. The injected block is labelled \`Sigil memory (N relevant facts)\` — when you see that block, those facts are already loaded; you do NOT need to call \`sigil search\` to retrieve them.
+- **Top-20 hot-context**: a snapshot of the user's most-important / most-recently-accessed facts is always loaded into the session via \`@~/.sigil/CLAUDE.md\` in the Claude config. Treat it as always-available background context.
+
+**The right reflex:** read the injected \`Sigil memory\` block first, answer from it, then call \`sigil search\` ONLY if the injection clearly missed something specific.
+
+Concretely, you SHOULD call \`! ${sigilCmd} search "..."\` when:
+- The user asks a drill-down question and you need facts the auto-injection didn't surface ("tell me more about the postmortem")
+- You're answering a *follow-up* in a long session where the relevant facts were never in the original injection
+- You suspect a stale answer and want to verify against the latest stored state
+
+You SHOULD NOT call \`sigil search\` when:
+- The injected \`Sigil memory\` block already lists facts that directly answer the user's question — just use them
+- You'd be searching for the same query Sigil already auto-searched (the user's literal prompt)
+- The question is general-knowledge and doesn't need this user's specific context
+
+In short: **the hook already searched. Trust it. Drill down only when needed.**
 
 ### Acknowledge what you know
 
@@ -1101,39 +1116,35 @@ Bad (skip these):
 
 The phrasing should feel like a teammate referencing a hallway conversation, not a system reciting a database row. If a fact didn't materially shape the answer, don't mention it.
 
-### Saving — DO THIS PROACTIVELY
+### Saving — Stop hook handles routine; you only save when explicit
 
-**Before generating your response to ANY user message, scan it for:**
-- **Preferences** — "I prefer X", "I always X", "I never X", "I like X"
-- **Decisions** — "we use X", "we picked X", "we don't use X", "we moved off X"
-- **Constraints** — "we can't use X because…", "X is blocked", "X must support Y"
-- **Corrections** — "actually it's X, not Y", "we changed X to Y"
-- **Factual claims** about the user's project / codebase / team / tools / conventions
+A Stop hook fires after every assistant turn, scans the user's latest message with a classifier, and saves anything memorable (preferences, decisions, constraints, corrections, factual claims) on its own. **You do not need to call \`sigil remember\` to make this work.**
 
-**If ANY of those signals are present, call \`${sigilCmd} remember --bg "..."\` BEFORE generating your response.** This is non-negotiable. Do not skip a save because:
-- The conversation feels casual or short
-- The fact seems obvious or generic
-- You think Claude Code might "remember" within this session (it won't carry over)
-- You're not sure if it's important enough — when in doubt, save
+You SHOULD call \`! ${sigilCmd} remember --bg "..."\` ONLY when:
+- The user explicitly asks you to remember something ("remember that...", "save this...", "don't forget...") — save immediately, don't wait for the Stop hook
+- The user shares a critical fact mid-response that's important enough to be available within this same session for follow-ups (the Stop hook only runs at turn end)
+- You're consolidating a multi-turn discussion into a single canonical fact
+
+You SHOULD NOT redundantly save:
+- Generic preferences the Stop hook will obviously catch — let it
+- Facts already similar to existing memory (AUDM dedup handles this, but the cleaner UX is fewer Bash invocations on screen)
+
+When you do save, batch facts into ONE call (separate quoted arguments), use \`--bg\` to return immediately:
 
 \`\`\`
 ! ${sigilCmd} remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
 \`\`\`
 
-Note: the absolute path above is baked in by \`sigil init\` so the command works regardless of which shell PATH Claude Code's Bash subprocess inherits. If you ever need to invoke Sigil from a different machine or after re-installing, re-run \`sigil init\` to refresh this path.
-
-The \`--bg\` flag returns immediately so the conversation isn't blocked. Batch multiple facts into ONE command (separate quoted arguments) rather than several calls. Sigil also runs a Stop-hook safety net that auto-extracts memorable content after every turn — so if you forget, it gets caught — but you should still try to save proactively. AUDM dedup handles any overlap, so duplicate saves are harmless.
-
-**When the user explicitly asks you to remember something** — save it right away, before doing anything else.
+The absolute path above is baked in by \`sigil init\` so the command works regardless of which shell PATH Claude Code's Bash subprocess inherits. Re-run \`sigil init\` to refresh after moving machines or reinstalling.
 
 ### Rules
 
-- Search Sigil before answering context-dependent questions (not factual/general ones)
+- Read the auto-injected \`Sigil memory\` block first; answer from it before reaching for new searches
 - Save facts as short, self-contained statements — never summaries of the conversation
 - Each fact must make sense in isolation, without the conversation context
-- Batch all facts in one user-turn into a single \`${sigilCmd} remember --bg\` call
+- Batch all explicit saves in one user-turn into a single \`${sigilCmd} remember --bg\` call
 - Skip trivial exchanges (greetings, "thanks", "ok", simple math)
-- If search returns nothing, answer from your own knowledge and say so
+- If search and injection both return nothing, answer from your own knowledge and say so
 - Sigil is cross-project — memories from one session are available in all sessions
 `;
 
