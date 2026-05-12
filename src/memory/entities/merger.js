@@ -47,7 +47,31 @@ async function mergeEntities(primaryId, duplicateId) {
       .where({ id: primaryId })
       .update({ mentionCount: newMentionCount });
 
-    // 4. Mark duplicate as merged (non-lossy)
+    // 4. Reassign any pod that was attached to the duplicate entity. The
+    // person/project pod's metadata (role, platforms, notes) follows the
+    // canonical entity — otherwise an entity dedup would silently orphan
+    // pod attrs.
+    //
+    // Edge case: if the primary entity *already* has a pod, the
+    // duplicate's pod gets archived instead of reassigned, so we don't
+    // end up with two active pods for the same canonical entity. The
+    // duplicate's facts are already collapsed via fact_entity merging
+    // above, so the surviving pod still surfaces them via its entity_id.
+    const primaryHasPod = await trx('pod')
+      .where({ entityId: primaryId, status: 'active' })
+      .first();
+
+    if (primaryHasPod) {
+      await trx('pod')
+        .where({ entityId: duplicateId })
+        .update({ status: 'archived', updatedAt: trx.fn.now() });
+    } else {
+      await trx('pod')
+        .where({ entityId: duplicateId })
+        .update({ entityId: primaryId, updatedAt: trx.fn.now() });
+    }
+
+    // 5. Mark duplicate as merged (non-lossy)
     await trx('entity')
       .where({ id: duplicateId })
       .update({ mergedWith: primaryId });

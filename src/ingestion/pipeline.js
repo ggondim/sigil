@@ -13,6 +13,9 @@ import { saveFact } from '../memory/facts/store.js';
 import { DEFAULT_CATEGORIES } from '../memory/facts/categories.js';
 import { classifyInput } from '../memory/cognitive/input-classifier.js';
 import { linkDocumentEntities } from '../memory/entities/linker.js';
+import * as podStore from '../memory/pods/store.js';
+import * as podMembership from '../memory/pods/membership.js';
+import { fromSourceMetadata as resolvePodsFromMetadata } from '../memory/pods/resolver.js';
 import config from '../config.js';
 import { PROMPTS_DIR } from '../lib/paths.js';
 
@@ -39,6 +42,13 @@ async function ingestDocument({
   skipEntities = false,
   skipContextualization = false,
   classify = true,
+  // Pod attachment. `podUids` is an explicit list (used by hooks to attach
+  // to the active session pod). `resolvePodsFrom: 'metadata'` triggers
+  // connector-derived attachment from the metadata payload (workspace
+  // pods, sender person pods). Both default to off so legacy callers are
+  // unchanged.
+  podUids = [],
+  resolvePodsFrom = null,
 }) {
   const ns = namespace || config.defaults.namespace;
   const cats = categories || Object.keys(DEFAULT_CATEGORIES);
@@ -75,6 +85,22 @@ async function ingestDocument({
     return { documentId: doc.id, title: finalTitle, skipped: true };
   }
 
+  // Persist the metadata payload now that the document row exists.
+  // Connector ingest carries source_metadata.connection_id for the FK;
+  // explicit hook callers usually don't.
+  if (metadata && (Object.keys(metadata).length || metadata.connection_id)) {
+    await documentStore.updateSourceMetadata(doc.id, metadata, metadata.connection_id ?? null);
+  }
+
+  // Resolve the set of pods this document (and its descendant facts) should
+  // attach to. Two sources are merged: explicit uids passed in by callers
+  // (hooks → active session pod) and connector-derived attachments from
+  // source_metadata. Both are no-ops when the inputs are empty.
+  const podAttachments = await resolvePodAttachments({ podUids, resolvePodsFrom, metadata, namespace: ns });
+  for (const { podId, role } of podAttachments) {
+    await podMembership.attachDocument(podId, doc.id, role);
+  }
+
   // Step 2: Parse content into text + sections
   process.stderr.write('[2/6] Parsing content...' + "\n");
   const parsed = parse(content, { format: metadata.format, filePath: sourcePath, contentType });
@@ -99,6 +125,10 @@ async function ingestDocument({
     }
 
     await documentStore.updateCounts(doc.id, { chunkCount: 0, factCount: thoughtResult.counts.added });
+
+    // Mirror the document's pod attachments down to its facts so a session
+    // pod query surfaces the actual fact rows, not just the document.
+    await attachFactsToPods(thoughtResult.results, podAttachments);
 
     process.stderr.write(`Done. Route: thought, ${thoughtResult.counts.total} facts (${thoughtResult.counts.added} new)` + "\n");
     return {
@@ -158,6 +188,9 @@ async function ingestDocument({
       chunkCount: chunks.length,
       factCount: factResult.counts.added + factResult.counts.updated + factResult.counts.contradicted,
     });
+
+    // Mirror the document's pod attachments down to its facts.
+    await attachFactsToPods(factResult.results, podAttachments);
 
     // Step 5: Link entities
     if (!skipEntities && factResult.results.length) {
@@ -236,6 +269,54 @@ async function extractAndStoreFacts(chunks, { documentId, namespace, promptPath,
 
   const embeddings = await embedBatch(rawFacts.map((f) => f.content));
   return storeFactsInBatches(rawFacts, { documentId, namespace, embeddings });
+}
+
+// Resolve the union of pod IDs this document should attach to. Two sources:
+//   - explicit `podUids` (hooks pass the active session pod)
+//   - connector-derived from `metadata` (workspace pods, etc.)
+// Returns [{ podId, role }] suitable for batch-attach.
+async function resolvePodAttachments({ podUids, resolvePodsFrom, metadata, namespace }) {
+  const attachments = [];
+
+  for (const uid of podUids) {
+    const pod = await podStore.findByUid(uid);
+    if (pod) attachments.push({ podId: pod.id, role: 'primary' });
+  }
+
+  if (resolvePodsFrom === 'metadata') {
+    const derived = await resolvePodsFromMetadata(metadata, namespace);
+    for (const a of derived) attachments.push(a);
+  }
+
+  // Dedup on podId (favouring 'primary' role when duplicated).
+  const seen = new Map();
+  for (const a of attachments) {
+    const existing = seen.get(a.podId);
+    if (!existing || (a.role === 'primary' && existing.role !== 'primary')) {
+      seen.set(a.podId, a);
+    }
+  }
+  return [...seen.values()];
+}
+
+// Attach the facts that descended from this document to its pod set.
+// saveFact returns one of:
+//   { action: 'ADD'|'UPDATE'|'CONTRADICT', fact: {...} }
+//   { action: 'SKIP', existing: {...} }
+// We treat SKIP as a re-mention worth recording in the pod too — the
+// fact is still part of "what was discussed in this session/workspace",
+// even if the storage layer collapsed it as a duplicate.
+async function attachFactsToPods(results, attachments) {
+  if (!attachments.length || !results.length) return;
+
+  for (const r of results) {
+    const factId = r?.fact?.id ?? r?.existing?.id;
+    if (!factId) continue;
+    const role = r?.action === 'SKIP' ? 'mention' : 'primary';
+    for (const { podId } of attachments) {
+      await podMembership.attachFact(podId, factId, role);
+    }
+  }
 }
 
 
