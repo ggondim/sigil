@@ -17,6 +17,17 @@ vi.mock('../entities/store.js', () => ({
 
 vi.mock('../facts/entity-linker.js', () => ({
   getFactsForEntity: vi.fn().mockResolvedValue([]),
+  getEntityIdsForFacts: vi.fn().mockResolvedValue(new Map()),
+}));
+
+vi.mock('../lifecycle/entity-hebbian.js', () => ({
+  strengthenEntityEdges: vi.fn().mockResolvedValue(undefined),
+  getEdgeStrengthsForRanking: vi.fn().mockResolvedValue(new Map()),
+  getCoRetrievedEntities: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../lifecycle/hebbian.js', () => ({
+  strengthenEdges: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../entities/relations.js', () => ({
@@ -58,6 +69,14 @@ vi.mock('./keyword.js', () => ({
 
 vi.mock('./hybrid-sql.js', () => ({
   hybridSearchFacts: vi.fn(),
+}));
+
+// Synthesizer fires for every search call. Without this mock the real wrapper
+// spawns the configured LLM (Claude CLI / Anthropic API) — turns 1ms tests
+// into 7-10s tests and occasionally trips the default 10s timeout.
+vi.mock('../../lib/llm.js', () => ({
+  prompt: vi.fn().mockResolvedValue('synthesized'),
+  promptJson: vi.fn().mockResolvedValue({}),
 }));
 
 import { hybridSearchFacts } from './hybrid-sql.js';

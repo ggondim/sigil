@@ -6,7 +6,9 @@ import { findByName, searchByName } from '../entities/store.js';
 import { getFactsForEntity } from '../facts/entity-linker.js';
 import { recordAccess } from '../facts/store.js';
 import { strengthenEdges } from '../lifecycle/hebbian.js';
+import { strengthenEntityEdges, getEdgeStrengthsForRanking } from '../lifecycle/entity-hebbian.js';
 import { listRelationsForEntity } from '../entities/relations.js';
+import { getEntityIdsForFacts } from '../facts/entity-linker.js';
 import * as vectorSearch from './vector.js';
 import * as keywordSearch from './keyword.js';
 import { hybridSearchFacts } from './hybrid-sql.js';
@@ -60,6 +62,12 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
   const factIds = result.facts.map((f) => f.id).filter(Boolean);
   recordAccess(factIds).catch((err) => console.error('[access-tracking]', err.message));
   strengthenEdges(factIds.slice(0, 8)).catch((err) => console.error('[hebbian]', err.message));
+
+  // Entity-level Hebbian: strengthen edges between every entity linked to a
+  // top-K fact. Survives paraphrase + AUDM splits in a way fact-level cannot.
+  if (config.hebbian.entity.enabled && factIds.length >= 2) {
+    strengthenEntitiesForResult(factIds).catch((err) => console.error('[hebbian-entity]', err.message));
+  }
 
   // Read-time synthesis — LLM pass over retrieved evidence to compose a coherent answer.
   // The synthesizer is also the must-miss signal: it returns "Not in retrieved memory."
@@ -115,6 +123,19 @@ Instructions:
   return llmPrompt(synthPrompt, { model, caller: 'synthesizer' });
 }
 
+// Resolve entities for the top-K facts and strengthen their pairwise edges.
+// Capped at config.hebbian.entity.maxWriteEntities to keep the O(K²) upsert
+// volume bounded even on large result sets.
+async function strengthenEntitiesForResult(factIds) {
+  const map = await getEntityIdsForFacts(factIds.slice(0, 8));
+  const entityIds = [];
+  for (const ids of map.values()) {
+    for (const id of ids) entityIds.push(id);
+  }
+  const unique = [...new Set(entityIds)].slice(0, config.hebbian.entity.maxWriteEntities);
+  await strengthenEntityEdges(unique);
+}
+
 // Check if the query matches a known entity by name (DB lookup, no LLM call)
 async function detectEntity(query, namespaces) {
   if (query.length < 2 || query.length > MAX_ENTITY_QUERY_LENGTH) return null;
@@ -168,7 +189,18 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
     .filter((f) => !seenIds.has(f.id))
     .map((f) => ({ ...f, source: 'search' }));
 
-  const facts = [...entityFactsMarked, ...hybridExtra].slice(0, limit);
+  let facts = [...entityFactsMarked, ...hybridExtra].slice(0, limit);
+
+  // Entity-Hebbian boost with the matched entity as the explicit seed.
+  // Facts linked to entities co-retrieved with the matched entity get
+  // promoted within the result set.
+  if (config.hebbian.entity.enabled && facts.length >= 2) {
+    try {
+      facts = await applyCoRetrievalBoost(facts, { seedEntityIds: [entity.id] });
+    } catch (err) {
+      console.error('[hebbian-entity-boost]', err.message);
+    }
+  }
 
   // Same merge for chunks (chunks aren't entity-linked, so this is the
   // ONLY way historical-name chunks surface for a renamed query).
@@ -261,15 +293,27 @@ async function standardSearch(query, { namespaces, limit, minConfidence, useGrap
   let facts = multiQueryMerge(results.map((r) => r.facts), limit);
   facts = facts.map((f) => ({ ...f, source: 'search' }));
 
+  // Third signal: entity-Hebbian co-retrieval boost. Seed = entities of the
+  // current top hits; candidates = entities of the rest. Facts whose entities
+  // are tightly co-retrieved with the seed get a normalized score bump.
+  if (config.hebbian.entity.enabled && facts.length >= 2) {
+    try {
+      facts = await applyCoRetrievalBoost(facts);
+    } catch (err) {
+      console.error('[hebbian-entity-boost]', err.message);
+    }
+  }
+
   if (useGraph && facts.length) {
     try {
       const mentionedEntities = await extractEntitiesFromFacts(facts.slice(0, 5));
       if (mentionedEntities.length) {
-        const relatedFacts = await findRelatedFacts(
-          mentionedEntities.map((e) => e.id),
-          { limit: 5 },
-        );
-        facts = rerank(facts, relatedFacts, mentionedEntities.map((e) => e.id), limit);
+        // Expand the seed entity set with their top co-retrieved neighbors so
+        // findRelatedFacts can pull in facts linked to associatively-linked
+        // entities, not just relation-linked ones.
+        const expandedIds = await expandWithCoRetrievedEntities(mentionedEntities.map((e) => e.id));
+        const relatedFacts = await findRelatedFacts(expandedIds, { limit: 5 });
+        facts = rerank(facts, relatedFacts, expandedIds, limit);
       }
     } catch (err) {
       console.error('[graph-enhancement] Failed:', err.message);
@@ -286,6 +330,94 @@ async function standardSearch(query, { namespaces, limit, minConfidence, useGrap
     matchedEntity: null,
     relatedEntities: [],
   };
+}
+
+// Compute the per-fact co-retrieval boost and fold it into rrfScore.
+// Seed = top-3 facts' linked entities (what the search seems to be about).
+// Candidate = entities of every other fact in the result set.
+// Each candidate fact's boost = max strength across its linked entities,
+// normalized against the strongest boost in this result set, then weighted by
+// config.hebbian.entity.rrfWeight before being added to rrfScore.
+async function applyCoRetrievalBoost(facts, opts = {}) {
+  const factIds = facts.map((f) => f.id).filter(Boolean);
+  if (factIds.length < 2) return facts;
+
+  const factEntityMap = await getEntityIdsForFacts(factIds);
+  if (!factEntityMap.size) return facts;
+
+  let seedEntityIds;
+  let candidateFacts;
+  if (opts.seedEntityIds?.length) {
+    // Explicit seed (entity-first search uses the matched entity as seed).
+    seedEntityIds = opts.seedEntityIds;
+    candidateFacts = facts;
+  } else {
+    // Auto-seed from top-N facts' linked entities.
+    const seedFactCount = opts.seedFactCount ?? 3;
+    const auto = [];
+    for (const f of facts.slice(0, seedFactCount)) {
+      const ids = factEntityMap.get(f.id) || [];
+      for (const id of ids) auto.push(id);
+    }
+    seedEntityIds = auto;
+    candidateFacts = facts.slice(seedFactCount);
+  }
+  if (!seedEntityIds.length) return facts;
+
+  const candidateEntityIds = new Set();
+  for (const f of candidateFacts) {
+    const ids = factEntityMap.get(f.id) || [];
+    for (const id of ids) candidateEntityIds.add(id);
+  }
+  if (!candidateEntityIds.size) return facts;
+
+  const strengths = await getEdgeStrengthsForRanking([...new Set(seedEntityIds)], [...candidateEntityIds]);
+  if (!strengths.size) return facts;
+
+  const factBoost = new Map();
+  let maxBoost = 0;
+  for (const f of facts) {
+    const ids = factEntityMap.get(f.id) || [];
+    let boost = 0;
+    for (const id of ids) {
+      const s = strengths.get(id) || 0;
+      if (s > boost) boost = s;
+    }
+    factBoost.set(f.id, boost);
+    if (boost > maxBoost) maxBoost = boost;
+  }
+  if (maxBoost === 0) return facts;
+
+  const weight = config.hebbian.entity.rrfWeight;
+  const boosted = facts.map((f) => {
+    const normalized = (factBoost.get(f.id) || 0) / maxBoost;
+    const newScore = (f.rrfScore || 0) + weight * normalized;
+    return {
+      ...f,
+      rrfScore: Math.round(newScore * 100) / 100,
+      coRetrievalBoost: Math.round(normalized * 100) / 100,
+    };
+  });
+
+  return boosted.sort((a, b) => (b.rrfScore || 0) - (a.rrfScore || 0));
+}
+
+// Expand a set of seed entity IDs with their top decayed co-retrieval
+// neighbors. Returns a unique-ID list (seeds first, then neighbors).
+async function expandWithCoRetrievedEntities(seedEntityIds) {
+  const perSeed = config.hebbian.entity.expandPerSeed;
+  if (!perSeed || !seedEntityIds.length) return seedEntityIds;
+
+  const { getCoRetrievedEntities } = await import('../lifecycle/entity-hebbian.js');
+  const neighborLists = await Promise.all(
+    seedEntityIds.map((id) => getCoRetrievedEntities(id, { limit: perSeed }).catch(() => [])),
+  );
+
+  const expanded = new Set(seedEntityIds);
+  for (const list of neighborLists) {
+    for (const row of list) expanded.add(Number(row.partnerId));
+  }
+  return [...expanded];
 }
 
 // Merge results from multiple query variants using RRF

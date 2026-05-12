@@ -101,6 +101,33 @@ const config = {
     // Trades ~17× cheaper writes for ~4 points of hit@1 on narrow queries.
     eagerExtract: env('SIGIL_EAGER_EXTRACT', 'CORTEX_EAGER_EXTRACT', 'true') !== 'false',
   },
+
+  hebbian: {
+    // Entity-level co-retrieval edges. Sibling of the fact-level signal, but
+    // built over entities so it survives paraphrase + AUDM fact splits and
+    // sharpens the existing graph traversal in search.
+    entity: {
+      enabled: env('SIGIL_HEBBIAN_ENTITY_ENABLED', null, 'true') !== 'false',
+      // Per-event increment on co-retrieval.
+      eta: Number(env('SIGIL_HEBBIAN_ENTITY_ETA', null, 1)),
+      // Hard cap on stored strength — prevents hot pairs from dominating.
+      cap: Number(env('SIGIL_HEBBIAN_ENTITY_CAP', null, 50)),
+      // Lazy exponential decay applied on read.
+      halfLifeDays: Number(env('SIGIL_HEBBIAN_ENTITY_HALF_LIFE_DAYS', null, 30)),
+      // Minimum decayed strength to surface in getCoRetrievedEntities.
+      minEffective: Number(env('SIGIL_HEBBIAN_ENTITY_MIN_EFFECTIVE', null, 0.5)),
+      // Blend weight when adding co-retrieval as a third signal in rrfMerge.
+      // The boost is normalized to [0,1] across the candidate set, then
+      // multiplied by this weight and added to the candidate's RRF score.
+      rrfWeight: Number(env('SIGIL_HEBBIAN_ENTITY_RRF_WEIGHT', null, 0.3)),
+      // Max entities pulled from the top-K result set for write-side
+      // strengthening. O(K²) writes, so kept small.
+      maxWriteEntities: Number(env('SIGIL_HEBBIAN_ENTITY_MAX_WRITE', null, 12)),
+      // When useGraph is on, pull up to this many co-retrieved neighbors per
+      // seed entity to expand the related-fact search.
+      expandPerSeed: Number(env('SIGIL_HEBBIAN_ENTITY_EXPAND_PER_SEED', null, 3)),
+    },
+  },
 };
 
 export default config;
