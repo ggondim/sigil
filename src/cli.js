@@ -42,6 +42,8 @@ Commands:
   facts                    List stored facts with IDs
   forget <id>              Delete a specific fact by ID
   namespace <sub>          Manage namespaces (list | delete <ns>)
+  session <sub>            Inspect the active session pod (current | list | show)
+  pod <sub>                List, show, create, or archive memory pods
   export [--format=json]   Export knowledge base as JSON or Markdown
   context                  Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
   status                   Show knowledge base statistics
@@ -71,6 +73,8 @@ const commands = {
   facts: runFacts,
   forget: runForget,
   namespace: runNamespace,
+  session: runSession,
+  pod: runPod,
   export: runExport,
   maintain: runMaintain,
   migrate: runMigrate,
@@ -746,6 +750,280 @@ Namespaces isolate facts. A project, team, or context each gets its own.`);
   }
 
   await cortexDb.destroy();
+}
+
+// ─── Session ─────────────────────────────────────────────────────────────────
+
+async function runSession(args) {
+  const sub = args[0];
+
+  if (!sub || args.includes('--help')) {
+    console.log(`sigil session — Inspect the active Claude Code session pod
+
+Usage:
+  sigil session current                Show active session uid + summary
+  sigil session list [--limit=10]      List recent session pods
+  sigil session show [<uid>]           Detailed view (defaults to active)`);
+    process.exit(sub ? 0 : 1);
+  }
+
+  const cortexDb = (await import('./db/cortex.js')).default;
+
+  try {
+    if (sub === 'current') {
+      const { getActiveCursor } = await import('./memory/pods/active-session.js');
+      const cursor = await getActiveCursor();
+      if (!cursor) {
+        console.log('No active session.');
+        return;
+      }
+      const pod = await (await import('./memory/pods/store.js')).findByUid(cursor.pod_uid);
+      if (!pod) {
+        console.log(`Cursor points to ${cursor.pod_uid} but pod row not found.`);
+        return;
+      }
+      const sessionType = await import('./memory/pods/types/session.js');
+      const view = sessionType.formatForDisplay(pod);
+      console.log(`Active session: ${pod.uid}`);
+      console.log(`  session_id:     ${view.sessionId}`);
+      console.log(`  started_at:     ${pod.startedAt}`);
+      console.log(`  turn_count:     ${view.turnCount}`);
+      console.log(`  cwd:            ${view.cwd || '—'}`);
+      console.log(`  transcript:     ${view.transcriptPath || '—'}`);
+      console.log(`  facts in pod:   ${pod.memberFactCount}`);
+      console.log(`  docs in pod:    ${pod.memberDocCount}`);
+    } else if (sub === 'list') {
+      const limit = Number(parseArg(args, '--limit') || 10);
+      const pods = await (await import('./memory/pods/store.js')).listPods({ podType: 'session', limit });
+      if (!pods.length) {
+        console.log('No session pods.');
+        return;
+      }
+      for (const p of pods) {
+        const ended = p.endedAt ? p.endedAt.toISOString().slice(0, 16).replace('T', ' ') : 'active';
+        console.log(`  ${p.uid}  ${p.name.padEnd(40)}  facts=${p.memberFactCount}  ${ended}`);
+      }
+    } else if (sub === 'show') {
+      let uid = args[1];
+      if (!uid) {
+        const { getActiveCursor } = await import('./memory/pods/active-session.js');
+        const cursor = await getActiveCursor();
+        uid = cursor?.pod_uid;
+        if (!uid) {
+          console.log('No active session. Pass a uid: sigil session show <uid>');
+          process.exit(1);
+        }
+      }
+      await showPod(uid);
+    } else {
+      console.error(`Unknown subcommand: ${sub}`);
+      process.exit(1);
+    }
+  } finally {
+    await cortexDb.destroy();
+  }
+}
+
+// ─── Pod ────────────────────────────────────────────────────────────────────
+
+async function runPod(args) {
+  const sub = args[0];
+
+  if (!sub || args.includes('--help')) {
+    console.log(`sigil pod — Inspect and manage memory pods
+
+Usage:
+  sigil pod list [--type=session|person] [--namespace=<ns>] [--limit=20]
+  sigil pod show <uid>
+  sigil pod create --type=person --name="<name>" [--slack=U123]
+                   [--github=<username>] [--email=<addr>] [--role="..."]
+                   [--relationship=manager|report|peer|external|...]
+                   [--notes="..."] [--namespace=<ns>]
+  sigil pod archive <uid>
+  sigil pod delete <uid> --confirm
+
+Pods are typed memory containers (session, person, ...). Person pods
+back a canonical entity so dedup churn doesn't lose their metadata.`);
+    process.exit(sub ? 0 : 1);
+  }
+
+  const cortexDb = (await import('./db/cortex.js')).default;
+
+  try {
+    if (sub === 'list') {
+      const podType = parseArg(args, '--type');
+      const namespace = parseArg(args, '--namespace');
+      const limit = Number(parseArg(args, '--limit') || 20);
+      const pods = await (await import('./memory/pods/store.js')).listPods({ podType, namespace, limit });
+      if (!pods.length) {
+        console.log('No pods.');
+        return;
+      }
+      for (const p of pods) {
+        console.log(`  ${p.uid}  type=${p.podType.padEnd(20)}  ${p.name.padEnd(40)}  facts=${p.memberFactCount}`);
+      }
+    } else if (sub === 'show') {
+      const uid = args[1];
+      if (!uid || uid.startsWith('--')) {
+        console.error('Provide a uid: sigil pod show <uid>');
+        process.exit(1);
+      }
+      await showPod(uid);
+    } else if (sub === 'create') {
+      await createPod(args);
+    } else if (sub === 'archive') {
+      const uid = args[1];
+      if (!uid || uid.startsWith('--')) {
+        console.error('Provide a uid: sigil pod archive <uid>');
+        process.exit(1);
+      }
+      const store = await import('./memory/pods/store.js');
+      const pod = await store.findByUid(uid);
+      if (!pod) { console.error(`Not found: ${uid}`); process.exit(1); }
+      await store.archivePod(pod.id);
+      console.log(`Archived: ${uid}`);
+    } else if (sub === 'delete') {
+      const uid = args[1];
+      if (!uid || uid.startsWith('--')) {
+        console.error('Provide a uid: sigil pod delete <uid> --confirm');
+        process.exit(1);
+      }
+      if (!args.includes('--confirm')) {
+        console.error('Pass --confirm to delete (cascades pod_membership).');
+        process.exit(1);
+      }
+      const store = await import('./memory/pods/store.js');
+      const pod = await store.findByUid(uid);
+      if (!pod) { console.error(`Not found: ${uid}`); process.exit(1); }
+      await store.deletePod(pod.id);
+      console.log(`Deleted: ${uid}`);
+    } else {
+      console.error(`Unknown subcommand: ${sub}`);
+      process.exit(1);
+    }
+  } finally {
+    await cortexDb.destroy();
+  }
+}
+
+async function showPod(uid) {
+  const podStore = await import('./memory/pods/store.js');
+  const membership = await import('./memory/pods/membership.js');
+  const pod = await podStore.findByUid(uid);
+  if (!pod) { console.error(`Not found: ${uid}`); process.exit(1); }
+
+  const attrs = typeof pod.attrs === 'object' ? pod.attrs : safeJsonParse(pod.attrs);
+
+  console.log(`${pod.uid}  type=${pod.podType}`);
+  console.log(`  name:           ${pod.name}`);
+  console.log(`  namespace:      ${pod.namespace}`);
+  console.log(`  status:         ${pod.status}`);
+  console.log(`  started_at:     ${pod.startedAt || '—'}`);
+  console.log(`  ended_at:       ${pod.endedAt || '—'}`);
+  if (pod.entityId) console.log(`  entity_id:      ${pod.entityId}`);
+  if (pod.connectionId) console.log(`  connection_id:  ${pod.connectionId}`);
+  if (pod.externalId) console.log(`  external_id:    ${pod.externalId}`);
+  console.log(`  facts:          ${pod.memberFactCount}`);
+  console.log(`  documents:      ${pod.memberDocCount}`);
+  console.log(`  attrs:`);
+  for (const [k, v] of Object.entries(attrs)) {
+    const val = typeof v === 'object' ? JSON.stringify(v) : v;
+    console.log(`    ${k}: ${val ?? '—'}`);
+  }
+
+  const facts = await membership.listMembers(pod.id, { memberType: 'fact', limit: 10 });
+  if (facts.length) {
+    console.log(`\n  Latest member facts (${facts.length}):`);
+    for (const f of facts) {
+      const truncated = (f.content || '').slice(0, 100);
+      console.log(`    - ${truncated}${f.content && f.content.length > 100 ? '…' : ''}`);
+    }
+  }
+}
+
+async function createPod(args) {
+  const podType = parseArg(args, '--type');
+  if (podType !== 'person') {
+    console.error('Only --type=person is supported in PR1. Session pods are auto-created by hooks.');
+    process.exit(1);
+  }
+
+  const name = parseArg(args, '--name');
+  if (!name) {
+    console.error('--name is required');
+    process.exit(1);
+  }
+
+  const namespace = parseArg(args, '--namespace');
+  const slack = parseArg(args, '--slack');
+  const github = parseArg(args, '--github');
+  const email = parseArg(args, '--email');
+  const role = parseArg(args, '--role');
+  const relationship = parseArg(args, '--relationship');
+  const notes = parseArg(args, '--notes');
+
+  const platforms = {};
+  if (slack) platforms.slack = { user_id: slack };
+  if (github) platforms.github = { username: github };
+  if (email) platforms.email = email;
+
+  const config = (await import('./config.js')).default;
+  const ns = namespace || config.defaults.namespace;
+
+  // Find or create the person entity.
+  const entityStore = await import('./memory/entities/store.js');
+  let entity = await entityStore.findByName(name, ns);
+
+  if (entity && entity.entityType && entity.entityType !== 'person') {
+    console.error(`An entity named "${name}" already exists with entity_type="${entity.entityType}". Use a different name or merge manually.`);
+    process.exit(1);
+  }
+
+  if (!entity) {
+    const { embed } = await import('./ingestion/embedder.js');
+    const embedding = await embed(name).catch(() => null);
+    entity = await entityStore.insertEntity({
+      name,
+      entityType: 'person',
+      description: role ? `${role}` : null,
+      namespace: ns,
+      externalId: slack || null,
+      embedding,
+    });
+    console.log(`Created entity: ${entity.uid} (${entity.name})`);
+  } else {
+    console.log(`Linked to existing entity: ${entity.uid} (${entity.name})`);
+  }
+
+  const { upsertPersonPod } = await import('./memory/pods/resolver.js');
+  const { pod, isNew } = await upsertPersonPod({
+    entityId: entity.id,
+    name,
+    namespace: ns,
+    attrs: { platforms, role, relationship, notes },
+  });
+
+  console.log(`${isNew ? 'Created' : 'Updated'} person pod: ${pod.uid}`);
+  console.log(`  entity_id:     ${entity.id}`);
+  console.log(`  platforms:     ${JSON.stringify(platforms)}`);
+  if (role) console.log(`  role:          ${role}`);
+  if (relationship) console.log(`  relationship:  ${relationship}`);
+}
+
+function parseArg(args, flag) {
+  // Supports both `--flag=value` and `--flag value` forms.
+  const eqMatch = args.find((a) => a.startsWith(`${flag}=`));
+  if (eqMatch) return eqMatch.slice(flag.length + 1);
+  const idx = args.indexOf(flag);
+  if (idx !== -1 && idx + 1 < args.length && !args[idx + 1].startsWith('--')) {
+    return args[idx + 1];
+  }
+  return null;
+}
+
+function safeJsonParse(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch { return {}; }
 }
 
 // ─── Facts (list) ────────────────────────────────────────────────────────────
