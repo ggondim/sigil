@@ -84,22 +84,28 @@ export class ClientPGlite extends ClientPG {
   constructor(config) {
     super(config);
     this._pglitePath = config?.connection?.pglitePath || PGLITE_DB_PATH;
+    // Tests can pass a pre-built PGlite (e.g. in-memory) to bypass the
+    // on-disk singleton entirely. Keeps integration tests hermetic.
+    this._injectedPglite = config?.connection?.pgliteInstance || null;
   }
 
   // Override raw connection acquisition — return PGliteConnection, bypass pg.Pool entirely
   acquireRawConnection() {
-    return getPGlite(this._pglitePath).then((db) => {
-      if (!this.version) this.version = '17.0'; // PGlite is built on PG17
-      return new PGliteConnection(db);
-    });
+    if (!this.version) this.version = '17.0'; // PGlite is built on PG17
+    if (this._injectedPglite) {
+      return Promise.resolve(new PGliteConnection(this._injectedPglite));
+    }
+    return getPGlite(this._pglitePath).then((db) => new PGliteConnection(db));
   }
 
   // Don't end the connection — PGlite is a singleton, stays alive until knex.destroy()
   async destroyRawConnection() {}
 
-  // Close PGlite when the knex instance is torn down
+  // Close PGlite when the knex instance is torn down. Injected instances are
+  // owned by the caller (e.g. test fixtures) and not closed here.
   async destroy() {
     await super.destroy();
+    if (this._injectedPglite) return;
     if (pgliteInstance) {
       await pgliteInstance.close();
       pgliteInstance = null;

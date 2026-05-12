@@ -46,6 +46,10 @@ async function main() {
       useGraph: false,
       route: false,
       expand: false,
+      // Synthesis here would add 1-3s + an LLM call to every user message,
+      // and steal the citation surface from Claude. Hand back raw facts and
+      // let the session do its own reasoning.
+      synthesize: false,
     });
 
     if (!facts.length) {

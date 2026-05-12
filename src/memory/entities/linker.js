@@ -4,6 +4,7 @@ import { resolveEntity, resolveTopicsFromFacts } from './resolver.js';
 import { createRelation } from './relations.js';
 import { linkEntitiesToFact } from '../facts/entity-linker.js';
 import { PROMPTS_DIR } from '../../lib/paths.js';
+import cortexDb from '../../db/cortex.js';
 
 const ENTITY_PROMPT = path.join(PROMPTS_DIR, 'entity-extraction.md');
 
@@ -94,8 +95,10 @@ async function linkCustomEntities({ entityDefs, factObjects, firstFactId, namesp
     relationCount++;
   }
 
-  // Link facts ↔ entities
-  const allEntities = Object.values(resolvedByName);
+  // Widen with any pod-backed entities (person pods) the facts also mention,
+  // even if the caller didn't declare them in entityDefs.
+  const podEntities = await findMentionedPodEntities(factObjects, namespace);
+  const allEntities = mergeUniqueById(Object.values(resolvedByName), podEntities);
   let factEntityLinks = 0;
 
   for (const fact of factObjects) {
@@ -127,9 +130,12 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
       ? await resolveTopicsFromFacts(factObjects, { promptPath: ENTITY_PROMPT, namespace })
       : [];
 
+    const podEntities = await findMentionedPodEntities(factObjects, namespace);
+    const allEntities = mergeUniqueById(topics, podEntities);
+
     let factEntityLinks = 0;
     for (const fact of factObjects) {
-      const mentioned = topics.filter((e) => factMentionsEntity(fact.content, e));
+      const mentioned = allEntities.filter((e) => factMentionsEntity(fact.content, e));
       if (mentioned.length) {
         await linkEntitiesToFact(fact.id, mentioned);
         factEntityLinks += mentioned.length;
@@ -137,7 +143,7 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
     }
 
     return {
-      entityCount: topics.length,
+      entityCount: allEntities.length,
       relationCount: 0,
       factEntityLinks,
       topics: topics.map((e) => e.name),
@@ -194,7 +200,9 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
     relationCount++;
   }
 
-  const allEntities = [docEntity, authorEntity, ...topics].filter(Boolean);
+  const declaredEntities = [docEntity, authorEntity, ...topics].filter(Boolean);
+  const podEntities = await findMentionedPodEntities(factObjects, namespace);
+  const allEntities = mergeUniqueById(declaredEntities, podEntities);
   let factEntityLinks = 0;
 
   for (const fact of factObjects) {
@@ -236,6 +244,41 @@ function factMentionsEntity(content, entity) {
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mergeUniqueById(...lists) {
+  const seen = new Set();
+  const out = [];
+  for (const list of lists) {
+    for (const e of list) {
+      if (!e || seen.has(e.id)) continue;
+      seen.add(e.id);
+      out.push(e);
+    }
+  }
+  return out;
+}
+
+// Pull pod-backed entities (today: person pods) in the namespace and return
+// the ones whose canonical name or any alias appears in at least one fact in
+// this batch. Used to widen the entity set so a document that mentions
+// "Maya Iyer" gets its facts linked to her canonical entity even when the
+// document has no author frontmatter and topic extraction missed her.
+async function findMentionedPodEntities(factObjects, namespace) {
+  if (!factObjects?.length) return [];
+
+  const rows = await cortexDb('entity as e')
+    .join('pod as p', 'p.entity_id', 'e.id')
+    .where('p.status', 'active')
+    .where('e.namespace', namespace)
+    .whereNull('e.mergedWith')
+    .select('e.id', 'e.uid', 'e.name', 'e.entityType', 'e.aliases');
+
+  if (!rows.length) return [];
+
+  return rows.filter((entity) =>
+    factObjects.some((f) => factMentionsEntity(f.content, entity)),
+  );
 }
 
 export { linkDocumentEntities };

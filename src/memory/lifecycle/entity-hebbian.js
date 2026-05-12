@@ -73,7 +73,7 @@ async function getCoRetrievedEntities(entityId, opts = {}) {
   const { rows } = await cortexDb.raw(`
     SELECT
       CASE WHEN entity_a_id = ? THEN entity_b_id ELSE entity_a_id END AS "partnerId",
-      (strength * EXP(-? * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0))::float8 AS "effectiveStrength",
+      (strength * EXP(-1.0 * ?::float8 * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0))::float8 AS "effectiveStrength",
       strength::float8 AS "rawStrength",
       last_seen_at AS "lastSeenAt"
     FROM entity_hebbian_edge
@@ -112,7 +112,7 @@ async function getEdgeStrengthsForRanking(seedEntityIds, candidateEntityIds, opt
         WHEN entity_a_id = ANY(?::bigint[]) THEN entity_b_id
         ELSE entity_a_id
       END AS "candidateId",
-      SUM(strength * EXP(-? * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0))::float8 AS "summedStrength"
+      SUM(strength * EXP(-1.0 * ?::float8 * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0))::float8 AS "summedStrength"
     FROM entity_hebbian_edge
     WHERE
       (entity_a_id = ANY(?::bigint[]) AND entity_b_id = ANY(?::bigint[]))
@@ -136,11 +136,48 @@ async function consolidateEntityCoRetrievalEdges({ floor = 0.5, decayDays = 90 }
   const lambda = lambdaFromHalfLife(config.hebbian.entity.halfLifeDays);
   const { rows } = await cortexDb.raw(`
     DELETE FROM entity_hebbian_edge
-    WHERE (strength * EXP(-? * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0)) <= ?
+    WHERE (strength * EXP(-1.0 * ?::float8 * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0)) <= ?
       AND last_seen_at < NOW() - (INTERVAL '1 day' * ?)
     RETURNING entity_a_id
   `, [lambda, floor, decayDays]);
   return rows.length;
+}
+
+/**
+ * Edge density + top-pairs summary for `sigil status`. Returns an empty
+ * shape when the feature is disabled or the table is empty so the caller
+ * can render "0 edges" without special-casing.
+ */
+async function getEntityHebbianStats({ topN = 5 } = {}) {
+  const lambda = lambdaFromHalfLife(config.hebbian.entity.halfLifeDays);
+
+  const summary = await cortexDb.raw(`
+    SELECT
+      COUNT(*)::int AS "edgeCount",
+      COALESCE(AVG(strength)::float8, 0) AS "avgStrength",
+      COALESCE(MAX(strength)::float8, 0) AS "maxStrength"
+    FROM entity_hebbian_edge
+  `);
+
+  const topPairs = await cortexDb.raw(`
+    SELECT
+      ea.name AS "aName",
+      eb.name AS "bName",
+      strength::float8 AS "strength",
+      (strength * EXP(-1.0 * ?::float8 * EXTRACT(EPOCH FROM (NOW() - last_seen_at)) / 86400.0))::float8 AS "decayed"
+    FROM entity_hebbian_edge
+    JOIN entity ea ON ea.id = entity_a_id
+    JOIN entity eb ON eb.id = entity_b_id
+    ORDER BY "decayed" DESC
+    LIMIT ?
+  `, [lambda, topN]);
+
+  return {
+    edgeCount: summary.rows[0]?.edgeCount ?? 0,
+    avgStrength: summary.rows[0]?.avgStrength ?? 0,
+    maxStrength: summary.rows[0]?.maxStrength ?? 0,
+    topPairs: topPairs.rows ?? [],
+  };
 }
 
 export {
@@ -148,4 +185,5 @@ export {
   getCoRetrievedEntities,
   getEdgeStrengthsForRanking,
   consolidateEntityCoRetrievalEdges,
+  getEntityHebbianStats,
 };

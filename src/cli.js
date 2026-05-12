@@ -1789,18 +1789,27 @@ Usage:
   const { getEntityCount } = await import('./memory/entities/store.js');
   const { getRelationCount } = await import('./memory/entities/relations.js');
   const { getFactCount } = await import('./memory/facts/store.js');
+  const { getEntityHebbianStats } = await import('./memory/lifecycle/entity-hebbian.js');
   const cortexDb = (await import('./db/cortex.js')).default;
 
   const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1];
 
-  const [docStats, factCount, documents, people, topics, relations] = await Promise.all([
+  const [docStats, factCount, documents, people, topics, relations, podRows, hebbian] = await Promise.all([
     getStats(namespace),
     getFactCount(namespace),
     getEntityCount('document'),
     getEntityCount('person'),
     getEntityCount('topic'),
     getRelationCount(),
+    cortexDb('pod').where({ status: 'active' }).select('podType').then((rows) => rows),
+    getEntityHebbianStats({ topN: 3 }).catch(() => null),
   ]);
+
+  const podsByType = podRows.reduce((acc, r) => {
+    acc[r.podType] = (acc[r.podType] || 0) + 1;
+    return acc;
+  }, {});
+  const podSummary = Object.entries(podsByType).map(([t, n]) => `${n} ${t}`).join(', ') || '—';
 
   console.log(`Sigil Knowledge Base${namespace ? ` (${namespace})` : ''}`);
   console.log(`  Documents:  ${docStats.documentCount}`);
@@ -1808,6 +1817,18 @@ Usage:
   console.log(`  Facts:      ${factCount} active`);
   console.log(`  Entities:   ${documents} documents, ${people} people, ${topics} topics`);
   console.log(`  Relations:  ${relations}`);
+  console.log(`  Pods:       ${podSummary}`);
+  if (hebbian) {
+    const avg = hebbian.avgStrength ? hebbian.avgStrength.toFixed(2) : '0';
+    const max = hebbian.maxStrength ? hebbian.maxStrength.toFixed(2) : '0';
+    console.log(`  Co-retrieval edges: ${hebbian.edgeCount} (avg ${avg}, max ${max})`);
+    if (hebbian.topPairs.length) {
+      console.log('  Top pairs by decayed strength:');
+      for (const p of hebbian.topPairs) {
+        console.log(`    ${p.aName} ↔ ${p.bName}  (decayed ${Number(p.decayed).toFixed(2)})`);
+      }
+    }
+  }
 
   await cortexDb.destroy();
 }
@@ -1830,18 +1851,21 @@ co-retrieval edges. Safe to run as a cron — fully idempotent.`);
   const cortexDb = (await import('./db/cortex.js')).default;
   const { promoteFreshFacts, closeEditingWindows, getLifecycleStats } = await import('./memory/lifecycle/stage-manager.js');
   const { consolidateCoRetrievalEdges } = await import('./memory/lifecycle/hebbian.js').catch(() => ({}));
+  const { consolidateEntityCoRetrievalEdges } = await import('./memory/lifecycle/entity-hebbian.js').catch(() => ({}));
 
   const before = await getLifecycleStats();
   const promoted = await promoteFreshFacts();
   const closed = await closeEditingWindows();
-  const edgesConsolidated = consolidateCoRetrievalEdges ? await consolidateCoRetrievalEdges() : 0;
+  const factEdgesConsolidated = consolidateCoRetrievalEdges ? await consolidateCoRetrievalEdges() : 0;
+  const entityEdgesConsolidated = consolidateEntityCoRetrievalEdges ? await consolidateEntityCoRetrievalEdges() : 0;
   const after = await getLifecycleStats();
 
   console.log('Memory maintenance:');
   console.log(`  Stages — fresh: ${before.fresh}→${after.fresh}, stable: ${before.stable}→${after.stable}, editing: ${before.editing}→${after.editing}`);
   console.log(`  Promoted (fresh→stable): ${promoted}`);
   console.log(`  Closed editing windows (editing→stable): ${closed}`);
-  if (edgesConsolidated) console.log(`  Co-retrieval edges consolidated: ${edgesConsolidated}`);
+  if (factEdgesConsolidated) console.log(`  Fact co-retrieval edges consolidated: ${factEdgesConsolidated}`);
+  if (entityEdgesConsolidated) console.log(`  Entity co-retrieval edges consolidated: ${entityEdgesConsolidated}`);
 
   await cortexDb.destroy();
 }

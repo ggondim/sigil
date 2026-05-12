@@ -1,6 +1,7 @@
 import { uniqBy } from 'lodash-es';
 
 import cortexDb from '../../db/cortex.js';
+import * as podMembership from '../pods/membership.js';
 
 async function linkEntitiesToFact(factId, entities) {
   if (!entities.length) return;
@@ -21,6 +22,26 @@ async function linkEntitiesToFact(factId, entities) {
     .insert(rows)
     .onConflict(cortexDb.raw('(fact_id, entity_id, mention_type)'))
     .merge({ mentionCount: cortexDb.raw('fact_entity.mention_count + 1') });
+
+  await attachFactToEntityPods(factId, uniqueEntities);
+}
+
+// When a fact mentions an entity that backs a pod (today: person pods only),
+// attach the fact to that pod with role='mention'. This is the live wire
+// behind hot-context's 4 person slots — without it, person pods exist but
+// `facts=0` and the slots never fill.
+async function attachFactToEntityPods(factId, entities) {
+  const entityIds = entities.map((e) => e.id).filter(Boolean);
+  if (!entityIds.length) return;
+
+  const podRows = await cortexDb('pod')
+    .whereIn('entityId', entityIds)
+    .where({ status: 'active' })
+    .select('id');
+
+  for (const { id: podId } of podRows) {
+    await podMembership.attachFact(podId, factId, 'mention');
+  }
 }
 
 async function getFactsForEntity(entityId, { limit = 50 } = {}) {
