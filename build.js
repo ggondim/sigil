@@ -35,6 +35,7 @@ const ENTRIES = [
   { in: 'src/hooks/user-prompt-submit.js', out: 'hooks/user-prompt-submit.js', shebang: true },
   { in: 'src/hooks/post-tool-use.js', out: 'hooks/post-tool-use.js', shebang: true },
   { in: 'src/hooks/stop.js', out: 'hooks/stop.js', shebang: true },
+  { in: 'src/hooks/session-end.js', out: 'hooks/session-end.js', shebang: true },
 ];
 
 async function run() {
