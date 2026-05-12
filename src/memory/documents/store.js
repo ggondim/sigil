@@ -71,4 +71,19 @@ async function resetHash(documentId) {
     .update({ contentHash: null });
 }
 
-export { findBySourcePath, findByUid, upsert, updateCounts, resetHash, getStats, listDocuments, deleteDocument };
+// Persist the metadata payload that flows through the ingest pipeline.
+// Previously dropped on the floor after `parse()` consumed its format hint;
+// now lands on the document row so pod attachment can derive source-
+// instance context from it (which Slack workspace, which sender, etc.).
+// connectionId is optional and references the `connection` table when the
+// document came in through a registered connector.
+async function updateSourceMetadata(documentId, metadata, connectionId = null) {
+  if (!metadata && !connectionId) return;
+  const patch = {};
+  if (metadata && Object.keys(metadata).length) patch.sourceMetadata = JSON.stringify(metadata);
+  if (connectionId) patch.connectionId = connectionId;
+  if (!Object.keys(patch).length) return;
+  await cortexDb('document').where({ id: documentId }).update(patch);
+}
+
+export { findBySourcePath, findByUid, upsert, updateCounts, resetHash, updateSourceMetadata, getStats, listDocuments, deleteDocument };

@@ -55,7 +55,26 @@ async function main() {
 
     if (!facts.length) return respond();
 
-    await saveFacts(facts);
+    // Resolve (or create) the session pod for this Claude Code session.
+    // Hooks always receive session_id in the stdin envelope; on the rare
+    // case it's missing, we fall through without a pod and the save still
+    // succeeds — just without session attribution.
+    let sessionPodUid = null;
+    try {
+      if (input.session_id) {
+        const { ensureActiveSession } = await import('../memory/pods/active-session.js');
+        const pod = await ensureActiveSession({
+          sessionId: input.session_id,
+          transcriptPath: input.transcript_path || null,
+          cwd: input.cwd || null,
+        });
+        sessionPodUid = pod?.uid || null;
+      }
+    } catch (err) {
+      process.stderr.write(`[sigil:stop] session pod resolve failed: ${err.message}\n`);
+    }
+
+    await saveFacts(facts, { sessionPodUid });
   } catch (err) {
     // Never block Claude — fail silently
     process.stderr.write(`[sigil:stop] ${err.message}\n`);
@@ -230,9 +249,11 @@ async function classifyTurn(userMessage) {
 
 // ─── Save through the regular AUDM pipeline ──────────────────────────────
 
-async function saveFacts(facts) {
+async function saveFacts(facts, { sessionPodUid = null } = {}) {
   const { ingestDocument } = await import('../ingestion/pipeline.js');
   const config = (await import('../config.js')).default;
+
+  const podUids = sessionPodUid ? [sessionPodUid] : [];
 
   // Run sequentially so PGlite (single-process) doesn't get hammered
   for (const fact of facts) {
@@ -243,6 +264,7 @@ async function saveFacts(facts) {
         // Skip the LLM classifier inside the pipeline — we already classified.
         // The fact-extraction step still runs.
         classify: false,
+        podUids,
       });
     } catch (err) {
       process.stderr.write(`[sigil:stop] save failed: ${err.message}\n`);

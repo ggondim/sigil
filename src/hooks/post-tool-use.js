@@ -177,7 +177,7 @@ async function main() {
 
     const embedding = await embed(masked);
 
-    await saveFact({
+    const saveResult = await saveFact({
       content: masked,
       category: 'observation',
       confidence: 'medium',
@@ -187,6 +187,29 @@ async function main() {
       sourceSection: 'session',
       embedding,
     });
+
+    // Attach to the active session pod so the observation surfaces in
+    // `sigil session show` and the hot-context session slot. Best-effort:
+    // missing session_id or a transient pod-store error must not break
+    // the hook.
+    if (input.session_id) {
+      try {
+        const { ensureActiveSession } = await import('../memory/pods/active-session.js');
+        const podMembership = await import('../memory/pods/membership.js');
+        const pod = await ensureActiveSession({
+          sessionId: input.session_id,
+          transcriptPath: input.transcript_path || null,
+          cwd: input.cwd || null,
+        });
+        const factId = saveResult?.fact?.id ?? saveResult?.existing?.id;
+        const role = saveResult?.action === 'SKIP' ? 'mention' : 'primary';
+        if (pod && factId) {
+          await podMembership.attachFact(pod.id, factId, role);
+        }
+      } catch (err) {
+        process.stderr.write(`[sigil:post-tool-use] pod attach failed: ${err.message}\n`);
+      }
+    }
 
     const cortexDb = (await import('../db/cortex.js')).default;
     await cortexDb.destroy();
