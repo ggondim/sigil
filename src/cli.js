@@ -1012,6 +1012,14 @@ async function registerHooks({ dryRun = false } = {}) {
         async: true,
       }],
     },
+    SessionEnd: {
+      hooks: [{
+        type: 'command',
+        command: `node ${join(hookDir, 'session-end.js')}`,
+        timeout: 10,
+        async: true,
+      }],
+    },
   };
 
   const existedBefore = existsSync(settingsPath);
