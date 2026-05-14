@@ -2,6 +2,69 @@
 
 All notable changes to `@anmolsrv/sigil`.
 
+## 0.10.0 — 2026-05-14
+
+### Pod distinction layer
+
+Pod *types* (a hardcoded enum: `session | person | project | connector_workspace | custom`) become **pod kinds** — a declarative registry that any new kind plugs into. New kinds are no longer a schema change; they're a contract file. Hot-context, search, hooks, and CLI all delegate to the registry instead of branching on a fixed list.
+
+**Five built-in kinds (Claude Code-focused):**
+
+- `claude_session` (singleton-live, 6 hot-context slots, 90-day TTL) — replaces the old `session` type. The 0.10.0 migration rewrites existing `pod_type='session'` rows to `'claude_session'`.
+- `project` (multi-active, 4 slots, no TTL) — derived from `git rev-parse --show-toplevel` (or cwd if not a git repo); abs path is the identity. Multiple project pods can be active simultaneously across open editors.
+- `person` (rolling-24h, 4 slots, no TTL) — existing person type, now with the full kind contract.
+- `playbook` (always-active per project, 3 slots, no TTL) — **new procedural-memory kind** (the CoALA gap). User-authored workflows / debug recipes / runbooks; surfaces in hot-context for sessions whose project matches the playbook's `attrs.project`.
+- `vital` (virtual, 6 slots) — surfaces facts marked `importance=5` globally, regardless of pod membership. Preserves pre-0.10 vital-facts behavior through the new kind contract.
+
+(`codex_session` and `agent` kinds land in 0.11.0.)
+
+### Each kind ships a markdown schema doc
+
+Karpathy's "third layer" — every built-in kind has a `<name>.schema.md` next to its contract that tells the LLM how to author/update facts for that kind. User overrides at `~/.sigil/schemas/<kind>.md`. The fact extractor reads the relevant schema before producing facts.
+
+### Append-only foundations
+
+Three new `fact` columns lay the groundwork for the bi-temporal arbiter that lands in 0.11.0:
+
+- `importance_score INTEGER` — 1–5 numeric, backfilled from the existing text `importance` (vital→5, high→4, medium→3, supplementary→2, trivial→1). Hot-context now ranks by `importance_score DESC`, then recency — Karpathy's "distraction" failure mode (stale memories surfacing forever) gets the importance-weighted antidote.
+- `superseded_at TIMESTAMP` + `superseded_by_fact_uid TEXT` — Graphiti-style supersession columns. Wired but unused in 0.10.0; the conflict-arbiter that populates them ships in 0.11.0.
+
+Existing `valid_from` / `valid_until` already cover event-time validity; no new columns needed there.
+
+### Kind-driven retrieval
+
+- **Hot-context** rewritten as a registry iteration. The hardcoded four-pass blend disappears; each active kind contributes facts up to its declared `hotContextBudget`, virtual kinds (vital) use a custom `fetchFacts` method, pod-backed kinds default to the shared `factsInPodsByRecency` helper.
+- **`hybridSearchFacts`** accepts `podIds: number[]` — when set, an EXISTS subquery against `pod_membership` scopes both semantic and keyword CTEs.
+- **`search()`** in hybrid.js accepts `podScope`: `null`/`'global'` for full brain, `'auto'` to resolve via `registry.activeKinds(ctx)`, or an explicit pod-name/uid list. MCP `search` tool exposes the parameter so external callers can scope.
+
+### Hooks delegate to active kinds
+
+New `src/memory/pods/hook-dispatcher.js` — the single seam every hook calls. Walks the registry, opens/refreshes pods for every kind whose lifecycle fires on the hook event, and returns the flat pod-uid list to attach to. Result: a fact saved during a Claude Code session auto-attaches to BOTH the `claude_session` pod AND the active `project` pod, with zero per-kind hook code.
+
+### UserPromptSubmit injection: smarter
+
+- Query router (`src/memory/cognitive/query-router.js`) turned ON (was bypassed) — query intent classifies categories, expand, useGraph.
+- `podScope: 'auto'` — pod-tiered injection (session → project → person → vital) with `'global'` fallback for fresh installs.
+- Token budget (`INJECTION_BUDGET_CHARS=4800` ≈ 1200 tokens) replaces the fixed `MAX_FACTS=8`.
+
+### Session-end synthesizes a durable summary
+
+When a Claude Code session ends, the hook gathers facts attached to the session pod, calls the LLM with `claude_session.schema.md` as system context, and emits one summary fact (60–220 chars). The synthesized fact attaches to BOTH the closing session pod (ephemeral, decays) AND the project pod (durable) via the dispatcher. Cross-session memory: tomorrow's session in the same project sees today's distilled summary.
+
+### Observability
+
+- `sigil why "<query>"` — runs the same hybrid search the UserPromptSubmit hook uses and prints per-fact RRF / pod / kind / importance breakdown. The "why is this fact in my context?" tool.
+- `sigil kind list` / `sigil kind show <name>` — inspect registered kinds, their budgets, visibility, TTL, schema doc.
+- `sigil context --explain` — instead of writing the snapshot, print the kind-by-kind blend that would be written.
+- `sigil doctor` now surfaces the last 5 hook errors from `~/.sigil/.hook-errors.log`. Hooks never block Claude, so silent rot was the pre-0.10 failure mode; this is the cure.
+
+### Notes for upgraders
+
+- Run `sigil migrate` after pulling. The migration rewrites `pod_type='session'` rows to `'claude_session'`, adds three columns to `fact`. Reversible.
+- Existing search/hot-context callers don't need to change — `podScope` defaults to `null` (full brain), preserving current behavior. Phase 1 polish (`sigil why`, `sigil kind`) and the auto-attachment of facts to project pods are opt-in via the hooks.
+- The retired `types/` directory is gone. If you imported from `src/memory/pods/types/session.js` or `types/person.js`, switch to `src/memory/pods/kinds/claude_session.js` / `kinds/person.js`.
+- `codex_session`, `agent`, identity/auth, three-primitive write API, dynamic kind registration, and connectors are deferred to 0.11.0+.
+
 ## 0.9.0 — 2026-05-12
 
 ### Added — typed memory pods
