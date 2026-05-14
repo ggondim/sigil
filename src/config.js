@@ -40,6 +40,14 @@ const config = {
     // Anthropic
     apiKey: process.env.ANTHROPIC_API_KEY || '',
 
+    // OpenRouter — OpenAI-compatible gateway; one key, namespaced models
+    // like "anthropic/claude-sonnet-4-5", "openai/gpt-4o-mini", etc.
+    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+    openrouterModel: process.env.LLM_OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5',
+    openrouterBaseUrl: process.env.LLM_OPENROUTER_BASE_URL || '',
+    openrouterReferer: process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/cortex',
+    openrouterTitle: process.env.LLM_OPENROUTER_TITLE || 'Sigil',
+
     // Per-task model overrides (use provider-specific model names)
     extractionModel: process.env.LLM_EXTRACTION_MODEL || '',
     decisionModel: process.env.LLM_DECISION_MODEL || '',

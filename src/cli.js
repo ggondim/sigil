@@ -175,6 +175,7 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
       { value: 'claude-cli', label: 'Claude Code', hint: 'uses your existing subscription — no extra API key' },
       { value: 'openai',     label: 'OpenAI',      hint: 'gpt-4o-mini' },
       { value: 'anthropic',  label: 'Anthropic',   hint: 'Claude Haiku — requires API key' },
+      { value: 'openrouter', label: 'OpenRouter',  hint: 'one key, many models (Anthropic / OpenAI / Meta / ...)' },
       { value: 'ollama',     label: 'Ollama',      hint: 'local models — no API cost' },
     ],
     initialValue: existing.LLM_PROVIDER || 'claude-cli',
@@ -185,6 +186,8 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
 
   let openaiKey = existing.OPENAI_API_KEY || '';
   let anthropicKey = existing.ANTHROPIC_API_KEY || '';
+  let openrouterKey = existing.OPENROUTER_API_KEY || '';
+  let openrouterModel = existing.LLM_OPENROUTER_MODEL || '';
 
   if (llmProvider === 'openai') {
     const key = await text({
@@ -208,6 +211,37 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     });
     if (isCancel(key)) { cancel('Setup cancelled.'); process.exit(0); }
     if (key) anthropicKey = key;
+  } else if (llmProvider === 'openrouter') {
+    const key = await text({
+      message: 'OpenRouter API key (paste, then Enter)',
+      placeholder: openrouterKey ? '(keep existing — press Enter)' : 'sk-or-v1-...',
+      validate: (v) => {
+        if (!v && !openrouterKey) return 'API key is required';
+        if (v && !v.startsWith('sk-or-')) return 'OpenRouter keys start with "sk-or-" — check paste';
+      },
+    });
+    if (isCancel(key)) { cancel('Setup cancelled.'); process.exit(0); }
+    if (key) openrouterKey = key;
+
+    // Model — OpenRouter uses "<vendor>/<model>" naming. Default is a
+    // balanced Haiku; users with a budget can swap to Sonnet 4.5 or
+    // gpt-4o, users without can go to meta-llama/llama-3.1-8b-instruct:free.
+    const modelChoice = await text({
+      message: 'OpenRouter model (vendor/model)',
+      placeholder: openrouterModel || 'anthropic/claude-haiku-4-5',
+      validate: (v) => {
+        if (v && !v.includes('/')) return 'OpenRouter models are "vendor/model" — e.g. anthropic/claude-haiku-4-5';
+      },
+    });
+    if (isCancel(modelChoice)) { cancel('Setup cancelled.'); process.exit(0); }
+    if (modelChoice) openrouterModel = modelChoice;
+    if (!openrouterModel) openrouterModel = 'anthropic/claude-haiku-4-5';
+
+    note(
+      'OpenRouter handles LLM calls only — embeddings still route through Ollama / OpenAI / Voyage.\n'
+      + 'You will pick an embedding provider in the next step.',
+      'OpenRouter scope',
+    );
   }
 
   // ── Embeddings ────────────────────────────────────────────────────────────
@@ -330,8 +364,10 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     `# Sigil — generated ${new Date().toISOString().slice(0, 10)}`,
     '',
     `LLM_PROVIDER=${llmProvider}`,
-    openaiKey    ? `OPENAI_API_KEY=${openaiKey}`       : '# OPENAI_API_KEY=',
-    anthropicKey ? `ANTHROPIC_API_KEY=${anthropicKey}` : '# ANTHROPIC_API_KEY=',
+    openaiKey       ? `OPENAI_API_KEY=${openaiKey}`             : '# OPENAI_API_KEY=',
+    anthropicKey    ? `ANTHROPIC_API_KEY=${anthropicKey}`       : '# ANTHROPIC_API_KEY=',
+    openrouterKey   ? `OPENROUTER_API_KEY=${openrouterKey}`     : '# OPENROUTER_API_KEY=',
+    openrouterModel ? `LLM_OPENROUTER_MODEL=${openrouterModel}` : '# LLM_OPENROUTER_MODEL=anthropic/claude-haiku-4-5',
     '',
     `EMBEDDING_PROVIDER=${embeddingProvider}`,
     `EMBEDDING_MODEL=${embeddingModel}`,
@@ -494,6 +530,7 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
 
     if (provider === 'anthropic') log('ok', 'LLM provider', `anthropic (API key set)`);
     else if (provider === 'openai') log('ok', 'LLM provider', `openai (API key set)`);
+    else if (provider === 'openrouter') log('ok', 'LLM provider', `openrouter (model=${config.llm.openrouterModel})`);
     else if (provider === 'ollama') log('ok', 'LLM provider', `ollama @ ${config.llm.ollamaHost}`);
     else if (provider === 'claude-cli') log('ok', 'LLM provider', 'claude-cli (Claude Code subscription)');
     else log('warn', 'LLM provider', provider);

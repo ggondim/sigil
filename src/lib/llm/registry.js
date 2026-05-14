@@ -7,6 +7,7 @@ import config from '../../config.js';
 const PROVIDERS = {
   openai: () => import('./providers/openai.js'),
   anthropic: () => import('./providers/anthropic.js'),
+  openrouter: () => import('./providers/openrouter.js'),
   'claude-cli': () => import('./providers/claude-cli.js'),
   ollama: () => import('./providers/ollama.js'),
 };
@@ -90,7 +91,11 @@ async function detectProvider() {
     return detectedProvider;
   }
 
-  // Check API keys first (fastest, most reliable)
+  // Check API keys first (fastest, most reliable). OpenRouter wins ahead
+  // of anthropic/openai because if the user set both an OpenAI key (for
+  // embeddings) AND an OpenRouter key (for LLM), they almost certainly
+  // want OpenRouter to drive the LLM — that's the point of the gateway.
+  if (config.llm.openrouterApiKey) { detectedProvider = 'openrouter'; return detectedProvider; }
   if (config.llm.apiKey) { detectedProvider = 'anthropic'; return detectedProvider; }
   if (config.llm.openaiApiKey) { detectedProvider = 'openai'; return detectedProvider; }
 
@@ -100,8 +105,8 @@ async function detectProvider() {
 
   throw new Error(
     'No LLM provider available. Either:\n'
-    + '  - Set LLM_PROVIDER (openai, anthropic, ollama, claude-cli)\n'
-    + '  - Set ANTHROPIC_API_KEY or OPENAI_API_KEY\n'
+    + '  - Set LLM_PROVIDER (openai, anthropic, openrouter, ollama, claude-cli)\n'
+    + '  - Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY\n'
     + '  - Start Ollama locally\n'
     + '  - Install the Claude CLI (claude)',
   );
