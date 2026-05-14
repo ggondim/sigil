@@ -2,16 +2,19 @@
  * Hot context — surfaces the most relevant facts for automatic injection
  * into every new Claude session via ~/.sigil/CLAUDE.md.
  *
- * Four-pass blend, merged in priority order with text-level dedup:
- *   1. 6 slots — active session pod (what we were just doing)
- *   2. 4 slots — person pods of people interacted with in last 24h
- *   3. 8 slots — global vital facts (current behaviour, the safety net)
- *   4. 2 slots — project pod of cwd (deferred; PR2 reserves these)
+ * 0.10.0: rewritten as a kind-driven blend. The four-pass hardcoded loop
+ * (session → person → vital → reserved-for-project) becomes a generic
+ * iteration over `registry.activeKinds(ctx)`. Each kind declares its
+ * hotContextBudget, retrievalWeights, and a way to fetch facts —
+ * either pod-backed (default: factsInPodsByRecency over the kind's
+ * active pod uids) or virtual (custom `fetchFacts` method, used by the
+ * `vital` kind which surfaces facts by importance globally).
  *
- * Auto-derivation: when no pod uids are passed, the function reads the
- * active-session cursor (~/.sigil/.active-session.json) and queries
- * person-pods touched in the last 24h. Callers that don't know about
- * pods (e.g., updateContextSnapshot) get pod-aware behaviour for free.
+ * The hot-context blend now expands automatically as new kinds are
+ * registered. Project pods (kind=project) fill the budget that was
+ * reserved-but-unused in 0.9.x; playbook pods (procedural memory) get
+ * their own slots; new kinds in 0.11.0+ (agent, codex_session, etc.)
+ * slot in without touching this file.
  */
 
 import { join } from 'node:path';
@@ -20,38 +23,47 @@ import { homedir } from 'node:os';
 import cortexDb from '../../db/cortex.js';
 import config from '../../config.js';
 
+import '../pods/kinds/index.js'; // side-effect: register built-in kinds
+import { activeKinds } from '../pods/registry.js';
+
 const CONTEXT_LIMIT = 20;
-
-const SLOT_SESSION = 6;
-const SLOT_PERSON = 4;
-const SLOT_VITAL = 8;
-const SLOT_PROJECT = 2; // reserved for PR2
-
-const PERSON_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export async function getHotFacts({
   namespace,
   limit = CONTEXT_LIMIT,
-  sessionPodUid: explicitSessionUid,
-  personPodUids: explicitPersonUids,
+  ctx: callerCtx = {},
 } = {}) {
   const ns = namespace || config.defaults.namespace;
+  const ctx = { ...callerCtx, namespace: ns };
+  if (!ctx.cwd) {
+    ctx.cwd = await readCwdFromCursor();
+  }
 
-  const sessionPodUid = explicitSessionUid ?? await resolveSessionPodUid();
-  const personPodUids = explicitPersonUids ?? await resolveRecentPersonPodUids(ns);
+  const active = await activeKinds(ctx);
 
-  // Run all passes in parallel; we'll merge after.
-  const [sessionFacts, personFacts, vitalFacts] = await Promise.all([
-    sessionPodUid ? factsInPodByRecency(sessionPodUid, ns, SLOT_SESSION) : [],
-    personPodUids.length ? factsInPodsByRecency(personPodUids, ns, SLOT_PERSON) : [],
-    vitalFactsByImportance(ns, SLOT_VITAL),
-  ]);
-  // SLOT_PROJECT reserved for PR2 — for now its slots are absorbed by the
-  // tail of vitalFacts via slice(0, limit) below.
+  // Run each kind's fetch in parallel. Custom fetchFacts (vital) wins;
+  // otherwise default to the pod-membership recency join.
+  const lists = await Promise.all(
+    active.map(async ({ kind, scope }) => {
+      try {
+        if (typeof kind.fetchFacts === 'function') {
+          return await kind.fetchFacts(ctx, {
+            slots: kind.hotContextBudget,
+            namespace: ns,
+          });
+        }
+        return await factsInPodsByRecency(scope, ns, kind.hotContextBudget);
+      } catch {
+        return [];
+      }
+    }),
+  );
 
+  // Merge in registration order with content-level dedup. Each kind's
+  // own budget acts as a quota; the overall `limit` caps the blend.
   const seen = new Set();
   const blended = [];
-  for (const list of [sessionFacts, personFacts, vitalFacts]) {
+  for (const list of lists) {
     for (const content of list) {
       if (!content || seen.has(content)) continue;
       seen.add(content);
@@ -60,8 +72,9 @@ export async function getHotFacts({
     }
   }
 
-  // Backfill from recent (current pre-pod behaviour) if blend underflows
-  // — preserves usefulness when no pods exist yet for legacy users.
+  // Backfill from generic recency if active kinds underflow (e.g., a
+  // fresh install with no project/session pods yet). Preserves the
+  // pre-0.10 behavior for users who haven't accumulated pod memberships.
   if (blended.length < limit) {
     const filler = await cortexDb('fact as f')
       .leftJoin('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
@@ -69,7 +82,6 @@ export async function getHotFacts({
       .orderByRaw('COALESCE(fl.last_accessed_at, f.created_at) DESC')
       .limit(limit)
       .pluck('f.content');
-
     for (const content of filler) {
       if (!content || seen.has(content)) continue;
       seen.add(content);
@@ -81,9 +93,14 @@ export async function getHotFacts({
   return blended.slice(0, limit);
 }
 
-// ── Pod-aware passes ─────────────────────────────────────────────────
-
-async function factsInPodByRecency(podUid, namespace, slots) {
+// Shared helper — pod-backed kinds default to this for their fetch.
+// Ranks by importance_score × recency-decay, falling back to created_at
+// when fact_lifecycle is absent. Exposed for kind authors who want to
+// customise their own fetchFacts but reuse the default scoring.
+export async function factsInPodsByRecency(podUids, namespace, slots) {
+  if (!Array.isArray(podUids) || podUids.length === 0) return [];
+  const real = podUids.filter((u) => typeof u === 'string' && !u.startsWith('__virtual:'));
+  if (real.length === 0) return [];
   return cortexDb('fact as f')
     .join('pod_membership as pm', function () {
       this.on('pm.member_id', '=', 'f.id')
@@ -91,76 +108,32 @@ async function factsInPodByRecency(podUid, namespace, slots) {
     })
     .join('pod as p', 'p.id', 'pm.pod_id')
     .leftJoin('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
-    .where({ 'p.uid': podUid, 'f.status': 'active', 'f.namespace': namespace })
-    .orderByRaw('COALESCE(fl.last_accessed_at, f.created_at) DESC')
-    .limit(slots)
-    .pluck('f.content');
-}
-
-async function factsInPodsByRecency(podUids, namespace, slots) {
-  return cortexDb('fact as f')
-    .join('pod_membership as pm', function () {
-      this.on('pm.member_id', '=', 'f.id')
-          .andOnVal('pm.member_type', '=', 'fact');
-    })
-    .join('pod as p', 'p.id', 'pm.pod_id')
-    .leftJoin('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
-    .whereIn('p.uid', podUids)
+    .whereIn('p.uid', real)
     .where({ 'f.status': 'active', 'f.namespace': namespace })
-    .orderByRaw('COALESCE(fl.last_accessed_at, f.created_at) DESC')
+    .orderByRaw(`
+      COALESCE(f.importance_score, 2) DESC,
+      COALESCE(fl.last_accessed_at, f.created_at) DESC
+    `)
     .limit(slots)
     .pluck('f.content');
 }
 
-async function vitalFactsByImportance(namespace, slots) {
-  return cortexDb('fact as f')
-    .leftJoin('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
-    .where({ 'f.status': 'active', 'f.namespace': namespace, 'f.importance': 'vital' })
-    .orderByRaw('COALESCE(fl.access_count, 0) DESC, f.created_at DESC')
-    .limit(slots)
-    .pluck('f.content');
-}
-
-// ── Auto-derivation ──────────────────────────────────────────────────
-
-async function resolveSessionPodUid() {
+async function readCwdFromCursor() {
   try {
-    const { getActiveSessionPodUid } = await import('../pods/active-session.js');
-    return await getActiveSessionPodUid();
+    const { getActiveCursor } = await import('../pods/active-session.js');
+    const cursor = await getActiveCursor();
+    return cursor?.cwd || null;
   } catch {
     return null;
   }
 }
 
-// Person pods whose facts were accessed in the last 24h. Cheap: joins
-// pod_membership (member_type='fact') → fact_lifecycle.last_accessed_at,
-// filters by person pods, distincts the pod uids.
-async function resolveRecentPersonPodUids(namespace) {
-  try {
-    const cutoff = new Date(Date.now() - PERSON_RECENT_WINDOW_MS);
-    const rows = await cortexDb('pod as p')
-      .join('pod_membership as pm', 'pm.pod_id', 'p.id')
-      .join('fact_lifecycle as fl', 'fl.fact_id', 'pm.member_id')
-      .where('pm.memberType', 'fact')
-      .where('p.podType', 'person')
-      .where('p.namespace', namespace)
-      .where('p.status', 'active')
-      .where('fl.lastAccessedAt', '>=', cutoff)
-      .distinct('p.uid');
-    return rows.map((r) => r.uid);
-  } catch {
-    return [];
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-
-export async function updateContextSnapshot({ namespace, limit } = {}) {
+export async function updateContextSnapshot({ namespace, limit, ctx } = {}) {
   const fs = await import('node:fs/promises');
   // Sigil owns ~/.sigil/CLAUDE.md entirely — never touches ~/.claude/CLAUDE.md
   const cortexMdPath = join(homedir(), '.sigil', 'CLAUDE.md');
 
-  const facts = await getHotFacts({ namespace, limit });
+  const facts = await getHotFacts({ namespace, limit, ctx });
   const marker = '<!-- sigil-context -->';
 
   if (!facts.length) return 0;
