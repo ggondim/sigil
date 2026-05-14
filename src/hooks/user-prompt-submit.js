@@ -3,8 +3,24 @@
 /**
  * UserPromptSubmit hook — injects relevant Sigil facts into Claude's context.
  *
- * Reads the user's prompt from stdin (JSON from Claude Code),
- * searches Sigil for matching facts, and returns them as additionalContext.
+ * Reads the user's prompt from stdin (JSON from Claude Code), searches
+ * Sigil with the prompt as query, and returns the top facts as
+ * additionalContext for Claude.
+ *
+ * 0.10.0:
+ *   • route + expand turned ON — the query router (which existed but was
+ *     bypassed) now classifies the query and adjusts search params
+ *     (categories, limit, useGraph, expand variants).
+ *   • podScope='auto' — search is now scoped to active session + project
+ *     + person pods via the registry, falling back to global for queries
+ *     that the active scope doesn't cover.
+ *   • Token budget — INJECTION_BUDGET_CHARS caps the total injected
+ *     payload at ~1200 tokens (4 chars/token approx), preferred over the
+ *     old fixed MAX_FACTS so retrieval-rich queries get more facts and
+ *     long-fact queries don't blow the budget.
+ *   • synthesize stays OFF here — synthesis adds 1-3s + an LLM call to
+ *     every user message and steals the citation surface from Claude.
+ *     Phase 2 will revisit if router signal warrants it.
  */
 
 import { resolve, dirname, join } from 'node:path';
@@ -22,7 +38,8 @@ if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
 else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
 
 const MIN_QUERY_LENGTH = 8;
-const MAX_FACTS = 8;
+const MAX_FACTS = 20;
+const INJECTION_BUDGET_CHARS = 4800; // ~1200 tokens
 
 async function main() {
   const chunks = [];
@@ -40,17 +57,55 @@ async function main() {
     const { search } = await import('../memory/search/hybrid.js');
     const config = (await import('../config.js')).default;
 
-    const { facts } = await search(query, {
-      namespaces: [config.defaults.namespace],
-      limit: MAX_FACTS,
-      useGraph: false,
-      route: false,
-      expand: false,
-      // Synthesis here would add 1-3s + an LLM call to every user message,
-      // and steal the citation surface from Claude. Hand back raw facts and
-      // let the session do its own reasoning.
-      synthesize: false,
-    });
+    let result;
+    try {
+      result = await search(query, {
+        namespaces: [config.defaults.namespace],
+        limit: MAX_FACTS,
+        useGraph: false, // router promotes to true when warranted
+        route: true,
+        expand: true,
+        synthesize: false,
+        podScope: 'auto',
+        ctx: {
+          cwd: input.cwd || null,
+          sessionId: input.session_id || null,
+        },
+      });
+    } catch (searchErr) {
+      // If pod-scoped search yields nothing (or errors on empty scope),
+      // fall through to a global search so the hook still surfaces facts
+      // for fresh installs / pre-pod data.
+      process.stderr.write(`[sigil:user-prompt-submit] pod-scoped search failed, retrying global: ${searchErr.message}\n`);
+      result = await search(query, {
+        namespaces: [config.defaults.namespace],
+        limit: MAX_FACTS,
+        useGraph: false,
+        route: true,
+        expand: true,
+        synthesize: false,
+        podScope: 'global',
+      });
+    }
+
+    let facts = result?.facts || [];
+
+    // If pod-scoped search returned nothing but we asked for 'auto', try
+    // global as a fallback (e.g., user just installed and has no pods yet).
+    if (facts.length === 0) {
+      try {
+        const fallback = await search(query, {
+          namespaces: [config.defaults.namespace],
+          limit: MAX_FACTS,
+          useGraph: false,
+          route: true,
+          expand: true,
+          synthesize: false,
+          podScope: 'global',
+        });
+        facts = fallback?.facts || [];
+      } catch { /* keep facts as empty */ }
+    }
 
     if (!facts.length) {
       const cortexDb = (await import('../db/cortex.js')).default;
@@ -58,9 +113,21 @@ async function main() {
       return respond();
     }
 
+    // Apply token budget — take facts in score order until the cumulative
+    // char count would exceed budget. Always take at least one fact even
+    // if it's over budget alone (better than no signal).
+    const chosen = [];
+    let used = 0;
+    for (const f of facts) {
+      const len = (f.content || '').length + 4; // "- " prefix + newline
+      if (chosen.length > 0 && used + len > INJECTION_BUDGET_CHARS) break;
+      chosen.push(f);
+      used += len;
+    }
+
     const context = maskSecrets([
-      `Sigil memory (${facts.length} relevant facts):`,
-      ...facts.map((f) => `- ${f.content}`),
+      `Sigil memory (${chosen.length} relevant facts):`,
+      ...chosen.map((f) => `- ${f.content}`),
     ].join('\n'));
 
     const cortexDb = (await import('../db/cortex.js')).default;
