@@ -188,6 +188,12 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   let anthropicKey = existing.ANTHROPIC_API_KEY || '';
   let openrouterKey = existing.OPENROUTER_API_KEY || '';
   let openrouterModel = existing.LLM_OPENROUTER_MODEL || '';
+  // Per-task model overrides — populated only when the user opts into the
+  // smart split during the OpenRouter init path. Empty string → write a
+  // commented-out hint line so the user can fill it in later.
+  let extractionModel = existing.LLM_EXTRACTION_MODEL || '';
+  let decisionModel = existing.LLM_DECISION_MODEL || '';
+  let synthModel = existing.SIGIL_SYNTH_MODEL || existing.CORTEX_SYNTH_MODEL || '';
 
   if (llmProvider === 'openai') {
     const key = await text({
@@ -223,19 +229,60 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     if (isCancel(key)) { cancel('Setup cancelled.'); process.exit(0); }
     if (key) openrouterKey = key;
 
-    // Model — OpenRouter uses "<vendor>/<model>" naming. Default is a
-    // balanced Haiku; users with a budget can swap to Sonnet 4.5 or
-    // gpt-4o, users without can go to meta-llama/llama-3.1-8b-instruct:free.
+    // Default model — Gemini Flash latest. Best singular all-rounder at
+    // current OpenRouter pricing ($0.0005/$0.003 per 1M; 1M context;
+    // strong JSON; ~500ms latency). Beats Claude Haiku 2× on cost while
+    // matching JSON + reasoning across all of Sigil's call types.
     const modelChoice = await text({
       message: 'OpenRouter model (vendor/model)',
-      placeholder: openrouterModel || 'anthropic/claude-haiku-4-5',
+      placeholder: openrouterModel || 'google/gemini-flash-latest',
       validate: (v) => {
-        if (v && !v.includes('/')) return 'OpenRouter models are "vendor/model" — e.g. anthropic/claude-haiku-4-5';
+        if (v && !v.includes('/')) return 'OpenRouter models are "vendor/model" — e.g. google/gemini-flash-latest';
       },
     });
     if (isCancel(modelChoice)) { cancel('Setup cancelled.'); process.exit(0); }
     if (modelChoice) openrouterModel = modelChoice;
-    if (!openrouterModel) openrouterModel = 'anthropic/claude-haiku-4-5';
+    if (!openrouterModel) openrouterModel = 'google/gemini-flash-latest';
+
+    // Advanced: per-task overrides. The "smart split" gives ~5× cheaper
+    // extraction (high volume) and best-in-class reasoning for AUDM /
+    // synthesis (low volume) at the cost of debugging three model
+    // behaviors. Opt-in because most users want the singular pick.
+    const wantsAdvanced = await select({
+      message: 'Configure per-task model overrides? (advanced — better quality / cost)',
+      options: [
+        { value: 'no',  label: 'No, use one model everywhere', hint: 'simpler — debug one model' },
+        { value: 'yes', label: 'Yes, configure smart split',   hint: '~5× cheaper extraction + better AUDM/synthesis' },
+      ],
+      initialValue: 'no',
+    });
+    if (isCancel(wantsAdvanced)) { cancel('Setup cancelled.'); process.exit(0); }
+
+    if (wantsAdvanced === 'yes') {
+      const ext = await text({
+        message: 'Extraction model (high-volume; cheap matters)',
+        placeholder: extractionModel || 'openrouter:qwen/qwen3.5-flash',
+      });
+      if (isCancel(ext)) { cancel('Setup cancelled.'); process.exit(0); }
+      if (ext) extractionModel = ext;
+      if (!extractionModel) extractionModel = 'openrouter:qwen/qwen3.5-flash';
+
+      const dec = await text({
+        message: 'Decision model (AUDM; smart matters)',
+        placeholder: decisionModel || 'openrouter:anthropic/claude-sonnet-latest',
+      });
+      if (isCancel(dec)) { cancel('Setup cancelled.'); process.exit(0); }
+      if (dec) decisionModel = dec;
+      if (!decisionModel) decisionModel = 'openrouter:anthropic/claude-sonnet-latest';
+
+      const syn = await text({
+        message: 'Synthesis model (read-time answer composition)',
+        placeholder: synthModel || 'openrouter:anthropic/claude-sonnet-latest',
+      });
+      if (isCancel(syn)) { cancel('Setup cancelled.'); process.exit(0); }
+      if (syn) synthModel = syn;
+      if (!synthModel) synthModel = 'openrouter:anthropic/claude-sonnet-latest';
+    }
 
     note(
       'OpenRouter handles LLM calls only — embeddings still route through Ollama / OpenAI / Voyage.\n'
@@ -367,7 +414,14 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     openaiKey       ? `OPENAI_API_KEY=${openaiKey}`             : '# OPENAI_API_KEY=',
     anthropicKey    ? `ANTHROPIC_API_KEY=${anthropicKey}`       : '# ANTHROPIC_API_KEY=',
     openrouterKey   ? `OPENROUTER_API_KEY=${openrouterKey}`     : '# OPENROUTER_API_KEY=',
-    openrouterModel ? `LLM_OPENROUTER_MODEL=${openrouterModel}` : '# LLM_OPENROUTER_MODEL=anthropic/claude-haiku-4-5',
+    openrouterModel ? `LLM_OPENROUTER_MODEL=${openrouterModel}` : '# LLM_OPENROUTER_MODEL=google/gemini-flash-latest',
+    '',
+    '# Per-task model overrides (optional — uncomment to use the smart split).',
+    '# Pattern: openrouter:<vendor>/<model>  to route a single task through a different model.',
+    '# Extraction is high-volume (cheap matters); decision/synthesis are reasoning-heavy (smart matters).',
+    extractionModel ? `LLM_EXTRACTION_MODEL=${extractionModel}` : '# LLM_EXTRACTION_MODEL=openrouter:qwen/qwen3.5-flash',
+    decisionModel   ? `LLM_DECISION_MODEL=${decisionModel}`     : '# LLM_DECISION_MODEL=openrouter:anthropic/claude-sonnet-latest',
+    synthModel      ? `SIGIL_SYNTH_MODEL=${synthModel}`         : '# SIGIL_SYNTH_MODEL=openrouter:anthropic/claude-sonnet-latest',
     '',
     `EMBEDDING_PROVIDER=${embeddingProvider}`,
     `EMBEDDING_MODEL=${embeddingModel}`,

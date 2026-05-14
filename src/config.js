@@ -41,9 +41,14 @@ const config = {
     apiKey: process.env.ANTHROPIC_API_KEY || '',
 
     // OpenRouter — OpenAI-compatible gateway; one key, namespaced models
-    // like "anthropic/claude-sonnet-4-5", "openai/gpt-4o-mini", etc.
+    // like "anthropic/claude-sonnet-latest", "openai/gpt-mini-latest", etc.
+    // Default is Gemini Flash latest — best singular all-rounder at current
+    // OpenRouter pricing: $0.0005/$0.003 per 1M tokens, 1M context, strong
+    // JSON output, ~500ms typical latency. Beats Claude Haiku 2× on cost
+    // and 5× on context while matching reasoning + JSON reliability for
+    // Sigil's call types (extraction, AUDM, classifier, router, synthesis).
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
-    openrouterModel: process.env.LLM_OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5',
+    openrouterModel: process.env.LLM_OPENROUTER_MODEL || 'google/gemini-flash-latest',
     openrouterBaseUrl: process.env.LLM_OPENROUTER_BASE_URL || '',
     openrouterReferer: process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/cortex',
     openrouterTitle: process.env.LLM_OPENROUTER_TITLE || 'Sigil',
