@@ -74,8 +74,12 @@ async function main() {
 
     await saveFacts(facts, { podUids });
   } catch (err) {
-    // Never block Claude — fail silently
+    // Never block Claude — fail silently, but log so sigil doctor can surface it
     process.stderr.write(`[sigil:stop] ${err.message}\n`);
+    try {
+      const { recordHookError } = await import('./error-log.js');
+      await recordHookError('stop', err, input);
+    } catch { /* ignore */ }
   } finally {
     // Tear down the DB connection so Node exits cleanly
     try {

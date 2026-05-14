@@ -71,6 +71,10 @@ async function main() {
     });
   } catch (err) {
     process.stderr.write(`[sigil:session-end] ${err.message}\n`);
+    try {
+      const { recordHookError } = await import('./error-log.js');
+      await recordHookError('session-end', err, input);
+    } catch { /* ignore */ }
   } finally {
     try {
       const cortexDb = (await import('../db/cortex.js')).default;

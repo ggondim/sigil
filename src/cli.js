@@ -538,6 +538,24 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
   if (existsSync(cortexMd)) log('ok', 'Sigil CLAUDE.md', cortexMd);
   else log('warn', 'Sigil CLAUDE.md', `not found — run 'sigil init'`);
 
+  // Recent hook errors — silent failures from the 4 hooks that auto-run
+  // during Claude Code sessions. Surfaces problems that would otherwise
+  // rot unnoticed because hooks never block Claude.
+  try {
+    const { readRecentHookErrors, HOOK_ERROR_LOG } = await import('./hooks/error-log.js');
+    const recent = await readRecentHookErrors(10);
+    if (recent.length === 0) {
+      log('ok', 'Hook errors', `none in ${HOOK_ERROR_LOG}`);
+    } else {
+      log('warn', 'Hook errors', `${recent.length} recent — see ${HOOK_ERROR_LOG}`);
+      for (const e of recent.slice(-5)) {
+        console.log(`    ${e.ts}  [${e.hook}]  ${e.error}`);
+      }
+    }
+  } catch (err) {
+    log('warn', 'Hook errors', `unreadable: ${err.message}`);
+  }
+
   console.log();
   const failed = checks.filter((c) => c.status === 'fail').length;
   const warned = checks.filter((c) => c.status === 'warn').length;

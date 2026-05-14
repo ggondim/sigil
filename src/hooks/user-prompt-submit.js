@@ -29,6 +29,7 @@ import { existsSync } from 'node:fs';
 import { config as dotenvConfig } from 'dotenv';
 
 import { maskSecrets } from './secret-mask.js';
+import { recordHookError } from './error-log.js';
 
 // Load env before anything else
 const home = process.env.HOME || process.env.USERPROFILE;
@@ -134,8 +135,9 @@ async function main() {
     await cortexDb.destroy();
     return respond(context);
   } catch (err) {
-    // Never block Claude — fail silently
+    // Never block Claude — fail silently, but log so sigil doctor can surface it
     process.stderr.write(`[sigil:user-prompt-submit] ${err.message}\n`);
+    await recordHookError('user-prompt-submit', err, raw);
     try {
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy();

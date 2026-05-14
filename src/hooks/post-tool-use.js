@@ -221,6 +221,10 @@ async function main() {
   } catch (err) {
     process.stderr.write(`[sigil:post-tool-use] ${err.message}\n`);
     try {
+      const { recordHookError } = await import('./error-log.js');
+      await recordHookError('post-tool-use', err, input);
+    } catch { /* ignore */ }
+    try {
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy();
     } catch { /* ignore */ }
