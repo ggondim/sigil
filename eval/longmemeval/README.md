@@ -1,4 +1,4 @@
-# LongMemEval harness for Cortex
+# LongMemEval harness for Sigil
 
 Reproducible benchmark methodology. See [`RESULTS.md`](./RESULTS.md) for the latest published numbers.
 
@@ -23,9 +23,9 @@ curl -L -o longmemeval_s_cleaned.json \
 ## Run the eval
 
 ```bash
-# Use a separate DB so the eval doesn't touch your main Cortex
-mkdir -p /tmp/cortex-bench-db
-EMBEDDING_DIMENSIONS=1024 CORTEX_PGLITE_PATH=/tmp/cortex-bench-db \
+# Use a separate DB so the eval doesn't touch your main Sigil
+mkdir -p /tmp/sigil-bench-db
+EMBEDDING_DIMENSIONS=1024 SIGIL_PGLITE_PATH=/tmp/sigil-bench-db \
   node ../../src/cli.js migrate
 
 LLM_PROVIDER=openai \
@@ -33,9 +33,9 @@ LLM_OPENAI_MODEL=gpt-4o \
 EMBEDDING_PROVIDER=openai \
 EMBEDDING_MODEL=text-embedding-3-large \
 EMBEDDING_DIMENSIONS=1024 \
-CORTEX_SYNTHESIZE=true \
-CORTEX_EAGER_EXTRACT=false \
-CORTEX_PGLITE_PATH=/tmp/cortex-bench-db \
+SIGIL_SYNTHESIZE=true \
+SIGIL_EAGER_EXTRACT=false \
+SIGIL_PGLITE_PATH=/tmp/sigil-bench-db \
   node run-eval.js --n=100 --judge=true
 ```
 

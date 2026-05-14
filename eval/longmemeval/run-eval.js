@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * LongMemEval harness for Cortex.
+ * LongMemEval harness for Sigil.
  *
  * For each question:
  *   1. Wipe a per-question namespace `lme-<qid>` (one profile per question — Ogham's
@@ -25,9 +25,13 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { config as dotenvConfig } from 'dotenv';
 
-const globalEnv = join(homedir(), '.cortex', '.env');
+// Sigil v0.10.0+ uses ~/.sigil/.env; older ~/.cortex/.env still loaded as
+// fallback so existing benchmark runners with the legacy path work too.
+const sigilEnv = join(homedir(), '.sigil', '.env');
+const legacyEnv = join(homedir(), '.cortex', '.env');
 const projectEnv = resolve(process.cwd(), '.env');
-if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
+if (existsSync(legacyEnv)) dotenvConfig({ path: legacyEnv, quiet: true });
+if (existsSync(sigilEnv)) dotenvConfig({ path: sigilEnv, quiet: true });
 if (existsSync(projectEnv)) dotenvConfig({ path: projectEnv, quiet: true, override: true });
 
 const config = (await import('../../src/config.js')).default;
@@ -51,7 +55,7 @@ async function main() {
 
   await mkdir(REPORTS_DIR, { recursive: true });
 
-  console.log(`\n=== LongMemEval / Cortex ===`);
+  console.log(`\n=== LongMemEval / Sigil ===`);
   console.log(`Config: synthesize=${config.search.synthesize} eagerExtract=${config.ingest.eagerExtract}`);
   console.log(`Sample: ${n} questions starting at index ${startAt}, judge=${judge}`);
 
