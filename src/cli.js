@@ -782,7 +782,7 @@ Usage:
         console.log(`Cursor points to ${cursor.pod_uid} but pod row not found.`);
         return;
       }
-      const sessionType = await import('./memory/pods/types/session.js');
+      const sessionType = await import('./memory/pods/kinds/claude_session.js');
       const view = sessionType.formatForDisplay(pod);
       console.log(`Active session: ${pod.uid}`);
       console.log(`  session_id:     ${view.sessionId}`);
@@ -794,7 +794,7 @@ Usage:
       console.log(`  docs in pod:    ${pod.memberDocCount}`);
     } else if (sub === 'list') {
       const limit = Number(parseArg(args, '--limit') || 10);
-      const pods = await (await import('./memory/pods/store.js')).listPods({ podType: 'session', limit });
+      const pods = await (await import('./memory/pods/store.js')).listPods({ podType: 'claude_session', limit });
       if (!pods.length) {
         console.log('No session pods.');
         return;

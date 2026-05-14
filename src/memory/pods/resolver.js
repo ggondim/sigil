@@ -20,7 +20,7 @@
  */
 
 import * as podStore from './store.js';
-import * as personType from './types/person.js';
+import * as personType from './kinds/person.js';
 import config from '../../config.js';
 
 // Find or create the person pod for a given entity. If a pod already

@@ -17,7 +17,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 import * as podStore from './store.js';
-import * as sessionType from './types/session.js';
+import * as sessionType from './kinds/claude_session.js';
 import config from '../../config.js';
 
 const home = process.env.HOME || process.env.USERPROFILE;
