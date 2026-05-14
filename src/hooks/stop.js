@@ -55,26 +55,24 @@ async function main() {
 
     if (!facts.length) return respond();
 
-    // Resolve (or create) the session pod for this Claude Code session.
-    // Hooks always receive session_id in the stdin envelope; on the rare
-    // case it's missing, we fall through without a pod and the save still
-    // succeeds — just without session attribution.
-    let sessionPodUid = null;
+    // Resolve all active kinds' pods (session + project today, more in
+    // 0.11.0+). Each pod gets the new facts attached. If any individual
+    // kind fails, the others still attach — best-effort to keep hook
+    // resilience.
+    let podUids = [];
     try {
-      if (input.session_id) {
-        const { ensureActiveSession } = await import('../memory/pods/active-session.js');
-        const pod = await ensureActiveSession({
-          sessionId: input.session_id,
-          transcriptPath: input.transcript_path || null,
-          cwd: input.cwd || null,
-        });
-        sessionPodUid = pod?.uid || null;
-      }
+      const { ensureActivePodsForHook } = await import('../memory/pods/hook-dispatcher.js');
+      const dispatch = await ensureActivePodsForHook({
+        sessionId: input.session_id,
+        cwd: input.cwd || null,
+        transcriptPath: input.transcript_path || null,
+      });
+      podUids = dispatch.podUids;
     } catch (err) {
-      process.stderr.write(`[sigil:stop] session pod resolve failed: ${err.message}\n`);
+      process.stderr.write(`[sigil:stop] pod dispatch failed: ${err.message}\n`);
     }
 
-    await saveFacts(facts, { sessionPodUid });
+    await saveFacts(facts, { podUids });
   } catch (err) {
     // Never block Claude — fail silently
     process.stderr.write(`[sigil:stop] ${err.message}\n`);
@@ -249,11 +247,9 @@ async function classifyTurn(userMessage) {
 
 // ─── Save through the regular AUDM pipeline ──────────────────────────────
 
-async function saveFacts(facts, { sessionPodUid = null } = {}) {
+async function saveFacts(facts, { podUids = [] } = {}) {
   const { ingestDocument } = await import('../ingestion/pipeline.js');
   const config = (await import('../config.js')).default;
-
-  const podUids = sessionPodUid ? [sessionPodUid] : [];
 
   // Run sequentially so PGlite (single-process) doesn't get hammered
   for (const fact of facts) {

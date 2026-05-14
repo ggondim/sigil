@@ -188,27 +188,32 @@ async function main() {
       embedding,
     });
 
-    // Attach to the active session pod so the observation surfaces in
-    // `sigil session show` and the hot-context session slot. Best-effort:
-    // missing session_id or a transient pod-store error must not break
-    // the hook.
-    if (input.session_id) {
-      try {
-        const { ensureActiveSession } = await import('../memory/pods/active-session.js');
-        const podMembership = await import('../memory/pods/membership.js');
-        const pod = await ensureActiveSession({
-          sessionId: input.session_id,
-          transcriptPath: input.transcript_path || null,
-          cwd: input.cwd || null,
-        });
-        const factId = saveResult?.fact?.id ?? saveResult?.existing?.id;
-        const role = saveResult?.action === 'SKIP' ? 'mention' : 'primary';
-        if (pod && factId) {
-          await podMembership.attachFact(pod.id, factId, role);
+    // Attach the observation to every active kind's pod — session, project,
+    // and anything new in 0.11.0+. Best-effort: each kind's failure is
+    // isolated; missing session_id or transient errors do not block the
+    // hook.
+    try {
+      const { ensureActivePodsForHook } = await import('../memory/pods/hook-dispatcher.js');
+      const podMembership = await import('../memory/pods/membership.js');
+      const { sessionPod, projectPod } = await ensureActivePodsForHook({
+        sessionId: input.session_id,
+        cwd: input.cwd || null,
+        transcriptPath: input.transcript_path || null,
+      });
+      const factId = saveResult?.fact?.id ?? saveResult?.existing?.id;
+      const role = saveResult?.action === 'SKIP' ? 'mention' : 'primary';
+      if (factId) {
+        for (const pod of [sessionPod, projectPod]) {
+          if (!pod) continue;
+          try {
+            await podMembership.attachFact(pod.id, factId, role);
+          } catch (err) {
+            process.stderr.write(`[sigil:post-tool-use] attach to ${pod.uid} failed: ${err.message}\n`);
+          }
         }
-      } catch (err) {
-        process.stderr.write(`[sigil:post-tool-use] pod attach failed: ${err.message}\n`);
       }
+    } catch (err) {
+      process.stderr.write(`[sigil:post-tool-use] pod dispatch failed: ${err.message}\n`);
     }
 
     const cortexDb = (await import('../db/cortex.js')).default;
