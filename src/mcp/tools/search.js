@@ -23,8 +23,13 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
       useGraph: z.boolean().optional().default(false).describe('Traverse entity graph for additional related facts'),
       pointInTime: z.string().optional().describe('ISO timestamp — return only facts valid at this point in time'),
       format: z.enum(['full', 'compact']).optional().default('full').describe('Output format: "full" (default) or "compact" (token-efficient, one line per category)'),
+      podScope: z.union([
+        z.literal('auto'),
+        z.literal('global'),
+        z.array(z.string()),
+      ]).optional().describe('Pod scope: "auto" (uses active session/project/person pods), "global" (no filter), or list of pod uids/names. Default: "global".'),
     },
-    async ({ query, limit, namespaces, minConfidence, includeChunks, useGraph, pointInTime, format }) => {
+    async ({ query, limit, namespaces, minConfidence, includeChunks, useGraph, pointInTime, format, podScope }) => {
       const ns = namespaces?.length ? namespaces : [config.defaults.namespace];
       const pit = pointInTime ? new Date(pointInTime) : undefined;
 
@@ -35,6 +40,7 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
         includeChunks,
         useGraph,
         pointInTime: pit,
+        podScope: podScope ?? null,
       });
 
       if (format === 'compact') {

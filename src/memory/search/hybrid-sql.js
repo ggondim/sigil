@@ -32,10 +32,24 @@ const CONFIDENCE_HIGH_MULT = 1.0;
 const CONFIDENCE_MEDIUM_MULT = 0.85;
 const CONFIDENCE_LOW_MULT = 0.7;
 
-async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5, minConfidence = 'medium', pointInTime, categories }) {
+async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5, minConfidence = 'medium', pointInTime, categories, podIds = null }) {
   const vec = pgVector(queryEmbedding);
   const { temporalClause, categoryClause, filterParams } = buildFactFilters({ minConfidence, pointInTime, categories });
   const overfetchLimit = limit * OVERFETCH;
+
+  // Optional pod-scope filter — applied identically to both CTEs. Empty
+  // array means "scope to nothing" (return no results); null/undefined
+  // means "global, no scope filter". Caller responsibility (hybrid.js
+  // search()) to resolve podScope='auto' to a real ID list before this
+  // function sees it.
+  const podScopeFilter = Array.isArray(podIds) && podIds.length > 0;
+  const podScopeClause = podScopeFilter
+    ? `AND id = ANY(
+         SELECT member_id FROM pod_membership
+         WHERE member_type = 'fact' AND pod_id = ANY(?::int[])
+       )`
+    : '';
+  const podScopeParams = podScopeFilter ? [podIds] : [];
 
   // Params order (matches the `?` sequence below):
   //   1. vec                            -- semantic CTE: similarity select
@@ -65,8 +79,8 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
   // categories array landed where the @@ tsquery placeholder lived.
   const [minRank, ...extraFilterParams] = filterParams;
 
-  const semanticParams = [vec, vec, namespaces, minRank, ...extraFilterParams, vec, overfetchLimit];
-  const keywordParams  = [query, query, namespaces, minRank, query, ...extraFilterParams, overfetchLimit];
+  const semanticParams = [vec, vec, namespaces, minRank, ...extraFilterParams, ...podScopeParams, vec, overfetchLimit];
+  const keywordParams  = [query, query, namespaces, minRank, query, ...extraFilterParams, ...podScopeParams, overfetchLimit];
   const rrfParams = [
     overfetchLimit, // COALESCE fallback for semantic rank_ix
     overfetchLimit, // COALESCE fallback for keyword rank_ix
@@ -90,6 +104,7 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
         AND ${CONFIDENCE_CASE} >= ?
         ${temporalClause}
         ${categoryClause}
+        ${podScopeClause}
       ORDER BY embedding <=> ?
       LIMIT ?
     ),
@@ -109,6 +124,7 @@ async function hybridSearchFacts(query, queryEmbedding, { namespaces, limit = 5,
         AND to_tsvector('english', content) @@ plainto_tsquery('english', ?)
         ${temporalClause}
         ${categoryClause}
+        ${podScopeClause}
       ORDER BY keyword_rank DESC
       LIMIT ?
     ),

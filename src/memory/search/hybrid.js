@@ -16,6 +16,9 @@ import { extractEntitiesFromFacts, findRelatedFacts, rerank } from './graph-enha
 import { expandQuery } from './query-expander.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
+import '../pods/kinds/index.js'; // side-effect: register built-in kinds
+import { activeKinds } from '../pods/registry.js';
+import cortexDb from '../../db/cortex.js';
 
 // K=20 gives good score spread for our result set sizes (5-50).
 // K=60 (original paper) compresses scores into a ~0.001 band with small sets.
@@ -28,7 +31,7 @@ const KEYWORD_WEIGHT = 0.7;
 // Entity detection only for short, name-like queries — not full sentences
 const MAX_ENTITY_QUERY_LENGTH = 60;
 
-async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime, expand = false, route = true, categories, synthesize = config.search.synthesize } = {}) {
+async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime, expand = false, route = true, categories, synthesize = config.search.synthesize, podScope = null, ctx = {} } = {}) {
   // When synthesis is on, force include chunks so the synthesizer has raw material
   // (especially important in lazy/Ogham mode where no facts are stored).
   if (synthesize) includeChunks = true;
@@ -49,11 +52,13 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
 
   const matchedEntity = await detectEntity(query, namespaces);
 
+  const podIds = await resolvePodScope(podScope, { ...ctx, namespace: namespaces?.[0] });
+
   let result;
   if (matchedEntity) {
-    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories });
+    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds });
   } else {
-    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories });
+    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories, podIds });
   }
 
   // Fire-and-forget access tracking + Hebbian co-retrieval edge strengthening.
@@ -136,6 +141,48 @@ async function strengthenEntitiesForResult(factIds) {
   await strengthenEntityEdges(unique);
 }
 
+// Resolve a podScope value into numeric pod IDs for the SQL filter.
+//
+//   null | undefined | 'global'  → null (no filter, full brain)
+//   'auto'                       → IDs for pods returned by
+//                                   registry.activeKinds(ctx); skips
+//                                   virtual sentinels (vital).
+//   string[]                     → mix of pod uids ('pod-...') and pod
+//                                   names; both resolved against pod table.
+//   number[]                     → passed through unchanged.
+//
+// Returns [] when scoping was requested but resolves to nothing — SQL
+// treats that as "no pods match" rather than "no filter" (correct: an
+// agent that has zero readable pods should see zero facts).
+async function resolvePodScope(podScope, ctx = {}) {
+  if (podScope == null || podScope === 'global') return null;
+
+  if (podScope === 'auto') {
+    const active = await activeKinds(ctx);
+    const uids = active
+      .flatMap((a) => a.scope)
+      .filter((u) => typeof u === 'string' && !u.startsWith('__virtual:'));
+    if (uids.length === 0) return [];
+    const rows = await cortexDb('pod').whereIn('uid', uids).select('id');
+    return rows.map((r) => r.id);
+  }
+
+  if (Array.isArray(podScope)) {
+    if (podScope.length === 0) return [];
+    if (podScope.every((x) => typeof x === 'number')) return podScope;
+    const strings = podScope.filter((x) => typeof x === 'string');
+    if (strings.length === 0) return [];
+    const rows = await cortexDb('pod')
+      .where(function () {
+        this.whereIn('uid', strings).orWhereIn('name', strings);
+      })
+      .select('id');
+    return rows.map((r) => r.id);
+  }
+
+  return null;
+}
+
 // Check if the query matches a known entity by name (DB lookup, no LLM call)
 async function detectEntity(query, namespaces) {
   if (query.length < 2 || query.length > MAX_ENTITY_QUERY_LENGTH) return null;
@@ -159,7 +206,7 @@ async function detectEntity(query, namespaces) {
 // search for "Sigil" can't see fact text that still says "Smara." Running
 // a parallel search for each alias and merging the result sets lets those
 // historical facts surface — without rewriting fact text.
-async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories }) {
+async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds }) {
   const queryVariants = buildAliasQueryVariants(query, entity);
 
   const variantEmbeddings = await embedBatch(queryVariants, { inputType: 'query' });
@@ -169,7 +216,7 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
     listRelationsForEntity(entity.id, { limit: 15 }),
     ...queryVariants.map((q, i) => coreHybridSearch(q, {
       queryEmbedding: variantEmbeddings[i],
-      namespaces, limit, minConfidence, includeChunks, pointInTime, categories,
+      namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds,
     })),
   ]);
 
@@ -282,12 +329,12 @@ function escapeRegex(s) {
 }
 
 // No entity match: expand query into variants, search all in parallel, merge
-async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories }) {
+async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories, podIds }) {
   const queries = expand ? await expandQuery(query) : [query];
   const embeddings = await embedBatch(queries, { inputType: 'query' });
 
   const results = await Promise.all(
-    queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories })),
+    queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds })),
   );
 
   let facts = multiQueryMerge(results.map((r) => r.facts), limit);
@@ -446,11 +493,11 @@ function multiQueryMerge(resultSets, limit) {
 // Core vector+keyword hybrid with RRF merge.
 // Facts use single-SQL-query RRF (see hybrid-sql.js). Chunks stay on the
 // two-query + JS-merge path since they have no category/confidence filters.
-async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories }) {
+async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories, podIds }) {
   const queryEmbedding = precomputed || await embed(query, { inputType: 'query' });
 
   const factsPromise = hybridSearchFacts(query, queryEmbedding, {
-    namespaces, limit, minConfidence, pointInTime, categories,
+    namespaces, limit, minConfidence, pointInTime, categories, podIds,
   });
 
   const chunkPromises = includeChunks
