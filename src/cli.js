@@ -46,6 +46,8 @@ Commands:
   pod <sub>                List, show, create, or archive memory pods
   export [--format=json]   Export knowledge base as JSON or Markdown
   context                  Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
+  why                      Explain a search result — per-fact RRF / pod / kind breakdown
+  kind                     List or show pod kinds (claude_session, project, person, playbook, vital)
   status                   Show knowledge base statistics
   maintain                 Run periodic memory maintenance (stage promotion, edge consolidation)
   migrate                  Run database migrations
@@ -80,6 +82,8 @@ const commands = {
   migrate: runMigrate,
   reset: runReset,
   register: runRegister,
+  why: runWhy,
+  kind: runKind,
 };
 
 const handler = commands[command];
@@ -1744,25 +1748,63 @@ async function runContext(args) {
     console.log(`sigil context — Refresh the hot-context snapshot in ~/.claude/CLAUDE.md
 
 Usage:
-  sigil context [--namespace=<ns>] [--limit=<n>]
+  sigil context [--namespace=<ns>] [--limit=<n>] [--explain]
 
 Rebuilds the Active Context block injected into every new Claude session.
 This runs automatically after sigil remember and sigil ingest.
 
 Options:
   --namespace=<ns>   Namespace to pull facts from (default: from config)
-  --limit=<n>        Max facts to include (default: 20)`);
+  --limit=<n>        Max facts to include (default: 20)
+  --explain          Don't write the snapshot — print which kind each
+                     fact came from instead`);
     process.exit(0);
   }
 
   const config = (await import('./config.js')).default;
   const cortexDb = (await import('./db/cortex.js')).default;
-  const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
-
   const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || config.defaults.namespace;
   const limitArg = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
   const limit = limitArg ? Number(limitArg) : 20;
+  const explain = args.includes('--explain');
 
+  if (explain) {
+    // Don't write the snapshot — show which kind each fact came from.
+    await import('./memory/pods/kinds/index.js');
+    const { activeKinds } = await import('./memory/pods/registry.js');
+    const { factsInPodsByRecency } = await import('./memory/facts/hot-context.js');
+
+    const ctx = { namespace, cwd: process.cwd() };
+    const active = await activeKinds(ctx);
+    console.log(`Hot-context blend for namespace=${namespace}:`);
+    console.log('');
+    for (const { kind, scope } of active) {
+      console.log(`  ${kind.name} (budget=${kind.hotContextBudget}, ${kind.visibility})`);
+      let facts;
+      try {
+        if (typeof kind.fetchFacts === 'function') {
+          facts = await kind.fetchFacts(ctx, { slots: kind.hotContextBudget, namespace });
+        } else {
+          facts = await factsInPodsByRecency(scope, namespace, kind.hotContextBudget);
+        }
+      } catch (err) {
+        facts = [];
+        console.log(`    (failed: ${err.message})`);
+      }
+      if (!facts || facts.length === 0) {
+        console.log('    (no facts)');
+      } else {
+        for (const f of facts.slice(0, kind.hotContextBudget)) {
+          console.log(`    - ${(typeof f === 'string' ? f : f.content || '').slice(0, 120)}`);
+        }
+      }
+      console.log('');
+    }
+    await cortexDb.destroy();
+    return;
+  }
+
+  const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
   await writeSigilMd();
   const count = await updateContextSnapshot({ namespace, limit });
   await cortexDb.destroy();
@@ -2025,6 +2067,151 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+
+// ─── Why ─────────────────────────────────────────────────────────────────────
+
+async function runWhy(args) {
+  if (args.length === 0 || args.includes('--help')) {
+    console.log(`sigil why — Explain a search result
+
+Usage:
+  sigil why "<query>" [--namespace=<ns>] [--limit=5] [--pod-scope=auto|global|<name>,<name>]
+
+Runs the same hybrid search the UserPromptSubmit hook uses and prints
+the per-fact breakdown — vector score, keyword score, importance,
+recency, kind / pod source — so you can see WHY each fact made the
+top-K for a given query.`);
+    process.exit(0);
+  }
+
+  const config = (await import('./config.js')).default;
+  const cortexDb = (await import('./db/cortex.js')).default;
+
+  const flagIdx = args.findIndex((a) => a.startsWith('--'));
+  const queryParts = flagIdx === -1 ? args : args.slice(0, flagIdx);
+  const query = queryParts.join(' ').replace(/^["']|["']$/g, '');
+  if (!query) {
+    console.error('Provide a query: sigil why "<query>"');
+    process.exit(1);
+  }
+  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || config.defaults.namespace;
+  const limitArg = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
+  const limit = limitArg ? Number(limitArg) : 5;
+  const podScopeArg = args.find((a) => a.startsWith('--pod-scope='))?.split('=')[1];
+  let podScope = null;
+  if (podScopeArg) {
+    if (podScopeArg === 'auto' || podScopeArg === 'global') podScope = podScopeArg;
+    else podScope = podScopeArg.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  const { search } = await import('./memory/search/hybrid.js');
+  const result = await search(query, {
+    namespaces: [namespace],
+    limit,
+    route: true,
+    expand: true,
+    synthesize: false,
+    podScope: podScope ?? 'auto',
+  });
+
+  console.log(`Query: ${query}`);
+  console.log(`Namespace: ${namespace}`);
+  console.log(`Pod scope: ${JSON.stringify(podScope ?? 'auto')}`);
+  console.log('');
+
+  if (result.matchedEntity) {
+    console.log(`Matched entity: ${result.matchedEntity.name} (${result.matchedEntity.type}, id:${result.matchedEntity.id})`);
+    console.log('');
+  }
+
+  if (!result.facts.length) {
+    console.log('No facts returned.');
+    await cortexDb.destroy();
+    return;
+  }
+
+  const podMembership = await import('./memory/pods/membership.js');
+  console.log(`Facts (${result.facts.length}):`);
+  for (const [i, f] of result.facts.entries()) {
+    const pods = await podMembership.listPodsForMember('fact', f.id).catch(() => []);
+    const podStr = pods.length
+      ? pods.map((p) => `${p.podType}:${p.name}`).join(', ')
+      : '—';
+    const importance = f.importance || `score=${f.importanceScore ?? '?'}`;
+    const boost = f.coRetrievalBoost != null ? ` hebbian=${f.coRetrievalBoost}` : '';
+    console.log(`  ${i + 1}. [rrf=${f.rrfScore ?? '?'}${boost}] [${f.category}] [${importance}] [conf=${f.confidence}]`);
+    console.log(`     pods: ${podStr}`);
+    console.log(`     content: ${(f.content || '').slice(0, 140)}`);
+  }
+
+  await cortexDb.destroy();
+}
+
+// ─── Kind ────────────────────────────────────────────────────────────────────
+
+async function runKind(args) {
+  const sub = args[0];
+  if (!sub || sub === '--help') {
+    console.log(`sigil kind — Inspect registered pod kinds
+
+Usage:
+  sigil kind list
+  sigil kind show <name>
+
+list     Show every registered pod kind with budget / visibility / TTL.
+show     Show one kind's full contract, schema doc path, and active scope
+         for the current shell context.`);
+    process.exit(0);
+  }
+
+  await import('./memory/pods/kinds/index.js');
+  const { list, get, activeKinds, getSchemaDoc } = await import('./memory/pods/registry.js');
+
+  if (sub === 'list') {
+    const kinds = list();
+    console.log(`Registered kinds (${kinds.length}):`);
+    for (const k of kinds) {
+      const ttl = k.ttlDays ? `${k.ttlDays}d TTL` : 'no decay';
+      console.log(`  ${k.name.padEnd(18)} budget=${k.hotContextBudget}  ${k.visibility.padEnd(8)}  ${ttl}`);
+      console.log(`    ${k.description}`);
+    }
+    const ns = (await import('./config.js')).default.defaults.namespace;
+    const active = await activeKinds({ namespace: ns, cwd: process.cwd() });
+    console.log('');
+    console.log(`Active for cwd=${process.cwd()}: ${active.length ? active.map((a) => a.kind.name).join(', ') : '(none)'}`);
+    return;
+  }
+
+  if (sub === 'show') {
+    const name = args[1];
+    if (!name) {
+      console.error('Provide a kind name: sigil kind show <name>');
+      process.exit(1);
+    }
+    const k = get(name);
+    if (!k) {
+      console.error(`Unknown kind: ${name}`);
+      process.exit(1);
+    }
+    console.log(`Kind: ${k.name}`);
+    console.log(`  description:       ${k.description}`);
+    console.log(`  identityField:     ${k.identityField ?? '—'}`);
+    console.log(`  visibility:        ${k.visibility}`);
+    console.log(`  activeMode:        ${k.activeMode}`);
+    console.log(`  hotContextBudget:  ${k.hotContextBudget}`);
+    console.log(`  retrievalWeights:  ${JSON.stringify(k.retrievalWeights)}`);
+    console.log(`  importanceDefault: ${k.importanceDefault}`);
+    console.log(`  ttlDays:           ${k.ttlDays ?? 'no decay'}`);
+    console.log(`  writePolicy:       ${k.writePolicy}`);
+    console.log(`  schemaDocPath:     ${k.schemaDocPath ?? '—'}`);
+    const doc = await getSchemaDoc(k);
+    console.log(`  schemaDoc chars:   ${doc ? doc.length : 0}`);
+    return;
+  }
+
+  console.error(`Unknown subcommand: ${sub}`);
+  process.exit(1);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
