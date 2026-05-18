@@ -27,11 +27,13 @@ import { resolve, dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { config as dotenvConfig } from 'dotenv';
 
+// Env precedence: shell > project .env > global ~/.sigil/.env.
+// Load BOTH (not else-if) — see user-prompt-submit.js for the regression history.
 const home = process.env.HOME || process.env.USERPROFILE;
 const globalEnv = join(home, '.sigil', '.env');
 const localEnv = resolve(process.cwd(), '.env');
 if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
-else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
+if (existsSync(globalEnv) && globalEnv !== localEnv) dotenvConfig({ path: globalEnv, quiet: true });
 
 const MIN_FACTS_TO_SYNTHESIZE = 3;
 const MAX_FACTS_IN_PROMPT = 40;

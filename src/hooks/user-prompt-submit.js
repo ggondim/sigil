@@ -31,12 +31,16 @@ import { config as dotenvConfig } from 'dotenv';
 import { maskSecrets } from './secret-mask.js';
 import { recordHookError } from './error-log.js';
 
-// Load env before anything else
+// Load env before anything else. Precedence: shell env > project .env > global ~/.sigil/.env.
+// dotenv preserves first-loaded keys, so loading project FIRST gives it
+// priority; global then fills in keys the project didn't set. This matches
+// src/cli.js behavior — fixes the silent failure where a project .env
+// without EMBEDDING_* values used to shadow the global config entirely.
 const home = process.env.HOME || process.env.USERPROFILE;
 const globalEnv = join(home, '.sigil', '.env');
 const localEnv = resolve(process.cwd(), '.env');
 if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
-else if (existsSync(globalEnv)) dotenvConfig({ path: globalEnv, quiet: true });
+if (existsSync(globalEnv) && globalEnv !== localEnv) dotenvConfig({ path: globalEnv, quiet: true });
 
 const MIN_QUERY_LENGTH = 8;
 const MAX_FACTS = 20;
