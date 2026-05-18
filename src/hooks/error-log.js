@@ -7,12 +7,13 @@
  * truncation (it's diagnostic, low-volume, single-machine).
  */
 
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
 export const HOOK_ERROR_LOG = join(homedir(), '.sigil', '.hook-errors.log');
+export const LAST_CLEAN_DOCTOR_PATH = join(homedir(), '.sigil', '.last-clean-doctor');
 
 export async function recordHookError(hook, err, input = null) {
   try {
@@ -68,6 +69,54 @@ export async function readRecentHookErrors(limit = 10) {
     }
   }
   return entries;
+}
+
+// Count hook errors that arrived AFTER the last clean `sigil doctor` run.
+// The user runs doctor → all checks pass → we stamp this file → subsequent
+// CLI invocations suppress the proactive warning until a new error arrives.
+// This is the proactive surfacing layer: every `sigil <command>` checks
+// this and prints a one-line warning if new errors have piled up.
+export async function getUnackedErrorCount() {
+  let lastClean = 0;
+  try {
+    const raw = await readFile(LAST_CLEAN_DOCTOR_PATH, 'utf8');
+    lastClean = new Date(raw.trim()).getTime();
+  } catch {
+    // No previous clean doctor; consider all errors unacked
+  }
+
+  let raw;
+  try {
+    raw = await readFile(HOOK_ERROR_LOG, 'utf8');
+  } catch {
+    return 0;
+  }
+
+  let count = 0;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      const t = entry.ts ? new Date(entry.ts).getTime() : 0;
+      if (t > lastClean) count += 1;
+    } catch { /* skip malformed */ }
+  }
+  return count;
+}
+
+// Called by `sigil doctor` when all checks pass — stamps the current
+// time so the proactive warning suppresses until new errors arrive.
+export async function markDoctorClean() {
+  try {
+    await writeFile(LAST_CLEAN_DOCTOR_PATH, new Date().toISOString(), 'utf8');
+  } catch {
+    // Best-effort; if we can't write the ack file, warnings stay on
+  }
+}
+
+// Manual clear, e.g., if the user wants to reset state without running doctor.
+export async function clearLastCleanDoctor() {
+  try { await unlink(LAST_CLEAN_DOCTOR_PATH); } catch {}
 }
 
 function hashInput(input) {

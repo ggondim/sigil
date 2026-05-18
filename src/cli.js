@@ -93,6 +93,20 @@ if (!handler) {
   process.exit(1);
 }
 
+// Proactive surfacing: print a one-line warning to stderr if hook errors
+// have piled up since the last clean `sigil doctor` run. Suppressed for
+// `doctor` itself (it has its own richer surface) and for plumbing
+// commands that shouldn't print anything to stderr (e.g., piped output).
+if (command !== 'doctor' && command !== 'export' && command !== 'register') {
+  try {
+    const { getUnackedErrorCount } = await import('./hooks/error-log.js');
+    const count = await getUnackedErrorCount();
+    if (count > 0) {
+      process.stderr.write(`⚠ Sigil: ${count} unacked hook error${count > 1 ? 's' : ''} — run \`sigil doctor\` for details\n`);
+    }
+  } catch { /* never let the warning break the command */ }
+}
+
 try {
   await handler(rest);
 } catch (err) {
@@ -652,28 +666,29 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
   // during Claude Code sessions. Surfaces problems that would otherwise
   // rot unnoticed because hooks never block Claude.
   //
-  // Error budget: >5 errors in last 24h trips this from warn to fail,
-  // which sets the exit code to 1 so CI / scripts can catch it.
+  // Budget: >5 *unacked* errors (errors that arrived after the last
+  // clean doctor run) flips this from warn to fail. This gives a clean
+  // fix-and-clear loop: user fixes config → runs doctor → clean
+  // checks → markDoctorClean stamps the ack → future doctor calls
+  // count only fresh errors.
   try {
-    const { readRecentHookErrors, HOOK_ERROR_LOG } = await import('./hooks/error-log.js');
+    const { readRecentHookErrors, getUnackedErrorCount, HOOK_ERROR_LOG } = await import('./hooks/error-log.js');
     const recent = await readRecentHookErrors(100);
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const last24h = recent.filter((e) => {
-      const t = e.ts ? new Date(e.ts).getTime() : 0;
-      return t >= oneDayAgo;
-    });
+    const unackedCount = await getUnackedErrorCount();
     if (recent.length === 0) {
       log('ok', 'Hook errors', `none in ${HOOK_ERROR_LOG}`);
-    } else if (last24h.length > 5) {
-      log('fail', 'Hook errors', `${last24h.length} errors in last 24h (budget: ≤5) — see ${HOOK_ERROR_LOG}`);
-      for (const e of last24h.slice(-5)) {
+    } else if (unackedCount > 5) {
+      log('fail', 'Hook errors', `${unackedCount} unacked errors since last clean doctor (budget: ≤5) — see ${HOOK_ERROR_LOG}`);
+      for (const e of recent.slice(-5)) {
         console.log(`    ${e.ts}  [${e.hook}]  ${(e.error || '').split('\n')[0].slice(0, 160)}`);
       }
-    } else {
-      log('warn', 'Hook errors', `${recent.length} total (${last24h.length} in last 24h) — see ${HOOK_ERROR_LOG}`);
+    } else if (unackedCount > 0) {
+      log('warn', 'Hook errors', `${unackedCount} unacked / ${recent.length} total — see ${HOOK_ERROR_LOG}`);
       for (const e of recent.slice(-3)) {
         console.log(`    ${e.ts}  [${e.hook}]  ${(e.error || '').split('\n')[0].slice(0, 160)}`);
       }
+    } else {
+      log('ok', 'Hook errors', `${recent.length} historical errors, all acked`);
     }
   } catch (err) {
     log('warn', 'Hook errors', `unreadable: ${err.message}`);
@@ -687,8 +702,18 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     process.exit(1);
   } else if (warned) {
     console.log(`All critical checks passed. ${warned} warning${warned > 1 ? 's' : ''}.`);
+    // Warnings only → still ack so the proactive warning suppresses;
+    // the user has acknowledged the system state by running doctor.
+    try {
+      const { markDoctorClean } = await import('./hooks/error-log.js');
+      await markDoctorClean();
+    } catch { /* best effort */ }
   } else {
     console.log('All checks passed.');
+    try {
+      const { markDoctorClean } = await import('./hooks/error-log.js');
+      await markDoctorClean();
+    } catch { /* best effort */ }
   }
 }
 
