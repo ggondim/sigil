@@ -554,6 +554,25 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
   if (existsSync(globalEnv)) log('ok', 'Config file', globalEnv);
   else log('warn', 'Config file', `${globalEnv} not found — run 'sigil init'`);
 
+  // Config validator — catches provider/model mismatches that would
+  // otherwise produce silent hook failures. Runs synchronously first
+  // (regex checks); deep validator (DB connect) is implicit via the
+  // database check below.
+  try {
+    const { validateConfig } = await import('./lib/config-validator.js');
+    const issues = validateConfig();
+    if (issues.length === 0) {
+      log('ok', 'Config validation', 'no provider/model mismatches');
+    } else {
+      for (const issue of issues) {
+        log(issue.level === 'fail' ? 'fail' : 'warn', `Config: ${issue.code}`, issue.message);
+        console.log(`    fix: ${issue.fix}`);
+      }
+    }
+  } catch (err) {
+    log('warn', 'Config validation', `unable to run: ${err.message}`);
+  }
+
   // Database
   try {
     const cortexDb = (await import('./db/cortex.js')).default;
@@ -632,15 +651,28 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
   // Recent hook errors — silent failures from the 4 hooks that auto-run
   // during Claude Code sessions. Surfaces problems that would otherwise
   // rot unnoticed because hooks never block Claude.
+  //
+  // Error budget: >5 errors in last 24h trips this from warn to fail,
+  // which sets the exit code to 1 so CI / scripts can catch it.
   try {
     const { readRecentHookErrors, HOOK_ERROR_LOG } = await import('./hooks/error-log.js');
-    const recent = await readRecentHookErrors(10);
+    const recent = await readRecentHookErrors(100);
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const last24h = recent.filter((e) => {
+      const t = e.ts ? new Date(e.ts).getTime() : 0;
+      return t >= oneDayAgo;
+    });
     if (recent.length === 0) {
       log('ok', 'Hook errors', `none in ${HOOK_ERROR_LOG}`);
+    } else if (last24h.length > 5) {
+      log('fail', 'Hook errors', `${last24h.length} errors in last 24h (budget: ≤5) — see ${HOOK_ERROR_LOG}`);
+      for (const e of last24h.slice(-5)) {
+        console.log(`    ${e.ts}  [${e.hook}]  ${(e.error || '').split('\n')[0].slice(0, 160)}`);
+      }
     } else {
-      log('warn', 'Hook errors', `${recent.length} recent — see ${HOOK_ERROR_LOG}`);
-      for (const e of recent.slice(-5)) {
-        console.log(`    ${e.ts}  [${e.hook}]  ${e.error}`);
+      log('warn', 'Hook errors', `${recent.length} total (${last24h.length} in last 24h) — see ${HOOK_ERROR_LOG}`);
+      for (const e of recent.slice(-3)) {
+        console.log(`    ${e.ts}  [${e.hook}]  ${(e.error || '').split('\n')[0].slice(0, 160)}`);
       }
     }
   } catch (err) {

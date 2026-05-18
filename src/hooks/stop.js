@@ -51,6 +51,10 @@ async function main() {
   const messageHash = sha256(userMessage);
   if (alreadyProcessed(messageHash)) return respond();
 
+  // Config gate — bail before the LLM classifier call if config is known-broken
+  const { failClosedOnBadConfig } = await import('./error-log.js');
+  if (await failClosedOnBadConfig('stop', raw)) return respond();
+
   try {
     const facts = await classifyTurn(userMessage);
     markProcessed(messageHash);

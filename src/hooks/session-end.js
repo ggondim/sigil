@@ -55,14 +55,20 @@ async function main() {
     if (!cursor || cursor.session_id !== input.session_id) return respond();
 
     // Try synthesis BEFORE closing the pod. Best-effort: synthesis failure
-    // does not block the close.
+    // does not block the close. Config gate: skip synthesis (but still
+    // close the pod) when config is known-broken, so we don't waste an
+    // LLM round-trip that will 4xx.
     try {
-      await synthesizeSummary({
-        sessionPodUid: cursor.pod_uid,
-        cwd: input.cwd || cursor.cwd || null,
-        sessionId: input.session_id,
-        transcriptPath: input.transcript_path || cursor.transcript_path || null,
-      });
+      const { failClosedOnBadConfig } = await import('./error-log.js');
+      const skipSynth = await failClosedOnBadConfig('session-end', raw);
+      if (!skipSynth) {
+        await synthesizeSummary({
+          sessionPodUid: cursor.pod_uid,
+          cwd: input.cwd || cursor.cwd || null,
+          sessionId: input.session_id,
+          transcriptPath: input.transcript_path || cursor.transcript_path || null,
+        });
+      }
     } catch (err) {
       process.stderr.write(`[sigil:session-end] synthesis failed: ${err.message}\n`);
     }

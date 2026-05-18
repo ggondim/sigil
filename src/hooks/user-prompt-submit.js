@@ -29,7 +29,7 @@ import { existsSync } from 'node:fs';
 import { config as dotenvConfig } from 'dotenv';
 
 import { maskSecrets } from './secret-mask.js';
-import { recordHookError } from './error-log.js';
+import { recordHookError, failClosedOnBadConfig } from './error-log.js';
 
 // Load env before anything else. Precedence: shell env > project .env > global ~/.sigil/.env.
 // dotenv preserves first-loaded keys, so loading project FIRST gives it
@@ -57,6 +57,12 @@ async function main() {
 
   // Skip short/trivial prompts
   if (query.length < MIN_QUERY_LENGTH) return respond();
+
+  // Config gate — bail before any LLM/embedding call if config is
+  // known-broken. Saves the doomed API call and writes a specific
+  // error (with fix instructions) to .hook-errors.log instead of the
+  // generic "404 model not found" the upstream produces.
+  if (await failClosedOnBadConfig('user-prompt-submit', raw)) return respond();
 
   try {
     const { search } = await import('../memory/search/hybrid.js');

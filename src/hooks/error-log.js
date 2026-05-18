@@ -28,6 +28,29 @@ export async function recordHookError(hook, err, input = null) {
   }
 }
 
+// Config gate — every hook calls this at startup. Returns true if the
+// hook should bail (config has known-broken combinations like
+// EMBEDDING_PROVIDER=voyage + EMBEDDING_MODEL=nomic-embed-text). On
+// bail, logs the specific issue + fix command to .hook-errors.log so
+// the user sees actionable diagnostics instead of an upstream 4xx.
+//
+// Returns false (proceed) if the validator import fails — we never
+// want validator bugs to block hooks.
+export async function failClosedOnBadConfig(hookName, rawInput = null) {
+  try {
+    const { validateConfig } = await import('../lib/config-validator.js');
+    const fails = validateConfig().filter((i) => i.level === 'fail');
+    if (fails.length === 0) return false;
+    for (const i of fails) {
+      const err = new Error(`${i.code}: ${i.message} — fix: ${i.fix}`);
+      await recordHookError(hookName, err, rawInput);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function readRecentHookErrors(limit = 10) {
   let raw;
   try {

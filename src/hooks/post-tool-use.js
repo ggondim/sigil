@@ -169,6 +169,10 @@ async function main() {
   // Dedup against recent same-action events
   if (isDuplicate(summary.dedupKey)) return respond();
 
+  // Config gate — bail before any embedding call if config is known-broken
+  const { failClosedOnBadConfig } = await import('./error-log.js');
+  if (await failClosedOnBadConfig('post-tool-use', raw)) return respond();
+
   // Mask secrets before storing
   const masked = maskSecrets(summary.content);
 
