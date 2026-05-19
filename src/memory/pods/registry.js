@@ -61,7 +61,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+
+import { SIGIL_SCHEMAS_DIR } from '../../lib/paths.js';
 
 const REQUIRED_FIELDS = ['name'];
 const VALID_VISIBILITY = new Set(['private', 'shared', 'public']);
@@ -157,7 +158,7 @@ export function validateAttrs(kind, attrs = {}) {
 // declared on the kind (relative to the package root) is used.
 export async function getSchemaDoc(kind) {
   if (!kind) return null;
-  const override = join(homedir(), '.sigil', 'schemas', `${kind.name}.md`);
+  const override = join(SIGIL_SCHEMAS_DIR, `${kind.name}.md`);
   try {
     return await readFile(override, 'utf8');
   } catch {

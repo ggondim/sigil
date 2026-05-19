@@ -17,11 +17,9 @@
  * slot in without touching this file.
  */
 
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-
 import cortexDb from '../../db/cortex.js';
 import config from '../../config.js';
+import { SIGIL_MD_PATH } from '../../lib/paths.js';
 
 import '../pods/kinds/index.js'; // side-effect: register built-in kinds
 import { activeKinds } from '../pods/registry.js';
@@ -130,8 +128,7 @@ async function readCwdFromCursor() {
 
 export async function updateContextSnapshot({ namespace, limit, ctx } = {}) {
   const fs = await import('node:fs/promises');
-  // Sigil owns ~/.sigil/CLAUDE.md entirely — never touches ~/.claude/CLAUDE.md
-  const cortexMdPath = join(homedir(), '.sigil', 'CLAUDE.md');
+  const cortexMdPath = SIGIL_MD_PATH;
 
   const facts = await getHotFacts({ namespace, limit, ctx });
   const marker = '<!-- sigil-context -->';

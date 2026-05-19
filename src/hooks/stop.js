@@ -15,25 +15,18 @@
  * user has already seen Claude's response, so user-facing latency is zero.
  */
 
-import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
-import { config as dotenvConfig } from 'dotenv';
 
-// Load env before anything else
-// Env precedence: shell > project .env > global ~/.sigil/.env.
-// Load BOTH (not else-if) — see user-prompt-submit.js for the regression history.
-const home = process.env.HOME || process.env.USERPROFILE;
-const globalEnv = join(home, '.sigil', '.env');
-const localEnv = resolve(process.cwd(), '.env');
-if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
-if (existsSync(globalEnv) && globalEnv !== localEnv) dotenvConfig({ path: globalEnv, quiet: true });
+import { loadHookEnv } from './env-loader.js';
+import { SIGIL_STOP_CURSOR } from '../lib/paths.js';
+
+loadHookEnv();
 
 const MIN_MESSAGE_LENGTH = 15;
 const MAX_MESSAGE_LENGTH = 8000;
-const CURSOR_PATH = join(home, '.sigil', '.stop-cursor.json');
+const CURSOR_PATH = SIGIL_STOP_CURSOR;
 
 async function main() {
   const raw = await readStdin();

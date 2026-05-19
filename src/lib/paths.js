@@ -11,6 +11,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 function findPackageRoot() {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -31,4 +32,21 @@ const PKG_ROOT = findPackageRoot();
 
 export const PROMPTS_DIR = join(PKG_ROOT, 'prompts');
 export const MIGRATIONS_DIR = join(PKG_ROOT, 'src', 'db', 'migrations');
+
+const HOME = homedir();
+export const SIGIL_HOME = join(HOME, '.sigil');
+export const SIGIL_ENV_PATH = join(SIGIL_HOME, '.env');
+export const SIGIL_DB_PATH = join(SIGIL_HOME, 'db');
+export const SIGIL_MD_PATH = join(SIGIL_HOME, 'CLAUDE.md');
+export const SIGIL_SCHEMAS_DIR = join(SIGIL_HOME, 'schemas');
+export const SIGIL_HOOK_ERRORS_LOG = join(SIGIL_HOME, '.hook-errors.log');
+export const SIGIL_LAST_CLEAN_DOCTOR = join(SIGIL_HOME, '.last-clean-doctor');
+export const SIGIL_ACTIVE_SESSION_CURSOR = join(SIGIL_HOME, '.active-session.json');
+export const SIGIL_STOP_CURSOR = join(SIGIL_HOME, '.stop-cursor.json');
+export const SIGIL_HOOK_DEDUP = join(SIGIL_HOME, '.hook-dedup.json');
+
+export const CLAUDE_HOME = join(HOME, '.claude');
+export const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, 'settings.json');
+export const CLAUDE_MD_PATH = join(CLAUDE_HOME, 'CLAUDE.md');
+
 export { PKG_ROOT };

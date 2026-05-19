@@ -8,12 +8,12 @@
  */
 
 import { appendFile, readFile, writeFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
-export const HOOK_ERROR_LOG = join(homedir(), '.sigil', '.hook-errors.log');
-export const LAST_CLEAN_DOCTOR_PATH = join(homedir(), '.sigil', '.last-clean-doctor');
+import { SIGIL_HOOK_ERRORS_LOG, SIGIL_LAST_CLEAN_DOCTOR } from '../lib/paths.js';
+
+export const HOOK_ERROR_LOG = SIGIL_HOOK_ERRORS_LOG;
+export const LAST_CLEAN_DOCTOR_PATH = SIGIL_LAST_CLEAN_DOCTOR;
 
 export async function recordHookError(hook, err, input = null) {
   try {

@@ -14,14 +14,14 @@
 
 import { writeFile, readFile, unlink } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { dirname } from 'node:path';
 
 import * as podStore from './store.js';
 import * as sessionType from './kinds/claude_session.js';
 import config from '../../config.js';
+import { SIGIL_ACTIVE_SESSION_CURSOR } from '../../lib/paths.js';
 
-const home = process.env.HOME || process.env.USERPROFILE;
-const CURSOR_PATH = join(home, '.sigil', '.active-session.json');
+const CURSOR_PATH = SIGIL_ACTIVE_SESSION_CURSOR;
 
 // How long after `started_at` we consider a cursor "stale" — for the
 // hot-context boost. Past this, the session is treated as ended even

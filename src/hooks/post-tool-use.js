@@ -7,22 +7,14 @@
  * Stores lightweight observations directly as facts (no LLM calls).
  */
 
-import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { config as dotenvConfig } from 'dotenv';
 
 import { maskSecrets } from './secret-mask.js';
+import { loadHookEnv } from './env-loader.js';
+import { SIGIL_HOME, SIGIL_HOOK_DEDUP } from '../lib/paths.js';
 
-// Load env before anything else
-// Env precedence: shell > project .env > global ~/.sigil/.env.
-// Load BOTH (not else-if) — see user-prompt-submit.js for the regression history.
-const home = process.env.HOME || process.env.USERPROFILE;
-const globalEnv = join(home, '.sigil', '.env');
-const localEnv = resolve(process.cwd(), '.env');
-if (existsSync(localEnv)) dotenvConfig({ path: localEnv, quiet: true });
-if (existsSync(globalEnv) && globalEnv !== localEnv) dotenvConfig({ path: globalEnv, quiet: true });
+loadHookEnv();
 
 // Tools that are reconnaissance, not action — always skip
 const ALWAYS_SKIP_TOOLS = new Set([
@@ -58,7 +50,7 @@ const SIGNAL_KEYWORDS = [
 
 // Session-level dedup: (tool, target) → timestamp
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
-const DEDUP_FILE = join(home, '.sigil', '.hook-dedup.json');
+const DEDUP_FILE = SIGIL_HOOK_DEDUP;
 
 function loadDedup() {
   try {
@@ -74,7 +66,7 @@ function loadDedup() {
 
 function saveDedup(map) {
   try {
-    mkdirSync(dirname(DEDUP_FILE), { recursive: true });
+    mkdirSync(SIGIL_HOME, { recursive: true });
     writeFileSync(DEDUP_FILE, JSON.stringify(map), 'utf8');
   } catch { /* best-effort */ }
 }
