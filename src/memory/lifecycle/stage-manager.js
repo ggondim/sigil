@@ -6,7 +6,7 @@
  * transition is `stable → editing` on search-hit, which `recordAccess` does
  * inline.
  *
- * Why this matters (per OGHAM-LEARNINGS.md §A):
+ * Why this matters:
  *   - `fresh` facts are recently captured; we don't fully trust them yet
  *   - The promotion gate (1 hour + importance=vital OR has-been-accessed)
  *     filters out low-signal noise without an LLM call

@@ -12,7 +12,8 @@
  * recently-used facts win ties over equally-similar but older/less-used facts.
  * Formula: `ln(access_count+1) - 0.5*ln(t_days)`, then softplus to keep ≥0.
  *
- * Design references OGHAM-LEARNINGS.md §B (single-SQL RRF) + the ACT-R section.
+ * Approach: single-SQL RRF (fewer round-trips than two-query JS merge)
+ * + ACT-R activation as the ranking multiplier on top of the fused score.
  */
 
 import cortexDb from '../../db/cortex.js';
