@@ -111,17 +111,40 @@ try {
   await handler(rest);
 } catch (err) {
   const msg = err.message || String(err);
-  if (/ECONNREFUSED|ENOTFOUND.*postgres|connection refused|password authentication failed/i.test(msg)) {
-    console.error('Error: Sigil could not connect to Postgres.');
+  const code = err.code || '';
+
+  if (code === '3D000' || /database .* does not exist/i.test(msg)) {
+    console.error('Error: the Sigil database does not exist yet on this Postgres server.');
     console.error('');
-    console.error('Check:');
-    console.error("  • Is Postgres running?            docker ps | grep postgres   (or your local setup)");
-    console.error("  • Are credentials right?          grep SIGIL_DB ~/.sigil/.env");
-    console.error("  • Run interactive setup:          sigil init");
+    console.error('Run `sigil init` — it will create the database, the sigil_app user, and');
+    console.error('install pgvector for you (one-shot, requires Postgres admin credentials).');
     console.error('');
     console.error('Underlying error: ' + msg.split('\n')[0]);
     process.exit(1);
   }
+
+  if (/ECONNREFUSED|connection refused/i.test(msg)) {
+    console.error('Error: Postgres is not reachable.');
+    console.error('');
+    console.error('Sigil 0.10.0+ requires Postgres. Start your Postgres server first:');
+    console.error('  • Docker:   docker run -d --name sigil-pg -p 5432:5432 -e POSTGRES_PASSWORD=… pgvector/pgvector:pg15');
+    console.error('  • brew:     brew services start postgresql@15');
+    console.error('  • RDS / cloud:  check the host/port in `grep SIGIL_DB_ ~/.sigil/.env`');
+    console.error('');
+    console.error('Underlying error: ' + msg.split('\n')[0]);
+    process.exit(1);
+  }
+
+  if (/password authentication failed/i.test(msg)) {
+    console.error('Error: Postgres rejected the Sigil credentials.');
+    console.error('');
+    console.error('Re-run `sigil init` to reset the password (it will use Postgres admin');
+    console.error('credentials once to update the sigil_app user), or edit ~/.sigil/.env manually.');
+    console.error('');
+    console.error('Underlying error: ' + msg.split('\n')[0]);
+    process.exit(1);
+  }
+
   console.error(`Error: ${msg}`);
   process.exit(1);
 }
@@ -415,34 +438,160 @@ during init; existing tables are detected and preserved.`);
   });
   if (isCancel(namespace)) { cancel('Setup cancelled.'); process.exit(0); }
 
+  // ── Postgres connection ───────────────────────────────────────────────────
+  //
+  // Sigil 0.10.0+ requires Postgres. We assume the user has Postgres running
+  // (Docker, brew, RDS, anything). On first init we probe the connection;
+  // if the sigil database doesn't exist yet we ask once for admin creds and
+  // bootstrap it (CREATE DATABASE + CREATE USER + GRANT + CREATE EXTENSION
+  // vector). Admin creds are used once and dropped — only sigil_app
+  // credentials land in ~/.sigil/.env.
+
+  const dbHost = await text({
+    message: 'Postgres host',
+    placeholder: existing.SIGIL_DB_HOST || 'localhost',
+    initialValue: existing.SIGIL_DB_HOST || 'localhost',
+  });
+  if (isCancel(dbHost)) { cancel('Setup cancelled.'); process.exit(0); }
+
+  const dbPortStr = await text({
+    message: 'Postgres port',
+    placeholder: existing.SIGIL_DB_PORT || '5432',
+    initialValue: existing.SIGIL_DB_PORT || '5432',
+    validate: (v) => { if (v && !/^\d+$/.test(v)) return 'Port must be a number'; },
+  });
+  if (isCancel(dbPortStr)) { cancel('Setup cancelled.'); process.exit(0); }
+  const dbPort = Number(dbPortStr);
+
+  const dbName = await text({
+    message: 'Sigil database name',
+    placeholder: existing.SIGIL_DB_NAME || 'sigil',
+    initialValue: existing.SIGIL_DB_NAME || 'sigil',
+  });
+  if (isCancel(dbName)) { cancel('Setup cancelled.'); process.exit(0); }
+
+  const dbUser = await text({
+    message: 'Sigil database user',
+    placeholder: existing.SIGIL_DB_USER || 'sigil_app',
+    initialValue: existing.SIGIL_DB_USER || 'sigil_app',
+  });
+  if (isCancel(dbUser)) { cancel('Setup cancelled.'); process.exit(0); }
+
+  const dbPassword = await text({
+    message: existing.SIGIL_DB_PASSWORD ? 'Sigil database password (keep existing — press Enter)' : 'Sigil database password',
+    placeholder: existing.SIGIL_DB_PASSWORD ? '(unchanged)' : 'sigil_dev or generate',
+    validate: (v) => { if (!v && !existing.SIGIL_DB_PASSWORD) return 'Password required'; },
+  });
+  if (isCancel(dbPassword)) { cancel('Setup cancelled.'); process.exit(0); }
+  const finalDbPassword = dbPassword || existing.SIGIL_DB_PASSWORD;
+
+  // Probe with the prompted credentials. If sigil DB exists + creds work,
+  // we're done. Otherwise: missing DB → ask for admin to bootstrap. Auth
+  // failure → ask if they want to reset the password via admin.
+  if (!dryRun) {
+    const { probeSigilConnection, ensurePostgresDatabase, diagnoseConnectionError } =
+      await import('./db/setup.js');
+    const probeSpinner = spinner();
+    probeSpinner.start('Probing Postgres connection...');
+    const probe = await probeSigilConnection({
+      host: dbHost, port: dbPort, database: dbName, user: dbUser, password: finalDbPassword,
+    });
+
+    if (probe.ok) {
+      probeSpinner.stop(`Connected to ${dbUser}@${dbHost}:${dbPort}/${dbName}`);
+    } else {
+      const diag = diagnoseConnectionError({ code: probe.code, message: probe.message });
+      probeSpinner.stop(`Connection failed (${diag.kind})`);
+
+      if (diag.kind === 'unreachable') {
+        cancel(`Postgres unreachable at ${dbHost}:${dbPort}.\n${diag.hint}`);
+        process.exit(1);
+      }
+
+      if (diag.kind === 'missing-db' || diag.kind === 'auth') {
+        const wantsBootstrap = await confirm({
+          message: diag.kind === 'missing-db'
+            ? `Database "${dbName}" does not exist. Create it now (requires admin credentials)?`
+            : `Authentication failed for ${dbUser}@${dbName}. Create / reset the user now (requires admin credentials)?`,
+          initialValue: true,
+        });
+        if (isCancel(wantsBootstrap) || !wantsBootstrap) {
+          cancel('Setup cancelled — fix Postgres credentials and re-run sigil init.');
+          process.exit(0);
+        }
+
+        const adminUser = await text({
+          message: 'Postgres admin user',
+          placeholder: 'postgres',
+          initialValue: 'postgres',
+        });
+        if (isCancel(adminUser)) { cancel('Setup cancelled.'); process.exit(0); }
+
+        const adminPassword = await text({
+          message: 'Postgres admin password (used once, not stored)',
+          placeholder: 'admin password',
+          validate: (v) => { if (!v) return 'Required to create the database'; },
+        });
+        if (isCancel(adminPassword)) { cancel('Setup cancelled.'); process.exit(0); }
+
+        const bootstrapSpinner = spinner();
+        bootstrapSpinner.start('Creating database, user, and pgvector extension...');
+        try {
+          const { actions } = await ensurePostgresDatabase({
+            admin: { host: dbHost, port: dbPort, user: adminUser, password: adminPassword },
+            sigil: { database: dbName, user: dbUser, password: finalDbPassword },
+          });
+          bootstrapSpinner.stop(`Bootstrapped: ${actions.join(', ')}`);
+        } catch (err) {
+          bootstrapSpinner.stop('Bootstrap failed');
+          cancel(err.message);
+          process.exit(1);
+        }
+      } else {
+        cancel(`Postgres setup failed: ${diag.hint}`);
+        process.exit(1);
+      }
+    }
+  }
+
   // ── Write config ──────────────────────────────────────────────────────────
+  //
+  // Build the .env by starting from EXISTING keys (preserves anything the
+  // user added manually or that earlier init runs collected) and overlaying
+  // the values we just prompted. This is the fix for the long-standing
+  // bug where re-running `sigil init` would silently drop keys it didn't
+  // ask about (e.g., SIGIL_DB_*, custom env vars).
 
   if (!dryRun) await fs.mkdir(cortexHome, { recursive: true });
   const encryptionKey = existing.CORTEX_ENCRYPTION_KEY || generateSecret(64);
 
+  const finalEnv = { ...existing };
+  finalEnv.LLM_PROVIDER = llmProvider;
+  if (openaiKey) finalEnv.OPENAI_API_KEY = openaiKey;
+  if (anthropicKey) finalEnv.ANTHROPIC_API_KEY = anthropicKey;
+  if (openrouterKey) finalEnv.OPENROUTER_API_KEY = openrouterKey;
+  if (openrouterModel) finalEnv.LLM_OPENROUTER_MODEL = openrouterModel;
+  if (extractionModel) finalEnv.LLM_EXTRACTION_MODEL = extractionModel;
+  if (decisionModel) finalEnv.LLM_DECISION_MODEL = decisionModel;
+  if (synthModel) finalEnv.SIGIL_SYNTH_MODEL = synthModel;
+  finalEnv.EMBEDDING_PROVIDER = embeddingProvider;
+  finalEnv.EMBEDDING_MODEL = embeddingModel;
+  finalEnv.EMBEDDING_DIMENSIONS = String(embeddingDimensions);
+  finalEnv.OLLAMA_HOST = existing.OLLAMA_HOST || 'http://localhost:11434';
+  finalEnv.DEFAULT_NAMESPACE = namespace;
+  finalEnv.CORTEX_ENCRYPTION_KEY = encryptionKey;
+  finalEnv.SIGIL_DB_TYPE = 'postgres';
+  finalEnv.SIGIL_DB_HOST = dbHost;
+  finalEnv.SIGIL_DB_PORT = String(dbPort);
+  finalEnv.SIGIL_DB_NAME = dbName;
+  finalEnv.SIGIL_DB_USER = dbUser;
+  finalEnv.SIGIL_DB_PASSWORD = finalDbPassword;
+
   const envContent = [
     `# Sigil — generated ${new Date().toISOString().slice(0, 10)}`,
+    '# (re-running `sigil init` preserves unrecognised keys — edit manually as needed)',
     '',
-    `LLM_PROVIDER=${llmProvider}`,
-    openaiKey       ? `OPENAI_API_KEY=${openaiKey}`             : '# OPENAI_API_KEY=',
-    anthropicKey    ? `ANTHROPIC_API_KEY=${anthropicKey}`       : '# ANTHROPIC_API_KEY=',
-    openrouterKey   ? `OPENROUTER_API_KEY=${openrouterKey}`     : '# OPENROUTER_API_KEY=',
-    openrouterModel ? `LLM_OPENROUTER_MODEL=${openrouterModel}` : '# LLM_OPENROUTER_MODEL=google/gemini-flash-latest',
-    '',
-    '# Per-task model overrides (optional — uncomment to use the smart split).',
-    '# Pattern: openrouter:<vendor>/<model>  to route a single task through a different model.',
-    '# Extraction is high-volume (cheap matters); decision/synthesis are reasoning-heavy (smart matters).',
-    extractionModel ? `LLM_EXTRACTION_MODEL=${extractionModel}` : '# LLM_EXTRACTION_MODEL=openrouter:qwen/qwen3.5-flash',
-    decisionModel   ? `LLM_DECISION_MODEL=${decisionModel}`     : '# LLM_DECISION_MODEL=openrouter:anthropic/claude-sonnet-latest',
-    synthModel      ? `SIGIL_SYNTH_MODEL=${synthModel}`         : '# SIGIL_SYNTH_MODEL=openrouter:anthropic/claude-sonnet-latest',
-    '',
-    `EMBEDDING_PROVIDER=${embeddingProvider}`,
-    `EMBEDDING_MODEL=${embeddingModel}`,
-    `EMBEDDING_DIMENSIONS=${embeddingDimensions}`,
-    `OLLAMA_HOST=http://localhost:11434`,
-    '',
-    `DEFAULT_NAMESPACE=${namespace}`,
-    `CORTEX_ENCRYPTION_KEY=${encryptionKey}`,
+    ...Object.entries(finalEnv).map(([k, v]) => `${k}=${v}`),
   ].join('\n');
 
   const envResult = await safeWrite(envPath, envContent, { dryRun });

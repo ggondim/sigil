@@ -63,11 +63,11 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Anmol-Srv/cortex.git"
+    "url": "https://github.com/Anmol-Srv/sigil.git"
   },
-  "homepage": "https://github.com/Anmol-Srv/cortex#readme",
+  "homepage": "https://github.com/Anmol-Srv/sigil#readme",
   "bugs": {
-    "url": "https://github.com/Anmol-Srv/cortex/issues"
+    "url": "https://github.com/Anmol-Srv/sigil/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
