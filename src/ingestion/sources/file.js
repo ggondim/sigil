@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import { glob } from 'node:fs/promises';
+import * as fsp from 'node:fs/promises';
 
 async function readSource(filePath) {
   const resolved = resolve(filePath);
@@ -21,7 +21,7 @@ async function readSource(filePath) {
 async function readSources(pattern) {
   const files = [];
 
-  for await (const entry of glob(pattern)) {
+  for await (const entry of fsp.glob(pattern)) {
     const info = await stat(entry);
     if (info.isFile()) {
       files.push(await readSource(entry));
