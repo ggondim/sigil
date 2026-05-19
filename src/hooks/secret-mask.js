@@ -54,7 +54,7 @@ const URL_CREDENTIALS = /(\w+:\/\/)([^:/\s]+):([^@\s]{3,})@/g;
 const ENV_SECRET_KEYS = [
   'DATABASE_URL', 'REDIS_URL', 'MONGODB_URI', 'MONGO_URI', 'POSTGRES_URL',
   'DSN', 'CONNECTION_STRING', 'ENCRYPTION_KEY', 'JWT_SECRET',
-  'CORTEX_ENCRYPTION_KEY', 'SESSION_SECRET', 'WEBHOOK_SECRET',
+  'SIGIL_ENCRYPTION_KEY', 'SESSION_SECRET', 'WEBHOOK_SECRET',
 ];
 const ENV_KEY_PATTERN = new RegExp(
   `\\b(${ENV_SECRET_KEYS.join('|')})\\s*[=:]\\s*["']?([^\\s"']+)["']?`,

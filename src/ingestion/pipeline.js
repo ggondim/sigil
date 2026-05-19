@@ -181,7 +181,7 @@ async function ingestDocument({
         categories: cats,
       });
     } else if (!config.ingest.eagerExtract) {
-      process.stderr.write('[4/6] Skipping fact extraction (CORTEX_EAGER_EXTRACT=false)' + "\n");
+      process.stderr.write('[4/6] Skipping fact extraction (SIGIL_EAGER_EXTRACT=false)' + "\n");
     }
 
     await documentStore.updateCounts(doc.id, {

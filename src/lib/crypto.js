@@ -5,9 +5,9 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
 function getEncryptionKey() {
-  const key = process.env.CORTEX_ENCRYPTION_KEY;
+  const key = process.env.SIGIL_ENCRYPTION_KEY;
   if (!key) {
-    throw new Error('CORTEX_ENCRYPTION_KEY env var is required for credential encryption. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    throw new Error('SIGIL_ENCRYPTION_KEY env var is required for credential encryption. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
   }
   return Buffer.from(key, 'hex');
 }

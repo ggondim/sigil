@@ -1,9 +1,6 @@
-// Env-var precedence: SIGIL_* > CORTEX_* (legacy from pre-rename releases) > default.
-// Existing 0.5.x users keep working without editing their .env; new users see only SIGIL_*.
-const env = (key, legacyKey, fallback) =>
-  process.env[key] ?? (legacyKey && process.env[legacyKey]) ?? fallback;
+const env = (key, fallback) => process.env[key] ?? fallback;
 
-const dbType = env('SIGIL_DB_TYPE', 'CORTEX_DB_TYPE', 'postgres');
+const dbType = env('SIGIL_DB_TYPE', 'postgres');
 if (dbType !== 'postgres') {
   throw new Error(
     `SIGIL_DB_TYPE=${dbType} is no longer supported. Sigil 0.10.0+ is Postgres-only.\n`
@@ -16,11 +13,11 @@ if (dbType !== 'postgres') {
 const config = {
   db: {
     type: 'postgres',
-    host: env('SIGIL_DB_HOST', 'CORTEX_DB_HOST', 'localhost'),
-    port: Number(env('SIGIL_DB_PORT', 'CORTEX_DB_PORT', 5432)),
-    database: env('SIGIL_DB_NAME', 'CORTEX_DB_NAME', 'sigil'),
-    user: env('SIGIL_DB_USER', 'CORTEX_DB_USER', 'sigil_app'),
-    password: env('SIGIL_DB_PASSWORD', 'CORTEX_DB_PASSWORD', ''),
+    host: env('SIGIL_DB_HOST', 'localhost'),
+    port: Number(env('SIGIL_DB_PORT', 5432)),
+    database: env('SIGIL_DB_NAME', 'sigil'),
+    user: env('SIGIL_DB_USER', 'sigil_app'),
+    password: env('SIGIL_DB_PASSWORD', ''),
   },
 
   embedding: {
@@ -59,7 +56,7 @@ const config = {
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: process.env.LLM_OPENROUTER_MODEL || 'google/gemini-flash-latest',
     openrouterBaseUrl: process.env.LLM_OPENROUTER_BASE_URL || '',
-    openrouterReferer: process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/cortex',
+    openrouterReferer: process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil',
     openrouterTitle: process.env.LLM_OPENROUTER_TITLE || 'Sigil',
 
     // Per-task model overrides (use provider-specific model names)
@@ -113,15 +110,15 @@ const config = {
     // natural way to refuse out-of-corpus queries ("Not in retrieved memory.") instead of
     // producing confidently-wrong answers from tangentially related facts.
     // Trade: +~$0.00015 and +~2.2s per search. Set SIGIL_SYNTHESIZE=false to disable.
-    synthesize: env('SIGIL_SYNTHESIZE', 'CORTEX_SYNTHESIZE', 'true') !== 'false',
+    synthesize: env('SIGIL_SYNTHESIZE', 'true') !== 'false',
     // Model for the synthesis pass — defaults to LLM_EXTRACTION_MODEL.
-    synthesizeModel: env('SIGIL_SYNTH_MODEL', 'CORTEX_SYNTH_MODEL', ''),
+    synthesizeModel: env('SIGIL_SYNTH_MODEL', ''),
   },
 
   ingest: {
     // false → skip per-chunk fact extraction during ingest (Ogham-style lazy mode).
     // Trades ~17× cheaper writes for ~4 points of hit@1 on narrow queries.
-    eagerExtract: env('SIGIL_EAGER_EXTRACT', 'CORTEX_EAGER_EXTRACT', 'true') !== 'false',
+    eagerExtract: env('SIGIL_EAGER_EXTRACT', 'true') !== 'false',
   },
 
   hebbian: {

@@ -229,7 +229,7 @@ during init; existing tables are detected and preserved.`);
   // commented-out hint line so the user can fill it in later.
   let extractionModel = existing.LLM_EXTRACTION_MODEL || '';
   let decisionModel = existing.LLM_DECISION_MODEL || '';
-  let synthModel = existing.SIGIL_SYNTH_MODEL || existing.CORTEX_SYNTH_MODEL || '';
+  let synthModel = existing.SIGIL_SYNTH_MODEL || '';
 
   if (llmProvider === 'openai') {
     const key = await text({
@@ -563,7 +563,7 @@ during init; existing tables are detected and preserved.`);
   // ask about (e.g., SIGIL_DB_*, custom env vars).
 
   if (!dryRun) await fs.mkdir(cortexHome, { recursive: true });
-  const encryptionKey = existing.CORTEX_ENCRYPTION_KEY || generateSecret(64);
+  const encryptionKey = existing.SIGIL_ENCRYPTION_KEY || generateSecret(64);
 
   const finalEnv = { ...existing };
   finalEnv.LLM_PROVIDER = llmProvider;
@@ -579,7 +579,7 @@ during init; existing tables are detected and preserved.`);
   finalEnv.EMBEDDING_DIMENSIONS = String(embeddingDimensions);
   finalEnv.OLLAMA_HOST = existing.OLLAMA_HOST || 'http://localhost:11434';
   finalEnv.DEFAULT_NAMESPACE = namespace;
-  finalEnv.CORTEX_ENCRYPTION_KEY = encryptionKey;
+  finalEnv.SIGIL_ENCRYPTION_KEY = encryptionKey;
   finalEnv.SIGIL_DB_TYPE = 'postgres';
   finalEnv.SIGIL_DB_HOST = dbHost;
   finalEnv.SIGIL_DB_PORT = String(dbPort);
