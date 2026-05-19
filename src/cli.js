@@ -644,7 +644,7 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
       const hooks = settings.hooks || {};
       const hasUPS = hooks.UserPromptSubmit?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('user-prompt-submit')));
       const hasPTU = hooks.PostToolUse?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('post-tool-use')));
-      const hasStop = hooks.Stop?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') && i.command?.includes('stop.js')));
+      const hasStop = hooks.Stop?.some((h) => h.hooks?.some((i) => i.command?.includes('sigil') || i.command?.includes('stop.js')));
       if (hasUPS) log('ok', 'UserPromptSubmit hook', 'registered');
       else log('warn', 'UserPromptSubmit hook', `not registered — run 'sigil init' to enable auto-context injection`);
       if (hasPTU) log('ok', 'PostToolUse hook', 'registered');
@@ -1473,11 +1473,25 @@ async function registerHooks({ dryRun = false } = {}) {
   const existedBefore = existsSync(settingsPath);
   settings.hooks = settings.hooks || {};
 
+  // Recognise prior Sigil hooks by their script filename — robust against
+  // varying install paths (some users have the binary under /cortex/,
+  // others /sigil/, others /opt/, ...). Earlier filter required the
+  // string 'sigil' AND 'hooks' to appear, which silently failed for any
+  // install whose path didn't literally contain 'sigil' — causing
+  // every re-run of `sigil init` to APPEND a duplicate hook entry.
+  const SIGIL_HOOK_FILES = [
+    'user-prompt-submit.js',
+    'stop.js',
+    'post-tool-use.js',
+    'session-end.js',
+  ];
+  const isSigilHook = (cmd) =>
+    typeof cmd === 'string' && SIGIL_HOOK_FILES.some((fn) => cmd.endsWith(fn) || cmd.includes(`/${fn}`));
+
   for (const [event, cortexEntry] of Object.entries(cortexHooks)) {
     const existing = settings.hooks[event] || [];
-    // Remove any previous Sigil hooks to keep this idempotent
     const filtered = existing.filter(
-      (h) => !h.hooks?.some((inner) => inner.command?.includes('sigil') && inner.command?.includes('hooks')),
+      (h) => !h.hooks?.some((inner) => isSigilHook(inner.command)),
     );
     settings.hooks[event] = [...filtered, cortexEntry];
   }
