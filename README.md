@@ -4,10 +4,15 @@
 
 ### Persistent memory for AI coding agents.
 
-Local-first knowledge engine. Atomic facts, entity graph, hybrid retrieval.<br/>
+Postgres-backed knowledge engine. Atomic facts, entity graph, hybrid retrieval.<br/>
 **Auto-integrated with Claude Code** via hooks. **Works with any MCP client** — Cursor, Continue, Cline, Windsurf, anything that speaks the protocol.
 
 ```bash
+# 1. Have Postgres + pgvector running. Quickest path with Docker:
+docker run -d --name sigil-pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
+
+# 2. Install Sigil and let it bootstrap the database.
 npm install -g @anmolsrv/sigil
 sigil init        # Claude Code: full auto-integration
 sigil register    # any other agent: get the MCP server config
@@ -48,10 +53,11 @@ For Cursor / Continue / Cline / etc., the CLI half is the same — only the reca
 
 - **Persistent memory** across every session, every project, every day — regardless of which agent you're using
 - **Hybrid retrieval** — vector + keyword fused via Reciprocal Rank Fusion, with optional read-time synthesis. **R@10 = 100%** on LongMemEval oracle split (n=100, ~25 chunks per haystack — full caveats in [RESULTS.md](./eval/longmemeval/RESULTS.md))
-- **Local-first** — embedded PGlite or real Postgres, your choice. No cloud. No telemetry. No vendor lock-in.
-- **Free by default** — Ollama embeddings + Claude Code subscription. No API keys required to start. Voyage / OpenAI / Anthropic supported as paid upgrades for top-tier quality.
-- **MCP-native** — 7-tool MCP server works with Claude Code, Cursor, Continue, Cline, Windsurf, ChatGPT desktop, or any other tool that speaks the [Model Context Protocol](https://modelcontextprotocol.io/)
-- **Deep Claude Code integration** — three hooks on top of MCP: `UserPromptSubmit` injects relevant memory before every prompt, `PostToolUse` captures observations from Edit/Write/Bash, `Stop` auto-extracts memorable user statements. No `! sigil remember` calls needed.
+- **Local-first** — your data lives in your own Postgres. No cloud. No telemetry. No vendor lock-in. Run it on your laptop, your home server, RDS — your call.
+- **Postgres + pgvector required** — `sigil init` bootstraps the database, user, and `vector` extension on first run. You bring a running Postgres (Docker, brew, RDS, anything); Sigil handles the rest.
+- **Bring-your-own LLM** — OpenAI, Anthropic, OpenRouter, or Ollama. Embeddings: OpenAI, Voyage, or local Ollama. No API key required if you point at Ollama.
+- **MCP-native** — 9-tool MCP server works with Claude Code, Cursor, Continue, Cline, Windsurf, ChatGPT desktop, or any other tool that speaks the [Model Context Protocol](https://modelcontextprotocol.io/)
+- **Deep Claude Code integration** — four hooks on top of MCP: `UserPromptSubmit` injects relevant memory before every prompt, `PostToolUse` captures observations from Edit/Write/Bash, `Stop` auto-extracts memorable user statements, `SessionEnd` synthesizes a durable session summary. No `! sigil remember` calls needed.
 - **Three-layer knowledge model** — chunks (raw text), facts (atomic statements with confidence/importance/temporal validity), entity graph (typed nodes + relations). Not a flat vector store.
 
 ---
@@ -60,35 +66,48 @@ For Cursor / Continue / Cline / etc., the CLI half is the same — only the reca
 
 Every time you open an AI coding agent — Claude Code, Cursor, Continue, anything — it starts from zero. You re-explain the same architecture. You watch the agent repeat mistakes you corrected last week. You lose hours to context-loading that should be instant.
 
-Sigil is a thin local layer that fixes this. The memory is *just there*, in every session, on every project, on every machine you install it on. With Claude Code it runs invisibly via hooks. With other MCP clients it shows up as a tool the agent can call. With anything else there's a CLI and REST API.
-
-No cloud, no subscription, no API key required to get started.
+Sigil is a thin local layer that fixes this. The memory is *just there*, in every session, on every project, on every machine you install it on. With Claude Code it runs invisibly via hooks. With other MCP clients it shows up as a tool the agent can call. The data lives in your own Postgres — no cloud, no subscription, no telemetry.
 
 ---
 
 ## Quickstart
 
+Sigil needs **Postgres 13+ with the `pgvector` extension** available. You bring the server; `sigil init` does the rest.
+
+### Step 1 — Have Postgres running
+
+Pick whichever path fits your setup:
+
 ```bash
-npm install -g @anmolsrv/sigil
+# Docker (recommended, includes pgvector out of the box)
+docker run -d --name sigil-pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
+
+# Homebrew on macOS
+brew install postgresql@15 pgvector
+brew services start postgresql@15
+
+# Existing managed Postgres (RDS, Neon, Supabase, ...)
+# Just enable the `vector` extension in the parameter group / SQL console.
 ```
 
-Then pick the path for your agent.
-
-### Claude Code (full auto-integration)
+### Step 2 — Install Sigil
 
 ```bash
+npm install -g @anmolsrv/sigil
 sigil init
 ```
 
-That's it. Open Claude Code and start a new session — your memory is already wired in.
-
 `sigil init` runs an interactive wizard that:
-1. Asks for your LLM provider (Claude Code subscription is default — zero API key needed)
-2. Sets up a local PGlite database at `~/.sigil/db` (no Docker, no Postgres server)
-3. Registers three hooks in `~/.claude/settings.json` (UserPromptSubmit, PostToolUse, Stop) so Claude reads, writes, and updates memory automatically
-4. Adds `@~/.sigil/CLAUDE.md` to your global Claude config so a top-20 hot-facts snapshot is always in context
 
-No other steps. No cloud setup.
+1. Asks for your LLM provider (OpenRouter, OpenAI, Anthropic, Ollama, or Claude Code subscription).
+2. Asks for embedding provider (OpenAI, Voyage, or local Ollama).
+3. Asks for your Postgres connection — defaults to `localhost:5432/sigil` with user `sigil_app`. **If the database doesn't exist yet, Sigil asks once for your Postgres admin credentials and creates the DB, user, and `pgvector` extension automatically.** Admin creds are used once and discarded; only the least-privilege `sigil_app` credentials land in `~/.sigil/.env`.
+4. Runs the schema migrations.
+5. Registers four hooks in `~/.claude/settings.json` (UserPromptSubmit, PostToolUse, Stop, SessionEnd) so Claude reads, writes, and updates memory automatically.
+6. Adds `@~/.sigil/CLAUDE.md` to your global Claude config so a top-20 hot-facts snapshot is always in context.
+
+That's it. Open Claude Code and start a new session — your memory is already wired in.
 
 ```bash
 sigil doctor   # verify everything works
@@ -98,14 +117,16 @@ sigil doctor   # verify everything works
 Sigil diagnostic
 
   ✓ Config file — ~/.sigil/.env
-  ✓ Database — PGlite (~/.sigil/db)
+  ✓ Config validation — no provider/model mismatches
+  ✓ Database — Postgres @ localhost:5432/sigil
   ✓ Stored data — 53 docs, 47 chunks, 249 facts
-  ✓ LLM provider — claude-cli (Claude Code subscription)
-  ✓ Embedding provider — ollama / nomic-embed-text
+  ✓ LLM provider — openrouter (model=google/gemini-flash-latest)
+  ✓ Embedding provider — openai / text-embedding-3-large
   ✓ UserPromptSubmit hook — registered
   ✓ PostToolUse hook — registered
   ✓ Stop hook — registered (auto-saves memorable user statements)
   ✓ Sigil CLAUDE.md — ~/.sigil/CLAUDE.md
+  ✓ Hook errors — none in ~/.sigil/.hook-errors.log
 
 All checks passed.
 ```
@@ -337,13 +358,11 @@ LLM_DECISION_MODEL=anthropic:claude-sonnet-4-6  # accurate AUDM decisions
 
 ## Storage
 
-Sigil defaults to **PGlite** — embedded WASM Postgres in `~/.sigil/db/`. No server, no port, no Docker. Right choice for personal single-developer use.
+Sigil runs on **Postgres 13+ with the `pgvector` extension** — no other backend supported as of v0.10.0. The schema is created and managed by Sigil's migrations; `sigil init` auto-bootstraps the database, user, and extension on first run.
 
-For Postico/pgAdmin visibility, multi-process concurrency, or shared deployments, switch to **real Postgres**:
+Configuration lives in `~/.sigil/.env`:
 
 ```
-# ~/.sigil/.env
-SIGIL_DB_TYPE=postgres
 SIGIL_DB_HOST=localhost
 SIGIL_DB_PORT=5432
 SIGIL_DB_NAME=sigil
@@ -351,19 +370,21 @@ SIGIL_DB_USER=sigil_app
 SIGIL_DB_PASSWORD=...
 ```
 
-Then `sigil migrate` to create the schema in your Postgres instance.
+Re-running `sigil init` is idempotent — it preserves all existing keys and only updates what you re-confirm at the prompts.
 
-Full setup walkthrough (Homebrew, Docker, troubleshooting): [`docs/postgres.md`](docs/postgres.md).
+### Why Postgres-only
 
-### When to switch to real Postgres
+Earlier versions of Sigil supported PGlite (embedded WASM Postgres) as a zero-install option. v0.10.0 dropped it. The reasons:
 
-PGlite is a **single-process** embedded database. Only one Sigil process can hold the DB at a time. In practice that means:
+- **Multi-process / multi-agent.** PGlite is single-process. Two Claude Code windows, or Claude + Cursor + Codex sharing memory, all need real Postgres anyway.
+- **One backend to maintain.** Two SQL flavors meant two test paths and two failure modes (e.g., the `glob` import bug, the WASM lock files).
+- **Standard tooling.** Postico, pgAdmin, `psql`, normal pg client libraries, RDS-style backups — all just work.
 
-- A `sigil` CLI invocation while the MCP server is running for an active Claude Code session **will fail** ("DB busy"). Stop the session, or run the CLI in a different namespace.
-- Two Claude Code windows open against the same Sigil DB → only one will get the hook to fire cleanly. The other's hook will fail-fast and inject nothing.
-- If a process is killed hard (`kill -9`, OOM), the DB lock can be left dangling: `sigil doctor --kill-stale`.
+Existing 0.9.x users with PGlite data: see [MIGRATING.md](./MIGRATING.md) for the export/import path. Your `~/.sigil/db/` directory is preserved untouched; v0.10.0 just won't read from it.
 
-If any of those describe your workflow, run real Postgres instead. PGlite is the right default for a single developer with one active session at a time. It is **not** the right backend for: parallel agent fleets, shared dev machines, or anything that wants Postico/pgAdmin visibility.
+### Production / shared / multi-machine
+
+Point your Postgres at any reachable host. Docker, RDS, Neon, Supabase, your home server — Sigil doesn't care. For one Sigil database shared across multiple machines (e.g., your laptop + a desktop running an overnight Sentry-triage agent), each machine's `~/.sigil/.env` points at the same Postgres host. Hot-context and pod-aware retrieval are transactional across clients.
 
 ---
 
@@ -371,16 +392,17 @@ If any of those describe your workflow, run real Postgres instead. PGlite is the
 
 ```
 ~/.sigil/
-├── .env              # Config, API keys (if any), namespace
-├── db/               # PGlite embedded database (auto-created)
-└── CLAUDE.md         # Instructions + hot-context snapshot for Claude
+├── .env                    # Config, API keys, Postgres connection
+├── CLAUDE.md               # Instructions + hot-context snapshot for Claude
+├── .hook-errors.log        # Append-only diagnostic log read by `sigil doctor`
+└── .last-clean-doctor      # Ack timestamp — silences proactive warnings after a clean doctor run
 
 ~/.claude/
-├── CLAUDE.md         # @import line to ~/.sigil/CLAUDE.md (one line added)
-└── settings.json     # UserPromptSubmit + PostToolUse hooks (merged, not overwritten)
+├── CLAUDE.md               # @import line to ~/.sigil/CLAUDE.md (one line added)
+└── settings.json           # UserPromptSubmit + PostToolUse + Stop + SessionEnd hooks (merged, not overwritten)
 ```
 
-Everything lives under `~/.sigil/`. No files in your project directory. No cloud. No external services (except Ollama for embeddings if you choose it).
+Everything Sigil-specific lives under `~/.sigil/`. Memory itself lives in your Postgres. No files in your project directory. No cloud. Embeddings stay local if you use Ollama; otherwise text leaves your machine only when calling your chosen LLM / embedding provider.
 
 ---
 
@@ -397,7 +419,7 @@ Honest caveats: oracle split is the easy split (no distractor sessions); n=100 i
 
 ### Local latency
 
-Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac. Sigil runs in-process against an embedded PGlite database, so these are **local** numbers — not directly comparable to numbers from cloud-hosted memory services, which include network round-trip. Listed here so you can size your own expectations, not as a competitive claim.
+Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac with Postgres in a local Docker container. These are **local** numbers — they include the Postgres round-trip but not WAN latency, so they aren't directly comparable to cloud-hosted memory services. Listed so you can size your own expectations, not as a competitive claim.
 
 | Metric | Sigil (local) |
 |--------|----------------|
@@ -407,7 +429,7 @@ Measured on a real knowledge base (53 docs, 249 facts) on an M-series Mac. Sigil
 | Embedding latency | **26ms** |
 | Tokens injected per prompt | **~1.5K** |
 
-Hook hot-path latency (cold Node start + PGlite WASM init + DB connect + search) is higher — typically 200–400ms on first invocation, then warm thereafter while Claude Code keeps the hook process pool alive. We have not formally benchmarked this; see [#hook-performance](#hook-performance) below.
+Hook hot-path latency (cold Node start + Postgres connect + search) is higher than the raw search latency — typically 200–400ms on first invocation, then warm thereafter while Claude Code keeps the hook process pool alive. We have not formally benchmarked this; see [#hook-performance](#hook-performance) below.
 
 ---
 
