@@ -1,25 +1,16 @@
 import 'dotenv/config';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { ClientPGlite, PGLITE_DB_PATH } from './src/db/pglite-adapter.js';
 
-const usePostgres = process.env.CORTEX_DB_TYPE === 'postgres';
+const env = (key, legacy, fallback) =>
+  process.env[key] ?? (legacy && process.env[legacy]) ?? fallback;
 
-export default usePostgres
-  ? {
-      client: 'pg',
-      connection: {
-        host: process.env.CORTEX_DB_HOST || 'localhost',
-        port: Number(process.env.CORTEX_DB_PORT) || 5432,
-        database: process.env.CORTEX_DB_NAME || 'cortex',
-        user: process.env.CORTEX_DB_USER || 'cortex_app',
-        password: process.env.CORTEX_DB_PASSWORD || '',
-      },
-      migrations: { directory: './src/db/migrations' },
-    }
-  : {
-      client: ClientPGlite,
-      connection: { pglitePath: PGLITE_DB_PATH },
-      pool: { min: 1, max: 1 },
-      migrations: { directory: './src/db/migrations' },
-    };
+export default {
+  client: 'pg',
+  connection: {
+    host: env('SIGIL_DB_HOST', 'CORTEX_DB_HOST', 'localhost'),
+    port: Number(env('SIGIL_DB_PORT', 'CORTEX_DB_PORT', 5432)),
+    database: env('SIGIL_DB_NAME', 'CORTEX_DB_NAME', 'sigil'),
+    user: env('SIGIL_DB_USER', 'CORTEX_DB_USER', 'sigil_app'),
+    password: env('SIGIL_DB_PASSWORD', 'CORTEX_DB_PASSWORD', ''),
+  },
+  migrations: { directory: './src/db/migrations' },
+};

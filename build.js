@@ -18,8 +18,6 @@ const DIST = 'dist';
 //
 // Packages we keep external — either binary (WASM), dynamically loaded, or large SDKs
 const EXTERNAL = [
-  '@electric-sql/pglite',     // has WASM binary
-  '@electric-sql/pglite/vector',
   'knex',                      // dynamic migration loading
   'pg',                        // native bindings
   '@anthropic-ai/sdk',         // dynamic import, heavy

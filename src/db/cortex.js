@@ -1,33 +1,20 @@
 import knex from 'knex';
 
 import config from '../config.js';
-import { ClientPGlite, PGLITE_DB_PATH } from './pglite-adapter.js';
 
-// Use PGlite (zero-install, embedded Postgres) by default.
-// Set CORTEX_DB_TYPE=postgres to use an external Postgres instance instead.
-const usePostgres = config.db.type === 'postgres';
-
-const cortexDb = usePostgres
-  ? knex({
-      client: 'pg',
-      connection: {
-        host: config.db.host,
-        port: config.db.port,
-        database: config.db.database,
-        user: config.db.user,
-        password: config.db.password,
-      },
-      pool: { min: 2, max: 10 },
-      postProcessResponse,
-      wrapIdentifier,
-    })
-  : knex({
-      client: ClientPGlite,
-      connection: { pglitePath: PGLITE_DB_PATH },
-      pool: { min: 1, max: 1 },
-      postProcessResponse,
-      wrapIdentifier,
-    });
+const cortexDb = knex({
+  client: 'pg',
+  connection: {
+    host: config.db.host,
+    port: config.db.port,
+    database: config.db.database,
+    user: config.db.user,
+    password: config.db.password,
+  },
+  pool: { min: 2, max: 10 },
+  postProcessResponse,
+  wrapIdentifier,
+});
 
 function postProcessResponse(result) {
   if (Array.isArray(result)) return result.map(toCamel);

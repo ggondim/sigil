@@ -3,10 +3,19 @@
 const env = (key, legacyKey, fallback) =>
   process.env[key] ?? (legacyKey && process.env[legacyKey]) ?? fallback;
 
+const dbType = env('SIGIL_DB_TYPE', 'CORTEX_DB_TYPE', 'postgres');
+if (dbType !== 'postgres') {
+  throw new Error(
+    `SIGIL_DB_TYPE=${dbType} is no longer supported. Sigil 0.10.0+ is Postgres-only.\n`
+    + 'PGlite was deprecated; existing PGlite data at ~/.sigil/db is preserved but unreachable from this version.\n'
+    + 'Set SIGIL_DB_TYPE=postgres in ~/.sigil/.env and configure SIGIL_DB_HOST / PORT / NAME / USER / PASSWORD.\n'
+    + 'Run `sigil init` for an interactive setup.',
+  );
+}
+
 const config = {
   db: {
-    // 'pglite' (default) — embedded, zero-install. 'postgres' — external Postgres via env vars.
-    type: env('SIGIL_DB_TYPE', 'CORTEX_DB_TYPE', 'pglite'),
+    type: 'postgres',
     host: env('SIGIL_DB_HOST', 'CORTEX_DB_HOST', 'localhost'),
     port: Number(env('SIGIL_DB_PORT', 'CORTEX_DB_PORT', 5432)),
     database: env('SIGIL_DB_NAME', 'CORTEX_DB_NAME', 'sigil'),

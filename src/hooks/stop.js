@@ -254,7 +254,7 @@ async function saveFacts(facts, { podUids = [] } = {}) {
   const { ingestDocument } = await import('../ingestion/pipeline.js');
   const config = (await import('../config.js')).default;
 
-  // Run sequentially so PGlite (single-process) doesn't get hammered
+  // Run sequentially — keeps the ingest pipeline simpler and the LLM extractor predictable
   for (const fact of facts) {
     try {
       await ingestDocument({

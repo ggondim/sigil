@@ -110,17 +110,14 @@ if (command !== 'doctor' && command !== 'export' && command !== 'register') {
 try {
   await handler(rest);
 } catch (err) {
-  // PGlite Aborted() at startup means the on-disk DB has stale lock state or
-  // dirty WAL. The bare WASM trace tells the user nothing useful — surface the
-  // recovery command instead.
   const msg = err.message || String(err);
-  if (/Aborted\(\)|RuntimeError|wasm-function/i.test(msg)) {
-    console.error('Error: Sigil DB failed to start (likely stale lock or dirty WAL state).');
+  if (/ECONNREFUSED|ENOTFOUND.*postgres|connection refused|password authentication failed/i.test(msg)) {
+    console.error('Error: Sigil could not connect to Postgres.');
     console.error('');
-    console.error('Recovery:');
-    console.error("  1. Make sure no other Sigil process is running:  ps aux | grep sigil");
-    console.error("  2. Try the auto-cleaner:                          sigil doctor --kill-stale");
-    console.error("  3. If that fails, the DB may be corrupted:        ls -la ~/.sigil/db");
+    console.error('Check:');
+    console.error("  • Is Postgres running?            docker ps | grep postgres   (or your local setup)");
+    console.error("  • Are credentials right?          grep SIGIL_DB ~/.sigil/.env");
+    console.error("  • Run interactive setup:          sigil init");
     console.error('');
     console.error('Underlying error: ' + msg.split('\n')[0]);
     process.exit(1);
@@ -145,11 +142,13 @@ Options:
                ~/.sigil/ and ~/.claude/ directories.
 
 Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
-  ~/.sigil/.env                 Sigil config + API keys
+  ~/.sigil/.env                 Sigil config + API keys (incl. Postgres connection)
   ~/.sigil/CLAUDE.md            Sigil instructions for Claude
-  ~/.sigil/db/                  Embedded PGlite database
-  ~/.claude/CLAUDE.md            One @import line added (existing content preserved)
-  ~/.claude/settings.json        UserPromptSubmit + PostToolUse hook entries (merged)`);
+  ~/.claude/CLAUDE.md           One @import line added (existing content preserved)
+  ~/.claude/settings.json       UserPromptSubmit + PostToolUse + Stop + SessionEnd hooks (merged)
+
+Sigil 0.10.0+ requires Postgres. Sigil's migrations run against your DB
+during init; existing tables are detected and preserved.`);
     process.exit(0);
   }
 
@@ -449,7 +448,7 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   const envResult = await safeWrite(envPath, envContent, { dryRun });
   planFile(envResult.action, envPath, `${envResult.bytes} bytes`);
 
-  // ── Database (PGlite — embedded, zero-install) ────────────────────────────
+  // ── Database (Postgres — required) ────────────────────────────────────────
 
   if (!dryRun) {
     dotenvConfig({ path: envPath, override: true, quiet: true });
@@ -466,11 +465,11 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
       );
     } catch (err) {
       dbSpinner.stop('Database setup failed');
-      cancel(err.message);
+      cancel(`${err.message}\n\nSigil 0.10.0+ requires Postgres. Set SIGIL_DB_HOST/PORT/NAME/USER/PASSWORD in ~/.sigil/.env or re-run sigil init.`);
       process.exit(1);
     }
   } else {
-    planFile('create', join(cortexHome, 'db'), 'PGlite database + run migrations');
+    planFile('migrate', 'postgres', `${config.db.host}:${config.db.port}/${config.db.database}`);
   }
 
   // ── ~/.sigil/CLAUDE.md + @import in ~/.claude/CLAUDE.md ─────────────────
@@ -538,20 +537,10 @@ async function runDoctor(args) {
     console.log(`sigil doctor — Diagnose Sigil setup
 
 Usage:
-  sigil doctor [--kill-stale]
+  sigil doctor
 
-Options:
-  --kill-stale   Remove stale PGlite lock files (postmaster.pid) when no Sigil
-                 process is actually holding them. Use this if 'sigil' commands
-                 fail with "Aborted()" after a kill -9 or a previous crash.
-
-Checks: database, LLM provider, embedding provider, hook registration, disk paths.`);
+Checks: Postgres connection, LLM provider, embedding provider, hook registration, hook error budget.`);
     process.exit(0);
-  }
-
-  // --kill-stale: clean stale PGlite lock files and exit. No other diagnostics.
-  if (args.includes('--kill-stale')) {
-    return killStalePGliteLocks();
   }
 
   const checks = [];
@@ -592,7 +581,7 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     const cortexDb = (await import('./db/cortex.js')).default;
     const config = (await import('./config.js')).default;
     await cortexDb.raw('SELECT 1');
-    log('ok', 'Database', config.db.type === 'postgres' ? 'external Postgres' : `PGlite (${join(homedir(), '.sigil', 'db')})`);
+    log('ok', 'Database', `Postgres @ ${config.db.host}:${config.db.port}/${config.db.database}`);
 
     const { getFactCount } = await import('./memory/facts/store.js');
     const { getStats } = await import('./memory/documents/store.js');
@@ -601,9 +590,9 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
     await cortexDb.destroy();
   } catch (err) {
     const msg = err.message || String(err);
-    if (/Aborted\(\)|RuntimeError|wasm-function/i.test(msg)) {
-      log('fail', 'Database', 'PGlite failed to start (stale lock or dirty WAL)');
-      log('warn', 'Recovery', "run 'sigil doctor --kill-stale' to clean stale lock files");
+    if (/ECONNREFUSED|connection refused|password authentication failed/i.test(msg)) {
+      log('fail', 'Database', `Postgres unreachable — ${msg.split('\n')[0]}`);
+      log('warn', 'Recovery', "check that Postgres is running and SIGIL_DB_* env vars are set in ~/.sigil/.env");
     } else {
       log('fail', 'Database', msg);
     }
@@ -715,73 +704,6 @@ Checks: database, LLM provider, embedding provider, hook registration, disk path
       await markDoctorClean();
     } catch { /* best effort */ }
   }
-}
-
-// ─── Doctor: kill-stale subcommand ──────────────────────────────────────────
-
-async function killStalePGliteLocks() {
-  const fs = await import('node:fs/promises');
-  const dbPath = process.env.SIGIL_PGLITE_PATH || join(homedir(), '.sigil', 'db');
-  const lockFile = join(dbPath, 'postmaster.pid');
-
-  console.log(`\nChecking PGlite lock state at ${dbPath}\n`);
-
-  if (!existsSync(lockFile)) {
-    console.log('  ✓ No lock file — DB is clean.');
-    return;
-  }
-
-  // Read the PID from the lock. PGlite writes a synthetic "-N" pid (e.g. "-42")
-  // when running in WASM, so any negative or non-integer value means stale.
-  let lockBody;
-  try {
-    lockBody = await fs.readFile(lockFile, 'utf8');
-  } catch (err) {
-    console.error(`  ✗ Could not read ${lockFile}: ${err.message}`);
-    process.exit(1);
-  }
-
-  const firstLine = lockBody.split('\n')[0]?.trim();
-  const pid = Number(firstLine);
-  console.log(`  Lock file contains pid: ${firstLine || '(empty)'}`);
-
-  // PGlite-in-WASM writes a synthetic negative pid (e.g. "-42"). Any value
-  // that isn't a positive integer means no real process owns this lock —
-  // it's left over from a killed embedded process.
-  if (!Number.isInteger(pid) || pid <= 0) {
-    await fs.unlink(lockFile);
-    console.log(`  ✓ Removed stale PGlite-WASM sentinel lock: ${lockFile}`);
-    console.log('');
-    console.log('Try your command again. If PGlite still fails to start, the DB may have');
-    console.log('dirty WAL state — back up ~/.sigil/db before any further recovery.');
-    return;
-  }
-
-  // Real OS pid. Check whether that exact process is still alive (kill -0).
-  // Don't grep for "sigil" string in arbitrary processes — it's noisy and
-  // matches unrelated node processes whose CWD happens to contain "sigil".
-  let pidAlive = false;
-  try {
-    process.kill(pid, 0); // signal 0 = existence check, doesn't actually signal
-    pidAlive = true;
-  } catch {
-    pidAlive = false;
-  }
-
-  if (pidAlive) {
-    console.log(`  ⚠ Process ${pid} is still running. Lock is LIVE, not stale.`);
-    console.log('');
-    console.log(`  Will NOT remove the lock. Stop pid ${pid} first if it's an orphan, e.g.:`);
-    console.log(`      kill ${pid}`);
-    process.exit(1);
-  }
-
-  // Real pid but process is gone — stale.
-  await fs.unlink(lockFile);
-  console.log(`  ✓ Removed stale lock for dead pid ${pid}: ${lockFile}`);
-  console.log('');
-  console.log('Try your command again. If PGlite still fails to start, the DB may have');
-  console.log('dirty WAL state — back up ~/.sigil/db before any further recovery.');
 }
 
 // ─── Export ──────────────────────────────────────────────────────────────────

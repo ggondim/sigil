@@ -73,7 +73,7 @@ export async function validateConfigDeep() {
         level: 'fail',
         code: 'DB_UNREACHABLE',
         message: `Postgres at ${config.db.host}:${config.db.port}/${config.db.database} unreachable: ${err.message.split('\n')[0]}`,
-        fix: 'Start Postgres, or set SIGIL_DB_TYPE=pglite in ~/.sigil/.env to use the embedded DB',
+        fix: 'Start Postgres (e.g. `docker start sigil-pg` or your equivalent) and verify SIGIL_DB_HOST/PORT/NAME/USER/PASSWORD in ~/.sigil/.env',
       });
     }
   }
@@ -152,7 +152,7 @@ function validateDb(issues) {
         level: 'fail',
         code: 'DB_CONFIG_INCOMPLETE',
         message: 'SIGIL_DB_TYPE=postgres but host/database/user missing.',
-        fix: 'Set SIGIL_DB_HOST, SIGIL_DB_NAME, SIGIL_DB_USER in ~/.sigil/.env (or switch to SIGIL_DB_TYPE=pglite).',
+        fix: 'Set SIGIL_DB_HOST, SIGIL_DB_NAME, SIGIL_DB_USER, SIGIL_DB_PASSWORD in ~/.sigil/.env. Run `sigil init` for an interactive setup.',
       });
     }
   }
