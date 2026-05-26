@@ -1,6 +1,6 @@
 # Authoring into `person` pods
 
-A person pod tracks **what you know about someone you work with**: their role, expertise, working style, ongoing initiatives, preferences. Person facts don't decay — relationships are long-running — but they should be *useful*, not just present.
+A person pod tracks **what you know about someone you work with**: their role, expertise, working style, ongoing initiatives, preferences. Person facts don't decay, relationships are long-running, but they should be *useful*, not just present.
 
 ## What to extract
 
@@ -24,4 +24,4 @@ A person pod tracks **what you know about someone you work with**: their role, e
 
 ## Importance
 
-Default importance is `3` (medium). Bump to `4` for facts that change *how* you collaborate (working style, communication preferences). `5` (vital) is rare — reserve for facts whose absence would cause real friction (e.g., "Dhaval is the only person with prod database access").
+Default importance is `3` (medium). Bump to `4` for facts that change *how* you collaborate (working style, communication preferences). `5` (vital) is rare, reserve for facts whose absence would cause real friction (e.g., "Dhaval is the only person with prod database access").

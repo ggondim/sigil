@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# reset-local.sh — Reset the local Cortex install for testing.
+# reset-local.sh, Reset the local Cortex install for testing.
 #
 # Tears down any existing global install (if installed via npm link / pack),
 # clears Claude Code hook + @import config, and optionally wipes the data dir.
 #
-# Then rebuilds from this repo, packs, and reinstalls globally — leaving you
+# Then rebuilds from this repo, packs, and reinstalls globally, leaving you
 # with a fresh `cortex` binary you can run `cortex init` against.
 #
 # Usage:
 #   ./scripts/reset-local.sh                  # Wipe everything (data + config + reinstall)
 #   ./scripts/reset-local.sh --keep-data      # Preserve ~/.cortex/db (keeps facts/docs)
-#   ./scripts/reset-local.sh --no-install     # Only tear down — don't reinstall
+#   ./scripts/reset-local.sh --no-install     # Only tear down, don't reinstall
 #   ./scripts/reset-local.sh --keep-data --no-install
 #
 # Flags:
@@ -57,13 +57,13 @@ if command -v cortex >/dev/null 2>&1; then
   npm unlink -g @anmolsrv/cortex 2>/dev/null || true
   green "  done"
 else
-  gray "  no global cortex on PATH — skipping uninstall"
+  gray "  no global cortex on PATH, skipping uninstall"
 fi
 
 # 2. Strip Cortex hooks from ~/.claude/settings.json
 if [ -f "${HOME_CLAUDE}/settings.json" ]; then
   yellow "▸ Removing Cortex hooks from ~/.claude/settings.json..."
-  python3 - <<'PY' || echo "  (python3 not available — skipping JSON cleanup)"
+  python3 - <<'PY' || echo "  (python3 not available, skipping JSON cleanup)"
 import json, pathlib, sys
 p = pathlib.Path.home() / '.claude' / 'settings.json'
 try:
@@ -108,7 +108,7 @@ if [ -f "${HOME_CLAUDE}/CLAUDE.md" ]; then
   gray "  $((before_lines - after_lines)) line(s) removed"
 fi
 
-# 4. Wipe ~/.cortex (data + config) — or preserve data
+# 4. Wipe ~/.cortex (data + config), or preserve data
 if [ -d "$HOME_CORTEX" ]; then
   if [ "$KEEP_DATA" = true ]; then
     yellow "▸ Removing config (~/.cortex/.env, CLAUDE.md) but preserving db/..."
@@ -120,7 +120,7 @@ if [ -d "$HOME_CORTEX" ]; then
     green "  removed"
   fi
 else
-  gray "  ~/.cortex doesn't exist — skipping"
+  gray "  ~/.cortex doesn't exist, skipping"
 fi
 
 # 5. Reinstall (build → pack → install)

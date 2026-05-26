@@ -1,13 +1,13 @@
 # Authoring into `claude_session` pods
 
-A claude_session pod captures **what happened during one Claude Code session**: what the user worked on, what they decided, what they tried that worked, what surprised them. The session pod is ephemeral — its facts decay after 90 days unless reinforced — so extract for the *signal*, not the trace.
+A claude_session pod captures **what happened during one Claude Code session**: what the user worked on, what they decided, what they tried that worked, what surprised them. The session pod is ephemeral, its facts decay after 90 days unless reinforced, so extract for the *signal*, not the trace.
 
 ## What to extract
 
 - **Decisions made in this session.** "Chose Drizzle over Knex for the new auth service because of TypeScript ergonomics." Not "looked at Drizzle docs."
 - **Problems solved + root causes.** "Webhook signature failures were caused by trailing newline in `STRIPE_WEBHOOK_SECRET` env var." The *cause*, not the symptom alone.
 - **Conventions discovered or applied.** "We name React components in PascalCase and pages in kebab-case." If it was reinforced this session, save it; the project pod will inherit it.
-- **Stuff that surprised the user.** "PGlite doesn't support concurrent writers via file lock — needs the WAL flag." Surprise is signal.
+- **Stuff that surprised the user.** "PGlite doesn't support concurrent writers via file lock, needs the WAL flag." Surprise is signal.
 
 ## What NOT to extract
 

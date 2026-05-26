@@ -1,14 +1,14 @@
 # Authoring into `project` pods
 
-A project pod accumulates **durable knowledge about a codebase** across many sessions: its architecture, conventions, constraints, deploy paths, who works on it, what hurts. Project facts don't decay — they're the long memory of how this project actually works, distilled from a hundred sessions.
+A project pod accumulates **durable knowledge about a codebase** across many sessions: its architecture, conventions, constraints, deploy paths, who works on it, what hurts. Project facts don't decay, they're the long memory of how this project actually works, distilled from a hundred sessions.
 
 ## What to extract
 
-- **Architecture decisions** — chosen stack, key library choices and *why*, abandoned approaches and the reason they were abandoned.
-- **Conventions** — naming, file layout, commit style, branching, code style preferences not in lint config, deploy cadence.
-- **Constraints** — performance budgets, security requirements, compliance gates, version compatibility.
-- **Operational reality** — how deploys happen, who runs the on-call, where the dashboards are, what the slow queries are.
-- **Project entities** — services, modules, key files, third-party integrations, people who own pieces of it.
+- **Architecture decisions**, chosen stack, key library choices and *why*, abandoned approaches and the reason they were abandoned.
+- **Conventions**, naming, file layout, commit style, branching, code style preferences not in lint config, deploy cadence.
+- **Constraints**, performance budgets, security requirements, compliance gates, version compatibility.
+- **Operational reality**, how deploys happen, who runs the on-call, where the dashboards are, what the slow queries are.
+- **Project entities**, services, modules, key files, third-party integrations, people who own pieces of it.
 
 ## What NOT to extract
 

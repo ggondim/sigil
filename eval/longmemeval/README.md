@@ -13,8 +13,8 @@ curl -L -o longmemeval_oracle.json \
 
 Alternative splits (harder, with distractor sessions):
 ```bash
-# longmemeval_s_cleaned.json  — 30MB, includes noise sessions
-# longmemeval_m_cleaned.json  — 2.7GB, full dataset
+# longmemeval_s_cleaned.json , 30MB, includes noise sessions
+# longmemeval_m_cleaned.json , 2.7GB, full dataset
 
 curl -L -o longmemeval_s_cleaned.json \
   "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json"
@@ -46,7 +46,7 @@ recall, synthesized answer, judge verdict, latency, cost.
 
 - **Per-question namespace isolation** (Ogham's pattern). Each LongMemEval question gets
   its own namespace `lme-<question_id>` so retrieval is scoped to that question's
-  haystack — no cross-question pollution.
+  haystack, no cross-question pollution.
 - **Hit definition.** A query "hits" if any retrieved fact/chunk's `source_document_ids`
   includes a doc derived from a session in the gold `answer_session_ids`. Document-level
   match, not chunk-level.

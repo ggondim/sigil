@@ -2,7 +2,7 @@
 
 A "vital" fact is **truth the user should never have to re-establish**. It surfaces in every session, regardless of project, regardless of pod scope. The bar is high: vital facts are the smallest set of things whose absence would degrade *every* interaction.
 
-This is a virtual kind — vital facts don't live in their own pod. They are facts (in any pod) tagged with `importance=5`, surfaced globally by the hot-context blend.
+This is a virtual kind, vital facts don't live in their own pod. They are facts (in any pod) tagged with `importance=5`, surfaced globally by the hot-context blend.
 
 ## What qualifies as vital
 
@@ -16,13 +16,13 @@ This is a virtual kind — vital facts don't live in their own pod. They are fac
 - **Recent activity.** Use claude_session or project pods.
 - **Person-specific knowledge.** Use person pods.
 - **Procedural recipes.** Use playbook pods.
-- **Anything that might change in 90 days.** If it's evolving, it's not vital — it's just important.
+- **Anything that might change in 90 days.** If it's evolving, it's not vital, it's just important.
 
 ## Style
 
 - One assertion per fact.
 - Present tense, declarative ("User uses…", "Never commit…", "The project uses…").
-- Self-contained — vital facts surface out of context, so they have to read as standalone truth.
+- Self-contained, vital facts surface out of context, so they have to read as standalone truth.
 - Short. 15-120 characters is the sweet spot.
 
 ## Setting importance
