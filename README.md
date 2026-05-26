@@ -8,12 +8,16 @@
 
 Local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any agent that can run a shell command or speak [MCP](https://modelcontextprotocol.io/). Stored in your own Postgres. No cloud, no telemetry.
 
+</div>
+
 ```bash
 docker run -d --name sigil-pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
 npm install -g @anmolsrv/sigil
 sigil init
 ```
+
+<div align="center">
 
 Open Claude Code — memory is already wired in.
 
