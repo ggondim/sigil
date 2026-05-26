@@ -10,7 +10,7 @@ This plugin makes that real: every Hermes turn lands in a Sigil namespace, every
 
 ## Requirements
 
-- Sigil CLI on `PATH` — `npm install -g @anmolsrv/sigil`
+- Sigil CLI on `PATH` — `npm install -g @anmol-srv/sigil`
 - `sigil init` completed once (configures DB, embedder, LLM provider)
 - Postgres reachable from this machine (local install or shared via Tailscale / cloud)
 

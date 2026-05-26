@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/banner.gif" alt="Sigil — local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any agent that speaks shell or MCP" width="100%" />
+</p>
+
 <div align="center">
 
 <img src="./assets/sigil.svg" alt="Sigil" width="100" height="100" />
@@ -13,7 +17,7 @@ Local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any a
 ```bash
 docker run -d --name sigil-pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
-npm install -g @anmolsrv/sigil
+npm install -g @anmol-srv/sigil
 sigil init
 ```
 
@@ -21,7 +25,7 @@ sigil init
 
 Open Claude Code — memory is already wired in.
 
-[![npm](https://img.shields.io/npm/v/@anmolsrv%2Fsigil)](https://www.npmjs.com/package/@anmolsrv/sigil)
+[![npm](https://img.shields.io/npm/v/@anmol-srv%2Fsigil)](https://www.npmjs.com/package/@anmol-srv/sigil)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
 [![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
@@ -78,7 +82,7 @@ sigil facts --limit=20                   # list recent facts
 sigil why "auth setup"                   # explain the search
 ```
 
-That's exactly how Claude Code (via Bash tool), Codex CLI, terminal-based agents, Hermes, and your own CI scripts use Sigil today. The CLI is auto-detected on `PATH` after `npm install -g @anmolsrv/sigil` — agents discover it the same way they discover `git` or `node`.
+That's exactly how Claude Code (via Bash tool), Codex CLI, terminal-based agents, Hermes, and your own CI scripts use Sigil today. The CLI is auto-detected on `PATH` after `npm install -g @anmol-srv/sigil` — agents discover it the same way they discover `git` or `node`.
 
 For clients that prefer structured tool calls (Cursor, Continue, Cline, Claude Desktop, Kiro, any MCP-spec agent), Sigil also exposes the same memory as a 9-tool MCP server — `sigil register --print` generates the config. MCP is the second interface, not the only one.
 
@@ -169,7 +173,7 @@ Alternatives: `brew install postgresql@15 pgvector && brew services start postgr
 ### 2. Install + setup
 
 ```bash
-npm install -g @anmolsrv/sigil
+npm install -g @anmol-srv/sigil
 sigil init
 ```
 
@@ -405,7 +409,7 @@ A: Single-user for now. Multiple installs sharing one Postgres works (see [Cross
 A: Your prompt still goes through. Every hook wraps in a top-level try/catch that fails silently — Sigil's invariant is **a broken memory layer must never block a working prompt.** Errors append to `~/.sigil/.hook-errors.log`; `sigil doctor` surfaces them. After 5 unacked errors in 24h, `sigil doctor` exits with code 1 so CI / scripts can catch it.
 
 **Q: How do I uninstall cleanly?**
-A: `npm uninstall -g @anmolsrv/sigil` removes the binary. `rm -rf ~/.sigil` removes data and config. Unwire from Claude Code by removing the sigil hook entries from `~/.claude/settings.json` and the `@~/.sigil/CLAUDE.md` line from `~/.claude/CLAUDE.md`. The Postgres database (`sigil`) and user (`sigil_app`) survive — drop them yourself if you want them gone.
+A: `npm uninstall -g @anmol-srv/sigil` removes the binary. `rm -rf ~/.sigil` removes data and config. Unwire from Claude Code by removing the sigil hook entries from `~/.claude/settings.json` and the `@~/.sigil/CLAUDE.md` line from `~/.claude/CLAUDE.md`. The Postgres database (`sigil`) and user (`sigil_app`) survive — drop them yourself if you want them gone.
 
 **Q: Where can I see how the retrieval pipeline actually works?**
 A: Read `src/memory/search/hybrid.js` (entry point) and `src/memory/search/hybrid-sql.js` (the single-SQL RRF + ACT-R activation query). The pod kind registry contracts are in `src/memory/pods/kinds/`. Hooks are in `src/hooks/`.
