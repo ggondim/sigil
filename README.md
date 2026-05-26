@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="./assets/banner.gif" alt="Sigil — local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any agent that speaks shell or MCP" width="100%" />
-</p>
-
 <div align="center">
 
 <img src="./assets/sigil.svg" alt="Sigil" width="100" height="100" />
