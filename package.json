@@ -67,7 +67,7 @@
     "local-first"
   ],
   "author": "Anmol Srivastava",
-  "license": "ISC",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/Anmol-Srv/sigil.git"

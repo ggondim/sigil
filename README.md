@@ -28,7 +28,7 @@ Open Claude Code — memory is already wired in.
 [![npm](https://img.shields.io/npm/v/@anmol-srv%2Fsigil)](https://www.npmjs.com/package/@anmol-srv/sigil)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
-[![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
+[![License](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/licenses/MIT)
 
 [**Quickstart**](#quickstart) · [Every agent](#works-with-every-agent-on-your-machine) · [How it works](#how-its-structured) · [Capabilities](#key-capabilities) · [Benchmarks](#benchmarks) · [FAQ](#faq)
 
@@ -418,4 +418,4 @@ A: Read `src/memory/search/hybrid.js` (entry point) and `src/memory/search/hybri
 
 ## License
 
-ISC. See [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE).
