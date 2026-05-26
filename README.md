@@ -1,10 +1,12 @@
 <div align="center">
 
+<img src="./assets/sigil.svg" alt="Sigil" width="160" height="160" />
+
 # Sigil
 
-### Persistent memory for AI coding agents.
+### One brain. Every agent. Your machine.
 
-One Postgres-backed brain across every agent on your machine. Auto-captured from Claude Code via hooks. Available to Cursor, Codex, Continue, Cline, Windsurf, or anything that speaks the [Model Context Protocol](https://modelcontextprotocol.io/). Shared across machines if you point them at the same Postgres.
+Local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any agent that can run a shell command or speak [MCP](https://modelcontextprotocol.io/). Stored in your own Postgres. No cloud, no telemetry.
 
 ```bash
 docker run -d --name sigil-pg -p 5432:5432 \
@@ -13,27 +15,85 @@ npm install -g @anmolsrv/sigil
 sigil init
 ```
 
-That's the whole setup. Open a Claude Code session — memory is already wired in.
+Open Claude Code — memory is already wired in.
 
 [![npm](https://img.shields.io/npm/v/@anmolsrv%2Fsigil)](https://www.npmjs.com/package/@anmolsrv/sigil)
-[![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP](https://img.shields.io/badge/MCP-native-8B5CF6)](https://modelcontextprotocol.io/)
 [![Benchmark](https://img.shields.io/badge/LongMemEval%20oracle-R@10%20100%25-6B1A2A)](./eval/longmemeval/RESULTS.md)
 [![License](https://img.shields.io/badge/license-ISC-blue)](https://opensource.org/licenses/ISC)
 
-[**Quickstart**](#quickstart) · [How it's structured](#how-its-structured) · [Other agents](#use-with-other-mcp-clients) · [Cross-machine](#cross-machine-memory) · [Benchmarks](#benchmarks) · [Commands](#commands) · [FAQ](#faq)
+[**Quickstart**](#quickstart) · [Every agent](#works-with-every-agent-on-your-machine) · [How it works](#how-its-structured) · [Capabilities](#key-capabilities) · [Benchmarks](#benchmarks) · [FAQ](#faq)
 
 </div>
 
 ---
 
-## What it does
+## Why this exists
 
-Every agent starts from zero. You re-explain the same architecture, watch the same mistakes happen, lose hours to context-loading. Sigil is a persistent memory layer that fixes this in three ways:
+Every memory tool for AI agents ships as someone else's cloud. Your code context, your team's decisions, your preferences — sitting in a vendor's database. That's the wrong default for the most intimate context your agents touch.
+
+And every agent has its own walled memory. Claude doesn't see what you told Codex. Cursor doesn't know what Kiro learned this morning. You re-explain the same architecture, watch the same mistakes happen, lose hours to context-loading every session.
+
+Sigil fixes both problems with the same primitive: a local memory layer every agent connects to.
 
 - **In Claude Code:** four hooks (`UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd`) auto-capture decisions, preferences, and observations as you work. Relevant memory is injected into every new prompt before Claude sees it. You write zero `sigil remember` calls.
-- **In other MCP clients** — Cursor, Codex, Continue, Cline, Windsurf: the same memory is exposed as a 9-tool MCP server. Your agent calls `search` / `ingest` / etc. when it needs them. No hook layer, but the underlying brain is identical.
+- **Everywhere else, the `sigil` CLI is the universal interface.** Any agent that can run a shell command — Codex CLI, terminal-based assistants, CI runners, Hermes, your own scripts — can call `sigil search "..."` or `sigil remember "..."` directly. No client integration required: if the agent can shell out, it can read and write memory.
+- **For MCP-aware clients** (Cursor, Continue, Cline, Windsurf, Claude Desktop, Kiro): the same memory is also exposed as a 9-tool MCP server. Same brain, structured surface for clients that prefer it.
 - **Across machines:** point multiple installs at the same Postgres. A fact captured on your laptop surfaces in the agent running on your home server. No daemon, no sync protocol — Postgres handles consistency.
+
+The pod model (sessions, projects, people, playbooks, vitals — and any pluggable kind you add) is the foundation. It's how the next layers — write-attributed multi-agent workflows, ACLs, custom integrations — will land on top of the same brain.
+
+**What changes in practice:** Tuesday in Claude Code, you decide to route webhooks through Postgres `LISTEN/NOTIFY` instead of Redis pubsub. Thursday you open Cursor in the same repo and ask for an event handler — it already knows. Friday you spin up a Hermes agent on your home server and ask *"what's our event delivery setup?"* — same answer, no copy-paste. The brain travels with you.
+
+---
+
+## Works with every agent on your machine
+
+Sigil's wedge is one memory layer underneath everything. `sigil init` detects every coding agent on your machine and wires Sigil into each one automatically — hooks for Claude Code, MCP server registration plus client-native steering rules for the rest.
+
+| Agent | Integration depth | Auto-wired |
+|---|---|---|
+| **Claude Code** | Native plugin · 4 hooks (`UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd`) · MCP server · `@~/.sigil/CLAUDE.md` hot-context import | ✓ |
+| **Codex CLI** | `~/.codex/config.toml` MCP entry · `~/.codex/AGENTS.md` steering · MCP server | ✓ |
+| **Cursor** | `~/.cursor/mcp.json` MCP entry · MCP server | ✓ |
+| **Kiro** | `~/.kiro/settings/mcp.json` MCP entry · `~/.kiro/steering/sigil.md` steering rule · MCP server | ✓ |
+| **Continue / Cline / Windsurf** | MCP server (one-line config from `sigil register --print`) | — |
+| **Hermes / OpenClaw / any custom agent** | MCP server, REST, or `sigil` CLI directly | — |
+| **Any MCP-spec client** | MCP server | — |
+
+Works with **any** agent that speaks MCP or can run a shell command. One brain on your machine — every agent reads and writes to it.
+
+### Two interfaces: CLI first, MCP when it fits
+
+The `sigil` CLI is the universal interface. If your agent has a `Bash` tool, a terminal, or any way to shell out, it can use Sigil — no client-specific integration required:
+
+```bash
+sigil search "JWT auth setup"            # what does the brain know?
+sigil remember "we use jose, not jsonwebtoken"  # save a fact
+sigil facts --limit=20                   # list recent facts
+sigil why "auth setup"                   # explain the search
+```
+
+That's exactly how Claude Code (via Bash tool), Codex CLI, terminal-based agents, Hermes, and your own CI scripts use Sigil today. The CLI is auto-detected on `PATH` after `npm install -g @anmolsrv/sigil` — agents discover it the same way they discover `git` or `node`.
+
+For clients that prefer structured tool calls (Cursor, Continue, Cline, Claude Desktop, Kiro, any MCP-spec agent), Sigil also exposes the same memory as a 9-tool MCP server — `sigil register --print` generates the config. MCP is the second interface, not the only one.
+
+### vs your agent's built-in memory
+
+Every coding agent ships with a hand-edited memory file: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Kiro steering. They're per-agent, capped in size, manually maintained, and reloaded in full on every prompt. Sigil is the searchable brain behind them.
+
+|  | Built-in (`CLAUDE.md`, `AGENTS.md`, etc.) | **Sigil** |
+|---|---|---|
+| Capture | Manual — you write and edit the file | Automatic via Claude Code hooks |
+| Scale | Loaded fully into context every prompt | Top-K retrieved from unlimited corpus |
+| Token cost | Linear in file size (caps how much you can store) | ~1.5K injected per prompt regardless of corpus size |
+| Search | None — the model reads the whole file | Hybrid (pgvector + tsvector BM25 + RRF) |
+| Cross-agent | Per-agent files, no sharing | One shared brain across every wired agent |
+| Cross-machine | Manual sync (git, scp) | Point installs at the same Postgres |
+| Freshness | Stale until you rewrite | Auto-decay, supersession, importance reweighting |
+| Provenance | None | Every fact links to source + confidence + temporal validity |
+
+You can keep using `CLAUDE.md` for hard-coded project rules. Sigil handles everything else.
 
 ---
 
@@ -58,6 +118,33 @@ Three storage layers underneath:
 3. **Entity graph** — typed nodes (person, project, service, ...) + relations, traversed via recursive CTEs
 
 Retrieval is hybrid: pgvector cosine + tsvector keyword fused via Reciprocal Rank Fusion, then re-ranked by ACT-R activation (recency × frequency) and Hebbian co-retrieval boosts. The full pipeline is in `src/memory/`.
+
+### What each hook does
+
+| Hook | What runs |
+|---|---|
+| `UserPromptSubmit` | Hybrid search on your prompt → top-K facts injected as `additionalContext` before Claude sees it |
+| `PostToolUse` | Capture observations from `Edit` / `Write` / `Bash`; SHA-256 dedup against a 5-minute window |
+| `Stop` | Classify the user's last message (preference / decision / constraint / claim), extract atomic facts + entities, AUDM (Add / Update / Delete / Merge) against existing memory to prevent duplicates |
+| `SessionEnd` | Summarize the session into its `claude_session` pod; promote sticky facts to higher importance |
+
+### Key capabilities
+
+| Capability | What it gives you |
+|---|---|
+| **Universal CLI interface** | Any agent with shell access can call `sigil search` / `sigil remember` directly — works in Claude Code (Bash tool), Codex CLI, terminal agents, Hermes, CI scripts. No client integration required |
+| **Auto-capture via hooks** | Zero manual `sigil remember` calls in Claude Code — the Stop hook handles routine saves |
+| **Cross-agent shared memory** | Claude Code, Codex CLI, Cursor, Kiro all read and write the same brain |
+| **Cross-machine via shared DB** | Laptop + home server + cloud agent on one Postgres = one memory |
+| **Hybrid search** | pgvector cosine + tsvector BM25 fused via Reciprocal Rank Fusion (one SQL query) |
+| **ACT-R + Hebbian re-ranking** | Recency × frequency activation + co-retrieval boosts (cognitive-science model, not vibes) |
+| **Pluggable pods** | Five built-in kinds; add `slack_channel`, `github_pr`, `codex_session`, etc. as contract files — no schema migrations |
+| **AUDM dedup** | Add / Update / Delete / Merge intelligence stops fact pile-up across thousands of saves |
+| **Fully air-gappable** | Pick Ollama for both LLM and embeddings — zero data leaves your network |
+| **No vendor account** | `npm install` + your Postgres = working brain. No signup, no API key required to start |
+| **Hot-context snapshot** | Top-20 facts always loaded via `@~/.sigil/CLAUDE.md` import — instant context with zero latency |
+| **9-tool MCP server** | `search`, `search_entity`, `traverse_graph`, `get_fact_context`, `get_entity_context`, `get_pod`, `list_pods`, `status`, `ingest` |
+| **Honest benchmarks** | Public LongMemEval oracle: R@10 = 100%, 33ms p50 search. Reproducible — not in-house corpus theater |
 
 ---
 
@@ -88,7 +175,7 @@ sigil init
 2. Asks for your embedding provider (OpenAI, Voyage, or Ollama).
 3. Asks for your Postgres connection. **If the `sigil` database doesn't exist yet, it asks once for Postgres admin credentials and auto-creates the database, the `sigil_app` user, and the `vector` extension.** Admin creds are used once and never written to disk; only `sigil_app` credentials land in `~/.sigil/.env`.
 4. Runs schema migrations.
-5. Registers the four hooks in `~/.claude/settings.json` and adds `@~/.sigil/CLAUDE.md` to your global Claude config so hot-context is always loaded.
+5. Auto-detects every AI client on your machine (Claude Code, Codex CLI, Cursor, Kiro) and wires Sigil into each one — hooks for Claude Code, MCP server registration + steering rules for the rest. Adds `@~/.sigil/CLAUDE.md` to your global Claude config so hot-context is always loaded.
 
 Re-running `sigil init` is idempotent. Existing `~/.sigil/.env` keys are preserved — only prompted values are updated.
 
@@ -130,7 +217,7 @@ In practice you rarely call `sigil remember` directly. The `Stop` hook runs a cl
 
 ## Use with other MCP clients
 
-`sigil register --print` outputs the standard MCP config JSON:
+`sigil init` auto-wires Codex CLI, Cursor, and Kiro on first run if it detects them — no manual config needed. For everything else (Continue, Cline, Windsurf, your custom MCP-spec agent), `sigil register --print` outputs the standard MCP config JSON:
 
 ```json
 {
@@ -146,13 +233,15 @@ In practice you rarely call `sigil remember` directly. The `Stop` hook runs a cl
 
 Drop the inner `sigil: {...}` object into your client's MCP config:
 
-| Client | Config file |
-|---|---|
-| Cursor | `~/.cursor/mcp.json` (or Settings → MCP) |
-| Continue.dev | `~/.continue/config.json` |
-| Cline (VS Code) | `cline_mcp_settings.json` in your VS Code user dir |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Codex / others | any MCP-spec client |
+| Client | Config file | Auto-wired by `sigil init`? |
+|---|---|---|
+| Codex CLI | `~/.codex/config.toml` | ✓ |
+| Cursor | `~/.cursor/mcp.json` (or Settings → MCP) | ✓ |
+| Kiro | `~/.kiro/settings/mcp.json` | ✓ |
+| Continue.dev | `~/.continue/config.json` | — |
+| Cline (VS Code) | `cline_mcp_settings.json` in your VS Code user dir | — |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | — |
+| Any other MCP-spec client | client's MCP config | — |
 
 The agent now sees nine tools: `search`, `search_entity`, `traverse_graph`, `get_fact_context`, `get_entity_context`, `get_pod`, `list_pods`, `status`, `ingest`. Most agents use them well if their system prompt mentions Sigil; if not, a short nudge helps:
 
