@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/sigil.svg" alt="Sigil" width="160" height="160" />
+<img src="./assets/sigil.svg" alt="Sigil" width="100" height="100" />
 
 # Sigil
 
