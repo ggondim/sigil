@@ -11,26 +11,41 @@ if (dbType !== 'postgres') {
 }
 
 const config = {
+  // Env-derived getters (not frozen values): the GUI/CLI rewrite ~/.sigil/.env
+  // mid-session (e.g. the onboarding DB step) and then dotenv-override
+  // process.env. Plain values would freeze at the daemon's boot-time env, so a
+  // freshly-configured database wouldn't be seen until restart — and the
+  // dim-conflict check (inspectEmbeddingCompat → selectDriver(config)) would
+  // probe the stale DB. Getters read process.env at access time. Same fix
+  // class as the `embedding` block below.
   db: {
     type: 'postgres',
     // Connection URL takes precedence when set. Recognized providers
     // (Neon, Supabase, RDS, Render, Railway, CockroachDB) get sensible
     // SSL defaults automatically; override with ?sslmode=... in the URL.
-    url: env('SIGIL_DATABASE_URL', env('DATABASE_URL', '')) || null,
-    host: env('SIGIL_DB_HOST', 'localhost'),
-    port: Number(env('SIGIL_DB_PORT', 5432)),
-    database: env('SIGIL_DB_NAME', 'sigil'),
-    user: env('SIGIL_DB_USER', 'sigil_app'),
-    password: env('SIGIL_DB_PASSWORD', ''),
+    get url() { return env('SIGIL_DATABASE_URL', env('DATABASE_URL', '')) || null; },
+    get host() { return env('SIGIL_DB_HOST', 'localhost'); },
+    get port() { return Number(env('SIGIL_DB_PORT', 5432)); },
+    get database() { return env('SIGIL_DB_NAME', 'sigil'); },
+    get user() { return env('SIGIL_DB_USER', 'sigil_app'); },
+    get password() { return env('SIGIL_DB_PASSWORD', ''); },
   },
 
+  // Env-derived getters (not frozen values): `sigil init` writes a fresh
+  // ~/.sigil/.env and then dotenv-overrides process.env AFTER this module has
+  // already been imported (registry.js pulls config in during provider
+  // selection). Plain values would freeze at the pre-init env — e.g. picking
+  // OpenAI@1024 but still embedding at the old 768 default. Getters read
+  // process.env at access time, so the post-override env wins. The embed path
+  // reads these live via `{...config.embedding}`, so truncation dimensions and
+  // keys reflect what init just wrote.
   embedding: {
-    provider: process.env.EMBEDDING_PROVIDER || '',
-    model: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
-    dimensions: Number(process.env.EMBEDDING_DIMENSIONS) || 768,
-    ollamaHost: process.env.OLLAMA_HOST || 'http://localhost:11434',
-    openaiApiKey: process.env.OPENAI_API_KEY || '',
-    voyageApiKey: process.env.VOYAGE_API_KEY || '',
+    get provider() { return process.env.EMBEDDING_PROVIDER || ''; },
+    get model() { return process.env.EMBEDDING_MODEL || 'nomic-embed-text'; },
+    get dimensions() { return Number(process.env.EMBEDDING_DIMENSIONS) || 768; },
+    get ollamaHost() { return process.env.OLLAMA_HOST || 'http://localhost:11434'; },
+    get openaiApiKey() { return process.env.OPENAI_API_KEY || ''; },
+    get voyageApiKey() { return process.env.VOYAGE_API_KEY || ''; },
     // OpenRouter as an embedding gateway. Models are namespaced (e.g.
     // "openai/text-embedding-3-large", "voyageai/voyage-3-large").
     // Reuses the chat-side referer/title for app attribution.

@@ -14,21 +14,39 @@ import knexFactory from 'knex';
 
 import { MIGRATIONS_DIR } from '../../lib/paths.js';
 import { buildLocalConnection } from '../../db/drivers/local-postgres.js';
-import { buildUrlConnection } from '../../db/drivers/url.js';
+import { buildUrlConnection, isPooledUrl, directMigrationUrl } from '../../db/drivers/url.js';
 
 export function registerRunMigrations(registry) {
   registry.register('runMigrations', async (params = {}) => {
     if (params.url || params.host) {
       // One-shot migrate against the supplied connection.
-      const connection = params.url
-        ? buildUrlConnection(params.url)
-        : buildLocalConnection({ db: {
-            host: params.host || 'localhost',
-            port: Number(params.port) || 5432,
-            database: params.database || 'sigil',
-            user: params.user || 'sigil_app',
-            password: params.password || '',
-          }});
+      let connection;
+      if (params.url) {
+        // Pooled connections (PgBouncer txn mode) can't run migrations —
+        // advisory locks / prepared statements fail. Migrate against the
+        // direct endpoint when we can derive it; otherwise surface a clear,
+        // diagnoseError-classifiable message rather than a cryptic failure.
+        let migrateUrl = params.url;
+        if (isPooledUrl(params.url)) {
+          const direct = directMigrationUrl(params.url);
+          if (!direct) {
+            throw new Error(
+              'This is a connection-pooler URL. Migrations need the direct connection — '
+              + 'paste your non-pooled connection string.',
+            );
+          }
+          migrateUrl = direct;
+        }
+        connection = buildUrlConnection(migrateUrl);
+      } else {
+        connection = buildLocalConnection({ db: {
+          host: params.host || 'localhost',
+          port: Number(params.port) || 5432,
+          database: params.database || 'sigil',
+          user: params.user || 'sigil_app',
+          password: params.password || '',
+        }});
+      }
       const knex = knexFactory({
         client: 'pg',
         connection,

@@ -761,13 +761,25 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
       const { MIGRATIONS_DIR: migrationDir } = await import('./lib/paths.js');
       const cortexDb = (await import('./db/cortex.js')).default;
       const [, migrations] = await cortexDb.migrate.latest({ directory: migrationDir });
-      await cortexDb.destroy();
+      // NB: do NOT destroy() the shared cortexDb pool here — it's a module
+      // singleton reused by the embedder smoke test (embedding-cache.js) and
+      // the post-init updateContextSnapshot() below. Tearing it down mid-init
+      // makes every later query throw "Unable to acquire a connection" (which
+      // the embedder catch misreports as an Ollama failure). The final
+      // process.exit(0) closes the pool cleanly.
       dbSpinner.stop(
         migrations.length ? `Memory database ready (${migrations.length} tables created)` : 'Memory database up to date',
       );
     } catch (err) {
       dbSpinner.stop('Database setup failed');
-      cancel(`${err.message}\n\nSigil 0.10.0+ requires Postgres. Set SIGIL_DB_HOST/PORT/NAME/USER/PASSWORD in ~/.sigil/.env or re-run sigil init.`);
+      const { diagnoseError } = await import('./db/setup.js');
+      const d = diagnoseError(err);
+      cancel(
+        `${d.humanMessage}\n`
+        + (d.fixHint ? `\n  → ${d.fixHint}\n` : '')
+        + `\n(${err.message})\n`
+        + '\nSet the database connection in ~/.sigil/.env or re-run sigil init.',
+      );
       process.exit(1);
     }
 
@@ -805,12 +817,13 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
       embedSpinner.stop(`Embedder healthy (${vec.length}d via ${embeddingProvider}/${embeddingModel})`);
     } catch (err) {
       embedSpinner.stop('Embedder check failed');
+      const { diagnoseError } = await import('./db/setup.js');
+      const d = diagnoseError(err);
       cancel(
-        `${embeddingProvider}/${embeddingModel} cannot embed: ${err.message}\n\n`
-        + 'Your config was written to ' + envPath + ' — fix the root cause then re-run sigil init:\n'
-        + (embeddingProvider === 'ollama'
-          ? '  • ensure `ollama serve` is running\n  • run `ollama pull ' + embeddingModel + '` to fetch the model\n'
-          : '  • verify OPENAI_API_KEY is valid and has embedding access\n  • check the model name matches an embedding model (text-embedding-3-large / -small)\n')
+        `${d.humanMessage}\n`
+        + (d.fixHint ? `\n  → ${d.fixHint}\n` : '')
+        + `\n(${embeddingProvider}/${embeddingModel}: ${err.message})\n`
+        + '\nYour config was written to ' + envPath + ' — fix the root cause then re-run sigil init.'
         + '\nSigil init aborted before any AI clients were touched — your existing setup is unchanged.',
       );
       process.exit(1);
@@ -904,6 +917,14 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   );
 
   outro('Open a new Claude Code session to start using Sigil.');
+
+  // The shared cortexDb pool (opened by the migrate step / embedder smoke
+  // test / updateContextSnapshot above) keeps min:2 connections alive, which
+  // would hold the event loop open and hang the CLI here. We no longer
+  // destroy() it mid-flow (that broke the embedder check), so exit explicitly
+  // now that all DB work is done — matching the explicit-exit pattern used
+  // throughout this file.
+  process.exit(0);
 }
 
 function pad(s, n) { return String(s).padEnd(n); }

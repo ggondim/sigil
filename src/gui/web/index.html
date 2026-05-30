@@ -378,16 +378,47 @@
     <section id="view-settings" class="view">
       <div class="section-head">
         <div class="title-block">
-          <h2>Environment</h2>
-          <p>Variables read from <code>~/.sigil/.env</code>. Secret keys (KEY / PASSWORD / TOKEN / SECRET) are masked.</p>
+          <h2>Configuration</h2>
+          <p>Switch your database, LLM, or embedding provider any time. Changes apply after the daemon restarts (automatic).</p>
         </div>
       </div>
-      <div class="table-wrap">
-        <table id="env-table">
-          <thead><tr><th>Key</th><th>Value</th></tr></thead>
-          <tbody><tr><td colspan="2" class="empty">loading…</td></tr></tbody>
-        </table>
+
+      <!-- Current config + switch controls -->
+      <div class="panel" style="padding: var(--s-5); margin-bottom: var(--s-4);">
+        <div class="row"><div class="k">Database</div><div class="v" id="cfg-db">…</div></div>
+        <div class="row"><div class="k">LLM provider</div><div class="v" id="cfg-llm">…</div></div>
+        <div class="row"><div class="k">Embedding</div><div class="v" id="cfg-emb">…</div></div>
+        <div class="flex-row" style="margin-top: var(--s-4);">
+          <button type="button" class="btn" id="cfg-change-llm">Change LLM</button>
+          <button type="button" class="btn" id="cfg-change-emb">Change embedding</button>
+          <a href="#setup" class="btn" data-route="setup">Change database</a>
+        </div>
       </div>
+
+      <!-- Inline provider switcher (hidden until "Change" clicked) -->
+      <div id="cfg-switch" class="panel" style="padding: var(--s-5); display:none; margin-bottom: var(--s-4);">
+        <h3 id="cfg-switch-title" style="margin-top:0;">Change provider</h3>
+        <div class="provider-card-grid" id="cfg-switch-cards"></div>
+        <div id="cfg-switch-fields" style="margin-top: var(--s-4);"></div>
+        <div id="cfg-switch-conflict"></div>
+        <div class="flex-row" style="margin-top: var(--s-4);">
+          <button type="button" class="btn primary" id="cfg-switch-apply">Apply &amp; restart</button>
+          <button type="button" class="btn" id="cfg-switch-cancel">Cancel</button>
+        </div>
+        <pre id="cfg-switch-result" class="result" style="display:none"></pre>
+      </div>
+
+      <!-- Raw env (advanced, collapsed) -->
+      <details class="panel" style="padding: var(--s-5);">
+        <summary style="cursor:pointer;">Advanced — raw <code>~/.sigil/.env</code></summary>
+        <p class="muted text-sm">Secret keys (KEY / PASSWORD / TOKEN / SECRET) are masked.</p>
+        <div class="table-wrap">
+          <table id="env-table">
+            <thead><tr><th>Key</th><th>Value</th></tr></thead>
+            <tbody><tr><td colspan="2" class="empty">loading…</td></tr></tbody>
+          </table>
+        </div>
+      </details>
     </section>
 
     <!-- ── RPC ──────────────────────────────────────────────────── -->

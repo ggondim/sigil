@@ -20,6 +20,9 @@ const PG_ERR = {
   CONNECTION_REFUSED: 'ECONNREFUSED',
   AUTH_FAILED: '28P01',
   EXTENSION_NOT_AVAILABLE: '0A000',
+  // Postgres raises XX000 (internal_error) for a grab-bag of conditions; we
+  // only pattern-match its message, never branch on the bare code.
+  INTERNAL_ERROR: 'XX000',
 };
 
 export async function probeSigilConnection({ host, port, database, user, password }) {
@@ -173,29 +176,136 @@ export async function ensurePostgresDatabase({
   return { actions };
 }
 
-export function diagnoseConnectionError(err) {
+/**
+ * Single source of truth for turning any setup-time failure — Postgres,
+ * knex pool, pgvector, the embedding provider — into a HONEST, actionable
+ * message. Both `sigil init` (CLI) and the GUI onboarding/settings RPCs call
+ * this, so the cause the user sees is the cause that actually happened.
+ *
+ * This exists because the old code hardcoded "ensure ollama serve is running"
+ * on ANY embedder failure — so a dead knex pool or a vector-dimension mismatch
+ * masqueraded as an Ollama problem and cost real debugging hours. Never guess
+ * the cause from the call site; classify the error here.
+ *
+ * Returns { kind, humanMessage, fixHint }:
+ *   kind        — stable machine tag (for the GUI to branch on / show a button)
+ *   humanMessage — what actually went wrong, in plain language
+ *   fixHint     — the concrete next step
+ *
+ * Ordering matters: the most specific patterns are tested first so a generic
+ * code (e.g. XX000) doesn't swallow a recognizable message.
+ */
+export function diagnoseError(err) {
   const code = err?.code;
   const msg = err?.message || String(err);
 
+  // ── Embedding-provider failures (no pg code; matched on message) ──────────
+  // Vector dimension mismatch: the configured EMBEDDING_DIMENSIONS (or the
+  // model's native output) doesn't match the DB's vector(N) columns. This is
+  // the exact trap that looked like an Ollama error before.
+  if (/expected \d+ dimensions, not \d+/i.test(msg) || /different vector dimensions/i.test(msg)) {
+    return {
+      kind: 'dim-mismatch',
+      humanMessage: 'The embedding size does not match the database. '
+        + 'Your existing data uses a different vector dimension than the embedder you picked.',
+      fixHint: 'Pick an embedding provider whose dimension matches the database, '
+        + 'or wipe the embedding data and start fresh at the new dimension (Settings → Embedding).',
+    };
+  }
+  // Embedding auth: provider rejected the API key (OpenAI/Voyage/OpenRouter 401/403).
+  if (/\b401\b|\b403\b|invalid[_ ]api[_ ]key|incorrect api key|unauthorized/i.test(msg)
+      && /openai|voyage|openrouter|embed/i.test(msg)) {
+    return {
+      kind: 'bad-key',
+      humanMessage: 'The embedding provider rejected the API key.',
+      fixHint: 'Check the API key has embedding access and is pasted correctly (Settings → Embedding).',
+    };
+  }
+  // Embedding model not found: wrong model name for the provider.
+  if (/model .* (not found|does not exist)|unknown model|no such model/i.test(msg)) {
+    return {
+      kind: 'model-not-found',
+      humanMessage: 'The embedding model name was not recognized by the provider.',
+      fixHint: 'Use a valid embedding model for the provider (e.g. text-embedding-3-large for OpenAI, '
+        + 'nomic-embed-text for Ollama).',
+    };
+  }
+  // Ollama unreachable: the local daemon isn't running. ONLY surfaced when the
+  // error actually points at the ollama endpoint — never as a catch-all.
+  if (/11434|ollama/i.test(msg) && /ECONNREFUSED|fetch failed|connect|unreachable/i.test(msg)) {
+    return {
+      kind: 'ollama-down',
+      humanMessage: 'The local Ollama server is not reachable.',
+      fixHint: 'Start it with `ollama serve`, then `ollama pull nomic-embed-text`.',
+    };
+  }
+
+  // ── Knex pool torn down mid-flow (the B1 bug class) ───────────────────────
+  if (/Unable to acquire a connection/i.test(msg) || /pool is (destroyed|draining)/i.test(msg)) {
+    return {
+      kind: 'pool-dead',
+      humanMessage: 'The database connection pool was closed before this step ran.',
+      fixHint: 'This is an internal sequencing bug, not your configuration — restart the daemon (Settings → Apply).',
+    };
+  }
+
+  // ── Connection pooler can't run migrations (the B5 / Neon -pooler bug) ─────
+  // PgBouncer transaction pooling rejects advisory locks / prepared statements
+  // that knex migrations need. Neon raises XX000 with a pooler-ish message.
+  if (/pooler|pgbouncer|prepared statement|advisory lock|endpoint could not be found/i.test(msg)) {
+    return {
+      kind: 'pooler-lock',
+      humanMessage: 'This looks like a connection-pooler URL. Pooled connections cannot run database migrations.',
+      fixHint: 'Use your direct (non-pooled) connection string for setup. '
+        + 'For Neon, remove "-pooler" from the host.',
+    };
+  }
+
+  // ── pgvector extension missing ────────────────────────────────────────────
+  if (code === PG_ERR.EXTENSION_NOT_AVAILABLE
+      || /extension "?vector"?|type "?vector"? does not exist/i.test(msg)) {
+    return {
+      kind: 'no-pgvector',
+      humanMessage: 'The pgvector extension is not enabled on this database.',
+      fixHint: 'Click "Install pgvector" (most managed providers allow it), '
+        + 'or use a pgvector-enabled Postgres image.',
+    };
+  }
+
+  // ── Core Postgres connection failures ─────────────────────────────────────
   if (code === PG_ERR.CONNECTION_REFUSED || /ECONNREFUSED/.test(msg)) {
     return {
       kind: 'unreachable',
-      hint: 'Is Postgres running? Try `docker ps | grep postgres` or `pg_isready -h <host> -p <port>`.',
+      humanMessage: 'Postgres is not reachable at that host/port.',
+      fixHint: 'Confirm the server is running and the host/port are correct '
+        + '(`pg_isready -h <host> -p <port>`).',
     };
   }
   if (code === PG_ERR.AUTH_FAILED || /password authentication failed/i.test(msg)) {
     return {
       kind: 'auth',
-      hint: 'Wrong username or password. Re-run `sigil init` to reset, or edit ~/.sigil/.env.',
+      humanMessage: 'Postgres rejected the username or password.',
+      fixHint: 'Fix the credentials in the connection settings.',
     };
   }
   if (code === PG_ERR.DB_DOES_NOT_EXIST || /database .* does not exist/i.test(msg)) {
     return {
       kind: 'missing-db',
-      hint: 'The Sigil database does not exist yet. Run `sigil init` to create it.',
+      humanMessage: 'That database does not exist on the server yet.',
+      fixHint: 'Create the database, or point Sigil at one that exists.',
     };
   }
-  return { kind: 'other', hint: msg.split('\n')[0] };
+
+  return { kind: 'other', humanMessage: msg.split('\n')[0], fixHint: null };
+}
+
+/**
+ * Back-compat alias. Older callers expect { kind, hint }; map the new
+ * humanMessage/fixHint shape onto `hint` so they keep working unchanged.
+ */
+export function diagnoseConnectionError(err) {
+  const d = diagnoseError(err);
+  return { kind: d.kind, hint: d.fixHint || d.humanMessage };
 }
 
 function quoteIdent(name) {

@@ -90,6 +90,52 @@ function resolveSsl(hostname, sslmode) {
   return { rejectUnauthorized: false };
 }
 
+/**
+ * Pooled-connection detection + direct-host rewrite for migrations.
+ *
+ * Connection poolers (PgBouncer in transaction mode — Neon's `-pooler`
+ * endpoint, Supabase's pooler host) reject the advisory locks and prepared
+ * statements knex migrations rely on. Migrations must run against the DIRECT
+ * endpoint; only runtime traffic should use the pooled URL.
+ *
+ *   isPooledUrl(url)        → true if the host looks like a pooler
+ *   directMigrationUrl(url) → a URL safe to migrate against, or null if we
+ *                             can't safely derive one (caller must then ask
+ *                             the user for a direct connection string)
+ *
+ * Neon is the only provider whose direct host is a deterministic transform
+ * of the pooled host (drop "-pooler"). Supabase's direct host is a different
+ * shape (db.<ref>.supabase.co) we can't reconstruct from the pooled URL, so
+ * we return null rather than fabricate a wrong host.
+ */
+export function isPooledUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    return /-pooler\./i.test(host) || /\.pooler\.supabase\.com$/i.test(host);
+  } catch {
+    return false;
+  }
+}
+
+export function directMigrationUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname;
+  // Neon: ep-xxx-pooler.region.aws.neon.tech → ep-xxx.region.aws.neon.tech
+  if (/\.neon\.tech$/i.test(host) && /-pooler\./i.test(host)) {
+    parsed.hostname = host.replace('-pooler.', '.');
+    return parsed.toString();
+  }
+  // Already-direct Neon host (or any non-pooled host) needs no rewrite.
+  if (!isPooledUrl(url)) return url;
+  // Pooled, but not a shape we can safely rewrite (e.g. Supabase pooler).
+  return null;
+}
+
 /** Identify the most-likely provider for diagnostics / hints. */
 export function classifyProvider(url) {
   try {

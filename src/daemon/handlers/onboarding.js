@@ -224,6 +224,89 @@ export function registerOnboarding(registry) {
     return { ok: true, provider: provider.id, keysWritten: Object.keys(patch) };
   });
 
+  // Check whether picking an embedding provider would conflict with the
+  // dimension of vectors already stored in the target database. Called by the
+  // GUI the moment a provider is picked/switched, BEFORE writing config, so a
+  // mismatch surfaces as a choice instead of a silent write failure later.
+  //
+  // params: { id } (embedding provider id) OR { targetDim } directly; plus
+  // optional { url } / discrete db fields to probe a not-yet-saved DB. When no
+  // connection is supplied, probes the currently-configured database.
+  registry.register('inspectEmbeddingCompat', async (params = {}) => {
+    const provider = params.id
+      ? EMBEDDING_PROVIDERS.find((p) => p.id === params.id)
+      : null;
+    const targetDim = Number(
+      params.targetDim ?? provider?.env?.EMBEDDING_DIMENSIONS ?? 0,
+    );
+    if (!targetDim) {
+      const err = new Error('inspectEmbeddingCompat: need a provider id or targetDim');
+      err.code = 'invalid_params';
+      throw err;
+    }
+
+    // Resolve a connection to probe: explicit params, else current config.
+    let conn;
+    try {
+      if (params.url) {
+        const { buildUrlConnection } = await import('../../db/drivers/url.js');
+        conn = buildUrlConnection(params.url);
+      } else if (params.host) {
+        const { buildLocalConnection } = await import('../../db/drivers/local-postgres.js');
+        conn = buildLocalConnection({ db: {
+          host: params.host, port: Number(params.port) || 5432,
+          database: params.database || 'sigil', user: params.user || 'sigil_app',
+          password: params.password || '',
+        }});
+      } else {
+        const { default: config } = await import('../../config.js');
+        const { selectDriver } = await import('../../db/drivers/index.js');
+        conn = selectDriver(config).connection;
+      }
+    } catch (err) {
+      const { diagnoseError } = await import('../../db/setup.js');
+      const d = diagnoseError(err);
+      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
+    }
+
+    try {
+      const { inspectSchemaDims, diagnoseConflict } = await import('../../setup/compat.js');
+      const schema = await inspectSchemaDims(conn);
+      const result = diagnoseConflict({ targetDim, schema });
+      return { ok: true, ...result, schema };
+    } catch (err) {
+      const { diagnoseError } = await import('../../db/setup.js');
+      const d = diagnoseError(err);
+      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
+    }
+  });
+
+  // Destructive: empty the embedding-bearing tables so the schema can be
+  // re-migrated at a new dimension. Requires explicit confirm:true from the
+  // caller (the GUI shows the row count first). Truncates fact/chunk/entity/
+  // embedding_cache; leaves pods/structure intact for re-ingest.
+  registry.register('wipeEmbeddingData', async (params = {}) => {
+    if (params.confirm !== true) {
+      const err = new Error('wipeEmbeddingData: refusing without confirm:true');
+      err.code = 'invalid_params';
+      throw err;
+    }
+    try {
+      const { default: cortexDb } = await import('../../db/cortex.js');
+      const { EMBEDDING_TABLES } = await import('../../setup/compat.js');
+      // CASCADE so dependent rows (fact_lifecycle, memberships) go too;
+      // RESTART IDENTITY for a clean slate.
+      await cortexDb.raw(
+        `TRUNCATE ${EMBEDDING_TABLES.join(', ')} RESTART IDENTITY CASCADE`,
+      );
+      return { ok: true, truncated: EMBEDDING_TABLES };
+    } catch (err) {
+      const { diagnoseError } = await import('../../db/setup.js');
+      const d = diagnoseError(err);
+      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
+    }
+  });
+
   registry.register('markOnboardingComplete', async () => {
     writeEnvKeys({ SIGIL_SETUP_COMPLETE: 'true' });
     // Schedule a soft restart so the daemon re-evaluates env and rebuilds
@@ -247,7 +330,9 @@ export function registerOnboarding(registry) {
       const out = await prompt('Reply with the single word: ok', { caller: 'onboarding-test' });
       return { ok: true, response: out.slice(0, 200) };
     } catch (err) {
-      return { ok: false, error: err.message };
+      const { diagnoseError } = await import('../../db/setup.js');
+      const d = diagnoseError(err);
+      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
     }
   });
 
@@ -255,10 +340,14 @@ export function registerOnboarding(registry) {
     try {
       const { embed } = await import('../../ingestion/embedder.js');
       const v = await embed('Sigil onboarding test');
-      if (!Array.isArray(v) || v.length === 0) return { ok: false, error: 'embedder returned empty vector' };
+      if (!Array.isArray(v) || v.length === 0) {
+        return { ok: false, error: 'The embedder returned an empty vector.', kind: 'other' };
+      }
       return { ok: true, dim: v.length };
     } catch (err) {
-      return { ok: false, error: err.message };
+      const { diagnoseError } = await import('../../db/setup.js');
+      const d = diagnoseError(err);
+      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
     }
   });
 }

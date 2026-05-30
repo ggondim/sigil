@@ -295,28 +295,110 @@ $('#ob-emb-cards')?.addEventListener('click', (e) => {
   const card = e.target.closest('[data-emb-id]');
   if (card) selectEmbProvider(card.dataset.embId);
 });
-$('#ob-emb-save')?.addEventListener('click', async () => {
-  if (!wizardState.embProvider) return;
-  const fields = {};
-  $$('#ob-emb-fields [data-emb-field]').forEach((i) => { if (i.value) fields[i.dataset.embField] = i.value; });
-  const out = $('#ob-emb-result');
-  out.hidden = false; out.className = 'result'; out.textContent = 'saving…';
+// Shared embedding apply+gate, used by both the wizard and Settings.
+// 1. Check dim-compat against the target DB BEFORE writing config.
+// 2. If a conflict (DB has data at a different dim) → render Wipe/Cancel,
+//    do NOT write config. Caller stays put until the user resolves it.
+// 3. Otherwise configure + live-test, surfacing honest errors.
+// Returns true on success (embedder healthy), false otherwise.
+async function applyEmbeddingProvider({ providerId, fields, out, conflictHost, onSuccess }) {
+  const prov = (wizardState.embProviders || []).find((p) => p.id === providerId);
+  out.hidden = false; out.className = 'result';
+  out.textContent = 'checking compatibility with your database…';
+
+  // Dim-conflict gate (skip silently if the DB isn't reachable yet — the
+  // embedder test below will surface that honestly).
   try {
-    await rpc('configureEmbedding', { id: wizardState.embProvider, ...fields });
+    const compat = await rpc('inspectEmbeddingCompat', { id: providerId });
+    if (compat.ok && compat.conflict) {
+      renderConflictCard({
+        host: conflictHost, compat, providerId, fields,
+        out, onResolved: () => applyEmbeddingProvider({ providerId, fields, out, conflictHost, onSuccess }),
+      });
+      return false;
+    }
+  } catch { /* DB unreachable — let the embed test report the real cause */ }
+
+  out.textContent = 'saving…';
+  try {
+    await rpc('configureEmbedding', { id: providerId, ...fields });
     out.textContent = 'env written. Testing embed call…';
     const test = await rpc('testEmbedding', {});
     if (test.ok) {
       out.classList.add('ok');
-      out.textContent += `\n✓ embedder returned ${test.dim}-dim vector`;
-      $('#ob-emb-next').disabled = false;
-    } else {
-      out.classList.add('err');
-      out.textContent += `\n✗ test failed: ${test.error}`;
+      out.textContent = `✓ embedder healthy — returned ${test.dim}-dim vector (${escape(prov?.label || providerId)})`;
+      if (onSuccess) onSuccess(test);
+      return true;
     }
+    out.classList.add('err');
+    out.textContent = `✗ ${test.error || 'embed test failed'}`;
+    if (test.fixHint) out.textContent += `\n  → ${test.fixHint}`;
+    return false;
   } catch (err) {
     out.classList.add('err');
     out.textContent = `✗ ${err.message}`;
+    return false;
   }
+}
+
+// Render the dimension-conflict resolution card: Wipe (destructive, confirmed)
+// or Cancel. Never auto-destroys. `host` (the conflict container element) gets
+// the card; `onResolved` re-runs the apply after a successful wipe.
+function renderConflictCard({ host, compat, out, onResolved }) {
+  const target = host || out.parentElement;
+  const rows = Object.entries(compat.rowsAtRisk || {})
+    .map(([t, n]) => `${n.toLocaleString()} ${t}`).join(', ');
+  const card = document.createElement('div');
+  card.className = 'result err conflict-card';
+  card.innerHTML = `
+    <strong>Embedding size mismatch.</strong>
+    Your database stores <b>${compat.currentDim}-dim</b> vectors, but this provider produces
+    <b>${compat.targetDim}-dim</b>. They can't coexist — every save would fail.
+    <div class="muted" style="margin:6px 0;">At risk: ${escape(rows)} (${compat.totalAtRisk.toLocaleString()} rows).</div>
+    <div class="flex-row" style="margin-top:8px;">
+      <button type="button" class="btn danger" data-conflict-wipe>Wipe data & switch to ${compat.targetDim}-dim</button>
+      <button type="button" class="btn" data-conflict-cancel>Cancel</button>
+    </div>
+    <div class="muted text-sm" style="margin-top:6px;">Wipe deletes all ${compat.totalAtRisk.toLocaleString()} stored vectors. Pods/structure are kept; re-ingest to repopulate.</div>
+  `;
+  out.hidden = true;
+  // Remove any prior card before adding a fresh one.
+  target.querySelectorAll('.conflict-card').forEach((c) => c.remove());
+  target.appendChild(card);
+
+  card.querySelector('[data-conflict-cancel]').addEventListener('click', () => {
+    card.remove();
+    out.hidden = false; out.className = 'result';
+    out.textContent = 'Cancelled — no changes made. Pick a provider matching your data, or wipe to switch.';
+  });
+  card.querySelector('[data-conflict-wipe]').addEventListener('click', async (e) => {
+    const btn = e.target;
+    btn.disabled = true; btn.textContent = 'Wiping…';
+    try {
+      const r = await rpc('wipeEmbeddingData', { confirm: true });
+      if (!r.ok) { btn.textContent = `Wipe failed: ${r.error}`; btn.disabled = false; return; }
+      card.remove();
+      // Re-migrate the now-empty schema to the new dim happens on next
+      // migration/restart; re-run the apply which will now find no conflict.
+      if (onResolved) await onResolved();
+    } catch (err) {
+      btn.textContent = `Wipe failed: ${err.message}`; btn.disabled = false;
+    }
+  });
+}
+
+$('#ob-emb-save')?.addEventListener('click', async () => {
+  if (!wizardState.embProvider) return;
+  const fields = {};
+  $$('#ob-emb-fields [data-emb-field]').forEach((i) => { if (i.value) fields[i.dataset.embField] = i.value; });
+  const ok = await applyEmbeddingProvider({
+    providerId: wizardState.embProvider,
+    fields,
+    out: $('#ob-emb-result'),
+    conflictHost: $('#ob-emb-fields')?.parentElement,
+    onSuccess: () => { $('#ob-emb-next').disabled = false; },
+  });
+  if (!ok) $('#ob-emb-next').disabled = true;
 });
 
 // ── Finish step ─────────────────────────────────────────────────────
@@ -454,6 +536,20 @@ async function refreshMethods() {
 }
 
 async function refreshEnv() {
+  // Config summary (current providers) + raw env table.
+  try {
+    const state = await rpc('onboardingState', {});
+    const e = state.env || {};
+    const dbDesc = e.hasDatabaseUrl ? 'connection URL'
+      : e.hasDiscreteDb ? 'local Postgres (host/port)'
+      : 'not configured';
+    $('#cfg-db').textContent = `${dbDesc}${state.steps?.database?.done ? ' · ready' : ''}`;
+    $('#cfg-llm').textContent = e.llmProvider || 'not configured';
+    $('#cfg-emb').textContent = e.embeddingProvider
+      ? `${e.embeddingProvider} · ${e.embeddingModel} · ${e.embeddingDim}d`
+      : 'not configured';
+  } catch { /* summary best-effort */ }
+
   try {
     const data = await rpc('readEnv', {});
     const tbody = $('#env-table tbody');
@@ -466,6 +562,98 @@ async function refreshEnv() {
   } catch (err) {
     $('#env-table tbody').innerHTML = `<tr><td colspan="2" class="empty">${escape(err.message)}</td></tr>`;
   }
+}
+
+// ── Settings: live provider switcher (LLM + embedding) ───────────────
+// Reuses the wizard's provider catalogs + the shared applyEmbeddingProvider
+// gate. "Apply" persists config and restarts the daemon so the new pool /
+// embedder take effect; the 5s health poll recovers from the restart gap.
+const cfgSwitch = { kind: null, providerId: null, providers: [] };
+
+async function openSwitcher(kind) {
+  cfgSwitch.kind = kind;
+  cfgSwitch.providerId = null;
+  $('#cfg-switch-title').textContent = kind === 'llm' ? 'Change LLM provider' : 'Change embedding provider';
+  $('#cfg-switch-conflict').innerHTML = '';
+  $('#cfg-switch-fields').innerHTML = '';
+  const res = $('#cfg-switch-result'); res.style.display = 'none'; res.textContent = '';
+  $('#cfg-switch').style.display = '';
+  try {
+    const { providers } = await rpc(kind === 'llm' ? 'listLlmProviders' : 'listEmbeddingProviders');
+    cfgSwitch.providers = providers;
+    // Keep the wizard's catalog in sync so applyEmbeddingProvider can label.
+    if (kind === 'embedding') wizardState.embProviders = providers;
+    $('#cfg-switch-cards').innerHTML = providers.map((p) => `
+      <label class="provider-card" data-cfg-id="${escape(p.id)}">
+        <span class="check"></span>
+        <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}</span>
+        <span class="hint">${escape(p.hint)}</span>
+      </label>`).join('');
+  } catch (err) {
+    $('#cfg-switch-cards').innerHTML = `<div class="muted">failed: ${escape(err.message)}</div>`;
+  }
+}
+
+function selectSwitchProvider(id) {
+  cfgSwitch.providerId = id;
+  $$('#cfg-switch-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.cfgId === id));
+  const p = cfgSwitch.providers.find((x) => x.id === id);
+  if (!p) return;
+  const visible = (p.fields || []).filter((f) => !f.sharedWith);
+  $('#cfg-switch-fields').innerHTML = visible.length
+    ? visible.map((f) => `
+        <label class="field"><span class="label">${escape(f.label)}</span>
+        <input type="${f.type}" data-cfg-field="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off"></label>`).join('')
+    : '<p class="muted text-sm">No additional configuration needed.</p>';
+  $('#cfg-switch-conflict').innerHTML = '';
+}
+
+$('#cfg-change-llm')?.addEventListener('click', () => openSwitcher('llm'));
+$('#cfg-change-emb')?.addEventListener('click', () => openSwitcher('embedding'));
+$('#cfg-switch-cancel')?.addEventListener('click', () => { $('#cfg-switch').style.display = 'none'; });
+$('#cfg-switch-cards')?.addEventListener('click', (e) => {
+  const card = e.target.closest('[data-cfg-id]');
+  if (card) selectSwitchProvider(card.dataset.cfgId);
+});
+
+$('#cfg-switch-apply')?.addEventListener('click', async () => {
+  if (!cfgSwitch.providerId) return;
+  const fields = {};
+  $$('#cfg-switch-fields [data-cfg-field]').forEach((i) => { if (i.value) fields[i.dataset.cfgField] = i.value; });
+  const out = $('#cfg-switch-result');
+
+  if (cfgSwitch.kind === 'embedding') {
+    // Route through the shared dim-conflict gate. On success, restart.
+    const ok = await applyEmbeddingProvider({
+      providerId: cfgSwitch.providerId,
+      fields,
+      out,
+      conflictHost: $('#cfg-switch-conflict'),
+      onSuccess: () => restartAndClose(out),
+    });
+    if (!ok) return;
+  } else {
+    out.style.display = 'block'; out.className = 'result'; out.textContent = 'saving…';
+    try {
+      await rpc('configureLlm', { id: cfgSwitch.providerId, ...fields });
+      const test = await rpc('testLlm', {});
+      if (!test.ok) {
+        out.classList.add('err');
+        out.textContent = `✗ ${test.error || 'LLM test failed'}${test.fixHint ? '\n  → ' + test.fixHint : ''}`;
+        return;
+      }
+      out.classList.add('ok'); out.textContent = `✓ LLM responded: "${test.response}"`;
+      restartAndClose(out);
+    } catch (err) {
+      out.classList.add('err'); out.textContent = `✗ ${err.message}`;
+    }
+  }
+});
+
+async function restartAndClose(out) {
+  out.textContent += '\nApplying — restarting daemon…';
+  try { await rpc('restartDaemon', {}); } catch { /* expected: connection drops on exit */ }
+  setTimeout(() => { $('#cfg-switch').style.display = 'none'; refreshEnv(); refreshHealth(); }, 1500);
 }
 
 // ── Activity / causal trace log ──────────────────────────────────────
