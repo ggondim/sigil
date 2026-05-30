@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import { groupBy, sortBy } from 'lodash-es';
 
-import { search } from '../../memory/search/hybrid.js';
-import config from '../../config.js';
+import { daemonCall } from '../daemon-call.js';
 import { textResponse, truncate, FACT_TRUNCATE } from '../utils.js';
 
 function registerSearchTool(server) {
@@ -27,23 +26,26 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
         z.literal('auto'),
         z.literal('global'),
         z.array(z.string()),
-      ]).optional().describe('Pod scope: "auto" (uses active session/project/person pods), "global" (no filter), or list of pod uids/names. Default: "global".'),
+      ]).optional().describe('Pod scope: "auto" (active project/session pods — the default), "global" (whole brain, no scope), or list of pod uids/names.'),
     },
     async ({ query, limit, namespaces, minConfidence, includeChunks, useGraph, pointInTime, format, podScope }) => {
-      const ns = namespaces?.length ? namespaces : [config.defaults.namespace];
-      const pit = pointInTime ? new Date(pointInTime) : undefined;
-
-      const { facts, chunks, matchedEntity, relatedEntities } = await search(query, {
-        namespaces: ns,
+      const data = await daemonCall('search', {
+        query,
+        namespaces,
         limit,
         minConfidence,
         includeChunks,
         useGraph,
-        pointInTime: pit,
-        podScope: podScope ?? null,
+        pointInTime,
+        // Default to project scope; the MCP server runs in the project dir so
+        // cwd resolves the active project pod for 'auto'.
+        podScope: podScope ?? 'auto',
+        cwd: process.cwd(),
         route: false,
         synthesize: false,
       });
+
+      const { facts, chunks, matchedEntity, relatedEntities } = data;
 
       if (format === 'compact') {
         return textResponse(formatCompact(facts, matchedEntity));
@@ -52,10 +54,8 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
       const parts = [];
 
       if (matchedEntity) {
-        parts.push(`**Matched entity:** ${matchedEntity.name} (${matchedEntity.type}, id:${matchedEntity.id}, ${matchedEntity.mentions} mentions)`);
-        if (matchedEntity.description) {
-          parts.push(matchedEntity.description);
-        }
+        parts.push(`**Matched entity:** ${matchedEntity.name} (${matchedEntity.entityType || matchedEntity.type}, id:${matchedEntity.id}, ${matchedEntity.mentions ?? matchedEntity.mentionCount ?? 0} mentions)`);
+        if (matchedEntity.description) parts.push(matchedEntity.description);
         parts.push('');
       }
 
@@ -64,7 +64,10 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
         for (const f of facts) {
           const content = truncate(f.content, FACT_TRUNCATE);
           const vital = f.importance === 'vital' ? ' **[VITAL]**' : '';
-          parts.push(`- [${f.category}] ${content}${vital} _(${f.confidence}, id:${f.id})_`);
+          // Provenance: which agent wrote it + first source doc, if known.
+          const via = f.agent ? ` · via ${f.agent}` : '';
+          const doc = Array.isArray(f.sourceDocumentIds) && f.sourceDocumentIds.length ? ` · doc#${f.sourceDocumentIds[0]}` : '';
+          parts.push(`- [${f.category}] ${content}${vital} _(${f.confidence}, id:${f.id}${via}${doc})_`);
         }
       }
 
@@ -72,7 +75,7 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
         parts.push('');
         parts.push(`**Related entities (${relatedEntities.length}):**`);
         for (const e of relatedEntities.slice(0, 10)) {
-          parts.push(`- ${e.name} (${e.type}) [${e.relation}] id:${e.id}`);
+          parts.push(`- ${e.name} (${e.entityType || e.type}) [${e.relation}] id:${e.id}`);
         }
       }
 
@@ -100,24 +103,19 @@ Set format="compact" for token-efficient output (one line per category, no IDs/m
 
 function formatCompact(facts, matchedEntity) {
   const parts = [];
-
   if (matchedEntity) {
-    parts.push(`> ${matchedEntity.name} (${matchedEntity.type})`);
+    parts.push(`> ${matchedEntity.name} (${matchedEntity.entityType || matchedEntity.type})`);
   }
-
   if (!facts.length) {
     parts.push('No results.');
     return parts.join('\n');
   }
-
   const grouped = groupBy(facts, 'category');
-
   for (const [category, categoryFacts] of Object.entries(grouped)) {
     const sorted = sortBy(categoryFacts, (f) => (f.importance === 'vital' ? 0 : 1));
     const contents = sorted.map((f) => f.content);
     parts.push(`[${category}]: ${contents.join('. ')}`);
   }
-
   return parts.join('\n');
 }
 

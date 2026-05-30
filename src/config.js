@@ -13,6 +13,10 @@ if (dbType !== 'postgres') {
 const config = {
   db: {
     type: 'postgres',
+    // Connection URL takes precedence when set. Recognized providers
+    // (Neon, Supabase, RDS, Render, Railway, CockroachDB) get sensible
+    // SSL defaults automatically; override with ?sslmode=... in the URL.
+    url: env('SIGIL_DATABASE_URL', env('DATABASE_URL', '')) || null,
     host: env('SIGIL_DB_HOST', 'localhost'),
     port: Number(env('SIGIL_DB_PORT', 5432)),
     database: env('SIGIL_DB_NAME', 'sigil'),
@@ -94,6 +98,24 @@ const config = {
     logLevel: process.env.LOG_LEVEL || 'info',
   },
 
+  http: {
+    enabled: env('SIGIL_HTTP_ENABLED', 'true') !== 'false',
+    host: env('SIGIL_HTTP_HOST', '127.0.0.1'),
+    port: Number(env('SIGIL_HTTP_PORT', 7777)),
+  },
+
+  network: {
+    // 'solo'   — no Iroh, single-device install (default).
+    // 'master' — owns canonical DB, accepts paired devices.
+    // 'follower' — paired with a master, syncs over Iroh.
+    // 'lite-follower' — no local DB, every read/write proxied to master.
+    mode: env('SIGIL_MODE', 'solo'),
+    enabled: env('SIGIL_NETWORK_ENABLED', null) === null
+      ? env('SIGIL_MODE', 'solo') !== 'solo'
+      : env('SIGIL_NETWORK_ENABLED', 'false') !== 'false',
+    masterNodeId: env('SIGIL_MASTER_NODE_ID', '') || null,
+  },
+
   defaults: {
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
   },
@@ -109,6 +131,16 @@ const config = {
     ambiguousThreshold: Number(process.env.MEMORY_AMBIGUOUS_THRESHOLD) || 0.78,
     // Search: discard results below this cosine similarity floor
     minFactSimilarity: Number(process.env.MEMORY_MIN_FACT_SIMILARITY) || 0.45,
+    // Injection floor (precision-first): for AUTO-injection paths (hooks /
+    // hot-context), drop any fact whose absolute cosine similarity to the
+    // query is below this. Higher than minFactSimilarity on purpose — when we
+    // inject memory unprompted, "empty but honest" beats "full but off-topic"
+    // (one irrelevant injection teaches the user to ignore all of them).
+    // Explicit human search (CLI/MCP) passes applyFloor:false to bypass.
+    // Tune from the Activity log's per-search dropped-count. Cosine, not the
+    // normalized rrfScore (which is relative-to-best and always keeps the top
+    // result even for an off-topic query).
+    injectionFloor: Number(process.env.MEMORY_INJECTION_FLOOR) || 0.6,
   },
 
   search: {

@@ -9,13 +9,14 @@ import { contextualizeChunks } from './contextualizer.js';
 import * as documentStore from '../memory/documents/store.js';
 import * as chunkStore from '../memory/chunks/store.js';
 import { extractFactsFromChunks } from '../memory/facts/extractor.js';
-import { saveFact } from '../memory/facts/store.js';
+import { saveFact, supersedeStaleDocFacts } from '../memory/facts/store.js';
 import { DEFAULT_CATEGORIES } from '../memory/facts/categories.js';
 import { classifyInput } from '../memory/cognitive/input-classifier.js';
 import { linkDocumentEntities } from '../memory/entities/linker.js';
 import * as podStore from '../memory/pods/store.js';
 import * as podMembership from '../memory/pods/membership.js';
 import { fromSourceMetadata as resolvePodsFromMetadata } from '../memory/pods/resolver.js';
+import { maskSecrets } from '../hooks/secret-mask.js';
 import config from '../config.js';
 import { PROMPTS_DIR } from '../lib/paths.js';
 
@@ -50,6 +51,17 @@ async function ingestDocument({
   podUids = [],
   resolvePodsFrom = null,
 }) {
+  // Symmetric secret masking. Read-side masking already runs in the hook
+  // before injection; mask here at the single ingest choke point so secrets
+  // never reach the embedding API or get stored. This is BEFORE classify,
+  // parse, chunk, embed, and fact extraction (including the thought-route
+  // facts the classifier produces from raw content) so every downstream copy
+  // — chunk embeddings, extracted facts, stored content — is masked.
+  // Trade-off: the classifier sees masked content; acceptable, since for a
+  // secret-bearing input the literal secret never improves routing and
+  // preventing exfiltration outranks classifier fidelity. Idempotent.
+  content = maskSecrets(content);
+
   const ns = namespace || config.defaults.namespace;
   const cats = categories || Object.keys(DEFAULT_CATEGORIES);
   const prompt = promptPath || DEFAULT_PROMPT_PATH;
@@ -130,6 +142,14 @@ async function ingestDocument({
     // pod query surfaces the actual fact rows, not just the document.
     await attachFactsToPods(thoughtResult.results, podAttachments);
 
+    // Re-ingest hygiene: retire facts from this doc's PRIOR content that the
+    // new content no longer supports (no-op on first ingest — the just-saved
+    // facts are excluded via keptFactIds).
+    await supersedeStaleDocFacts(
+      doc.id,
+      thoughtResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
+    );
+
     process.stderr.write(`Done. Route: thought, ${thoughtResult.counts.total} facts (${thoughtResult.counts.added} new)` + "\n");
     return {
       documentId: doc.id,
@@ -138,7 +158,7 @@ async function ingestDocument({
       skipped: false,
       route: 'thought',
       chunkCount: 0,
-      facts: thoughtResult.counts,
+      facts: { ...thoughtResult.counts, verdicts: traceVerdicts(thoughtResult.results) },
       entities: entityResult,
     };
   }
@@ -192,6 +212,13 @@ async function ingestDocument({
     // Mirror the document's pod attachments down to its facts.
     await attachFactsToPods(factResult.results, podAttachments);
 
+    // Re-ingest hygiene: supersede facts from this doc's PRIOR content that
+    // the new content no longer re-confirms (no-op on first ingest).
+    await supersedeStaleDocFacts(
+      doc.id,
+      factResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
+    );
+
     // Step 5: Link entities
     if (!skipEntities && factResult.results.length) {
       process.stderr.write('[5/6] Linking entities...' + "\n");
@@ -217,10 +244,24 @@ async function ingestDocument({
     documentUid: doc.uid,
     title: finalTitle,
     skipped: false,
+    route: classification?.route ?? null,
     chunkCount: chunks.length,
-    facts: factResult.counts,
+    facts: { ...factResult.counts, verdicts: traceVerdicts(factResult.results) },
     entities: entityResult,
   };
+}
+
+// Compact per-fact AUDM verdicts for the trace log: the action taken, the
+// fact text, and the similarity/decision telemetry from saveFact().
+function traceVerdicts(results) {
+  return (results || []).map((r) => ({
+    action: r.action,
+    factId: r.fact?.id ?? r.existing?.id ?? null,
+    content: String(r.fact?.content || r.existing?.content || '').slice(0, 240),
+    audm: r.audm || null,
+    supersededId: r.supersededId ?? null,
+    contradictedId: r.contradictedId ?? null,
+  }));
 }
 
 async function storeFactsInBatches(facts, { documentId, namespace, embeddings, defaultConfidence = 'medium', defaultImportance = 'supplementary' }) {

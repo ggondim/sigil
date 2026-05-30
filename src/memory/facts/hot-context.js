@@ -70,10 +70,15 @@ export async function getHotFacts({
     }
   }
 
-  // Backfill from generic recency if active kinds underflow (e.g., a
-  // fresh install with no project/session pods yet). Preserves the
-  // pre-0.10 behavior for users who haven't accumulated pod memberships.
-  if (blended.length < limit) {
+  // Precision-first backfill. Only fall back to namespace-global recency when
+  // the kind-driven blend produced NOTHING — i.e. a genuine fresh install with
+  // no pods and no vital facts. An established project that merely underflows
+  // its budget keeps a SMALL, on-project context rather than getting padded
+  // with off-project recency (that padding was the cross-project leak: a
+  // sigil session showing payment-webhook facts). Half-full-and-relevant beats
+  // full-and-polluted. Fresh installs still get something so day-one isn't
+  // empty; once any pod/vital fact exists, the blend stays scoped.
+  if (blended.length === 0) {
     const filler = await cortexDb('fact as f')
       .leftJoin('fact_lifecycle as fl', 'fl.fact_id', 'f.id')
       .where({ 'f.status': 'active', 'f.namespace': ns })
@@ -126,32 +131,41 @@ async function readCwdFromCursor() {
   }
 }
 
-export async function updateContextSnapshot({ namespace, limit, ctx } = {}) {
+/**
+ * Pure file-write: takes a fact list and stamps it into ~/.sigil/CLAUDE.md.
+ * No DB access — safe to call on a lite-follower with the facts having
+ * been fetched remotely.
+ */
+export async function writeSnapshotToFile({ facts, namespace }) {
   const fs = await import('node:fs/promises');
-  const cortexMdPath = SIGIL_MD_PATH;
+  if (!facts || !facts.length) return 0;
 
-  const facts = await getHotFacts({ namespace, limit, ctx });
   const marker = '<!-- sigil-context -->';
-
-  if (!facts.length) return 0;
-
   const date = new Date().toISOString().slice(0, 16).replace('T', ' ');
   const block = [
     marker,
-    `## Active Context  *(${facts.length} facts · refreshed ${date})*`,
+    `## Active Context  *(${facts.length} facts · refreshed ${date}${namespace ? ` · ns=${namespace}` : ''})*`,
     '',
     facts.map((f) => `- ${f}`).join('\n'),
     marker,
   ].join('\n');
 
   let existing = '';
-  try { existing = await fs.readFile(cortexMdPath, 'utf8'); } catch { /* file may not exist */ }
+  try { existing = await fs.readFile(SIGIL_MD_PATH, 'utf8'); } catch { /* file may not exist */ }
 
   const updated = existing.includes(marker)
     ? existing.replace(new RegExp(`${marker}[\\s\\S]*?${marker}`), block)
     : existing + (existing.trim() ? '\n\n' : '') + block + '\n';
 
-  await fs.writeFile(cortexMdPath, updated, 'utf8');
-
+  await fs.writeFile(SIGIL_MD_PATH, updated, 'utf8');
   return facts.length;
+}
+
+/**
+ * Convenience: fetch + write in one call. Used by the remember/ingest
+ * post-hooks that don't need to distinguish local vs remote.
+ */
+export async function updateContextSnapshot({ namespace, limit, ctx } = {}) {
+  const facts = await getHotFacts({ namespace, limit, ctx });
+  return writeSnapshotToFile({ facts, namespace });
 }

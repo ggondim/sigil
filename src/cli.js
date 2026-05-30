@@ -26,6 +26,11 @@ if (existsSync(globalEnv) && globalEnv !== projectEnv) {
   dotenvConfig({ path: globalEnv, quiet: true });
 }
 
+// Agent provenance: CLI-originated writes are tagged 'cli'. The socket client
+// forwards this in each request envelope so the daemon stamps created_by_agent.
+// An explicitly-set SIGIL_AGENT (e.g. a wrapper script) still wins.
+if (!process.env.SIGIL_AGENT) process.env.SIGIL_AGENT = 'cli';
+
 const [command, ...rest] = process.argv.slice(2);
 
 const HELP = `sigil — Persistent memory for your Claude sessions
@@ -54,15 +59,57 @@ Commands:
   migrate                  Run database migrations
   reset                    Reset the database (drops all data)
   register                 Register as a Claude Code MCP server (advanced)
+  daemon <sub>             Control the Sigil daemon (start | stop | status | logs)
+  pair <sub>               Create / list / revoke pairing codes (master)
+  join <node-id> <code>    Pair this device with a master Sigil install
 
 Options:
   --help                   Show this help message
 
 Run sigil <command> --help for command-specific options.`;
 
-if (!command || command === '--help' || command === '-h') {
+if (command === '--help' || command === '-h') {
   console.log(HELP);
   process.exit(0);
+}
+
+// Zero-arg launch: start the daemon (auto-spawn if needed) and open the
+// browser at the GUI URL. This is the "npx sigil" UX — one command and
+// you land on the onboarding wizard.
+if (!command) {
+  await launchAndOpenBrowser();
+  process.exit(0);
+}
+
+async function launchAndOpenBrowser() {
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const { getGuiToken } = await import('./daemon/gui-token.js');
+  process.stderr.write('[sigil] starting daemon…\n');
+  const client = await connectOrStartDaemon({ quiet: true });
+  const { data } = await client.call('ping', {});
+  await client.close();
+
+  const { default: config } = await import('./config.js');
+  const token = await getGuiToken();
+  const url = `http://${config.http.host}:${config.http.port}/?t=${token}`;
+  console.log('');
+  console.log(`  Sigil is running on this machine.`);
+  console.log('');
+  console.log(`    PID:    ${data.pid}`);
+  console.log(`    GUI:    ${url}`);
+  console.log('');
+  console.log(`  Opening the dashboard in your browser…`);
+  console.log(`  (Press Ctrl+C at any time. The daemon stays running.)`);
+  console.log('');
+
+  // Cross-platform browser open. Fire and forget; user sees the URL above.
+  const opener = process.platform === 'darwin' ? 'open'
+              : process.platform === 'win32'  ? 'start'
+              : 'xdg-open';
+  const { spawn } = await import('node:child_process');
+  try {
+    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+  } catch { /* user can still paste from terminal */ }
 }
 
 const commands = {
@@ -86,7 +133,25 @@ const commands = {
   register: runRegister,
   why: runWhy,
   kind: runKind,
+  daemon: runDaemonVerb,
+  pair: runPairVerb,
+  join: runJoinVerb,
 };
+
+async function runDaemonVerb(args) {
+  const { runDaemon } = await import('./cli-handlers/daemon.js');
+  return runDaemon(args);
+}
+
+async function runPairVerb(args) {
+  const { runPair } = await import('./cli-handlers/pair.js');
+  return runPair(args);
+}
+
+async function runJoinVerb(args) {
+  const { runJoin } = await import('./cli-handlers/join.js');
+  return runJoin(args);
+}
 
 const handler = commands[command];
 if (!handler) {
@@ -158,26 +223,45 @@ async function runInit(args) {
     console.log(`sigil init — Set up Sigil (DB, env, hooks, Claude integration)
 
 Usage:
-  sigil init [--dry-run]
+  sigil init [--dry-run] [--url <postgres-url>]
 
 Options:
-  --dry-run    Walk through every prompt and print the exact files that would
-               be created or modified, but write nothing to disk. Use this on
-               first install to preview the changes Sigil will make to your
-               ~/.sigil/ and ~/.claude/ directories.
+  --dry-run            Walk through every prompt and print the exact files
+                       that would be created or modified, but write nothing
+                       to disk.
+  --url <url>          Skip the DB prompts and use the given Postgres URL
+                       (Neon, Supabase, AWS RDS, Render, Railway, Cockroach,
+                       self-hosted). Persisted as SIGIL_DATABASE_URL in
+                       ~/.sigil/.env. The URL is probed (incl. pgvector
+                       check) before any other setup runs.
+
+Database modes:
+  Local Postgres install  — discrete SIGIL_DB_HOST/PORT/USER/PASSWORD env
+                            vars; uses an admin one-shot to create the
+                            database + user + pgvector extension.
+  Connection URL          — single SIGIL_DATABASE_URL env var; database +
+                            user assumed to exist already (typical for
+                            cloud Postgres providers).
 
 Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
-  ~/.sigil/.env                 Sigil config + API keys (incl. Postgres connection)
+  ~/.sigil/.env                 Sigil config + API keys + DB connection
   ~/.sigil/CLAUDE.md            Sigil instructions for Claude
   ~/.claude/CLAUDE.md           One @import line added (existing content preserved)
-  ~/.claude/settings.json       UserPromptSubmit + PostToolUse + Stop + SessionEnd hooks (merged)
-
-Sigil 0.10.0+ requires Postgres. Sigil's migrations run against your DB
-during init; existing tables are detected and preserved.`);
+  ~/.claude/settings.json       UserPromptSubmit + PostToolUse + Stop + SessionEnd hooks (merged)`);
     process.exit(0);
   }
 
   const dryRun = args.includes('--dry-run');
+  const urlFlagIdx = args.findIndex((a) => a === '--url' || a.startsWith('--url='));
+  let urlFlag = null;
+  if (urlFlagIdx !== -1) {
+    const tok = args[urlFlagIdx];
+    urlFlag = tok.includes('=') ? tok.split('=')[1] : args[urlFlagIdx + 1];
+    if (!urlFlag) {
+      console.error('--url requires a Postgres connection string');
+      process.exit(1);
+    }
+  }
 
   const clack = await import('@clack/prompts');
   const fs = await import('node:fs/promises');
@@ -406,118 +490,210 @@ during init; existing tables are detected and preserved.`);
   });
   if (isCancel(namespace)) { cancel('Setup cancelled.'); process.exit(0); }
 
-  // ── Postgres connection ───────────────────────────────────────────────────
+  // ── Database connection ───────────────────────────────────────────────────
   //
-  // Sigil 0.10.0+ requires Postgres. We assume the user has Postgres running
-  // (Docker, brew, RDS, anything). On first init we probe the connection;
-  // if the sigil database doesn't exist yet we ask once for admin creds and
-  // bootstrap it (CREATE DATABASE + CREATE USER + GRANT + CREATE EXTENSION
-  // vector). Admin creds are used once and dropped — only sigil_app
-  // credentials land in ~/.sigil/.env.
+  // Two paths:
+  //   local — discrete SIGIL_DB_HOST/PORT/NAME/USER/PASSWORD env. We probe;
+  //           if missing DB / auth fails we ask once for admin creds and
+  //           CREATE DATABASE / USER / EXTENSION vector. Admin creds are
+  //           used once and dropped.
+  //   url   — single SIGIL_DATABASE_URL (Neon, Supabase, RDS, etc.). We
+  //           probe via probeUrlConnection (incl. pgvector check). The DB
+  //           and user are assumed to exist already — typical for managed
+  //           Postgres where the provider creates them for you.
 
-  const dbHost = await text({
-    message: 'Postgres host',
-    placeholder: existing.SIGIL_DB_HOST || 'localhost',
-    initialValue: existing.SIGIL_DB_HOST || 'localhost',
-  });
-  if (isCancel(dbHost)) { cancel('Setup cancelled.'); process.exit(0); }
+  let dbMode = 'local';
+  let urlValue = null;
+  // Connection-URL state — populated only when dbMode === 'url'
+  let urlProbe = null;
+  // Local-install state — populated only when dbMode === 'local'
+  let dbHost, dbPort, dbName, dbUser, finalDbPassword;
 
-  const dbPortStr = await text({
-    message: 'Postgres port',
-    placeholder: existing.SIGIL_DB_PORT || '5432',
-    initialValue: existing.SIGIL_DB_PORT || '5432',
-    validate: (v) => { if (v && !/^\d+$/.test(v)) return 'Port must be a number'; },
-  });
-  if (isCancel(dbPortStr)) { cancel('Setup cancelled.'); process.exit(0); }
-  const dbPort = Number(dbPortStr);
-
-  const dbName = await text({
-    message: 'Sigil database name',
-    placeholder: existing.SIGIL_DB_NAME || 'sigil',
-    initialValue: existing.SIGIL_DB_NAME || 'sigil',
-  });
-  if (isCancel(dbName)) { cancel('Setup cancelled.'); process.exit(0); }
-
-  const dbUser = await text({
-    message: 'Sigil database user',
-    placeholder: existing.SIGIL_DB_USER || 'sigil_app',
-    initialValue: existing.SIGIL_DB_USER || 'sigil_app',
-  });
-  if (isCancel(dbUser)) { cancel('Setup cancelled.'); process.exit(0); }
-
-  const dbPassword = await text({
-    message: existing.SIGIL_DB_PASSWORD ? 'Sigil database password (keep existing — press Enter)' : 'Sigil database password',
-    placeholder: existing.SIGIL_DB_PASSWORD ? '(unchanged)' : 'sigil_dev or generate',
-    validate: (v) => { if (!v && !existing.SIGIL_DB_PASSWORD) return 'Password required'; },
-  });
-  if (isCancel(dbPassword)) { cancel('Setup cancelled.'); process.exit(0); }
-  const finalDbPassword = dbPassword || existing.SIGIL_DB_PASSWORD;
-
-  // Probe with the prompted credentials. If sigil DB exists + creds work,
-  // we're done. Otherwise: missing DB → ask for admin to bootstrap. Auth
-  // failure → ask if they want to reset the password via admin.
-  if (!dryRun) {
-    const { probeSigilConnection, ensurePostgresDatabase, diagnoseConnectionError } =
-      await import('./db/setup.js');
-    const probeSpinner = spinner();
-    probeSpinner.start('Probing Postgres connection...');
-    const probe = await probeSigilConnection({
-      host: dbHost, port: dbPort, database: dbName, user: dbUser, password: finalDbPassword,
+  // Non-interactive: --url short-circuits the picker. Useful for scripted
+  // dotfile installs ("curl … | sigil init --url $DATABASE_URL").
+  if (urlFlag) {
+    dbMode = 'url';
+    urlValue = urlFlag;
+  } else if (existing.SIGIL_DATABASE_URL && !existing.SIGIL_DB_HOST) {
+    // Existing install was URL-based. Default to URL mode but let the user
+    // pivot back to local if they really mean to.
+    const choice = await select({
+      message: 'Database mode',
+      options: [
+        { value: 'url',   label: 'Connection URL', hint: 'keep current SIGIL_DATABASE_URL' },
+        { value: 'local', label: 'Local Postgres install', hint: 'discrete host/port/user/password' },
+      ],
+      initialValue: 'url',
     });
+    if (isCancel(choice)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbMode = choice;
+  } else {
+    const choice = await select({
+      message: 'Database mode',
+      options: [
+        { value: 'local', label: 'Local Postgres install', hint: 'docker / brew / RDS host:port' },
+        { value: 'url',   label: 'Connection URL',         hint: 'Neon, Supabase, RDS, Render, …' },
+      ],
+      initialValue: existing.SIGIL_DB_HOST ? 'local' : 'local',
+    });
+    if (isCancel(choice)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbMode = choice;
+  }
 
-    if (probe.ok) {
-      probeSpinner.stop(`Connected to ${dbUser}@${dbHost}:${dbPort}/${dbName}`);
-    } else {
-      const diag = diagnoseConnectionError({ code: probe.code, message: probe.message });
-      probeSpinner.stop(`Connection failed (${diag.kind})`);
+  if (dbMode === 'url') {
+    if (!urlValue) {
+      urlValue = await text({
+        message: 'Postgres connection URL',
+        placeholder: existing.SIGIL_DATABASE_URL || 'postgres://user:pass@host.neon.tech/db',
+        initialValue: existing.SIGIL_DATABASE_URL || '',
+        validate: (v) => { if (!/^postgres(ql)?:\/\//i.test(v || '')) return 'Must start with postgres:// or postgresql://'; },
+      });
+      if (isCancel(urlValue)) { cancel('Setup cancelled.'); process.exit(0); }
+    }
 
-      if (diag.kind === 'unreachable') {
-        cancel(`Postgres unreachable at ${dbHost}:${dbPort}.\n${diag.hint}`);
+    if (!dryRun) {
+      const { probeUrlConnection } = await import('./db/setup.js');
+      const probeSpinner = spinner();
+      probeSpinner.start('Probing connection URL...');
+      urlProbe = await probeUrlConnection(urlValue);
+
+      if (!urlProbe.ok) {
+        probeSpinner.stop(`Connection failed (${urlProbe.stage}${urlProbe.code ? `: ${urlProbe.code}` : ''})`);
+        cancel(
+          `Could not connect: ${urlProbe.error}\n`
+          + (urlProbe.stage === 'parse'    ? '  Check the URL format (postgres://user:pass@host:port/db?sslmode=...)' : '')
+          + (urlProbe.stage === 'connect'  ? `  Provider hint: ${urlProbe.provider}. For Neon use the pooler URL.` : '')
+          + (urlProbe.stage === 'query'    ? '  Connection succeeded but a basic SELECT failed — check user privileges.' : ''),
+        );
         process.exit(1);
       }
 
-      if (diag.kind === 'missing-db' || diag.kind === 'auth') {
-        const wantsBootstrap = await confirm({
-          message: diag.kind === 'missing-db'
-            ? `Database "${dbName}" does not exist. Create it now (requires admin credentials)?`
-            : `Authentication failed for ${dbUser}@${dbName}. Create / reset the user now (requires admin credentials)?`,
-          initialValue: true,
+      if (!urlProbe.pgvector) {
+        probeSpinner.stop(`Connected (${urlProbe.provider}, ${urlProbe.connectMs}ms) — pgvector NOT installed`);
+        const proceed = await confirm({
+          message: 'pgvector extension is not installed on this database. Sigil cannot run without it. Continue anyway?',
+          initialValue: false,
         });
-        if (isCancel(wantsBootstrap) || !wantsBootstrap) {
-          cancel('Setup cancelled — fix Postgres credentials and re-run sigil init.');
-          process.exit(0);
-        }
-
-        const adminUser = await text({
-          message: 'Postgres admin user',
-          placeholder: 'postgres',
-          initialValue: 'postgres',
-        });
-        if (isCancel(adminUser)) { cancel('Setup cancelled.'); process.exit(0); }
-
-        const adminPassword = await text({
-          message: 'Postgres admin password (used once, not stored)',
-          placeholder: 'admin password',
-          validate: (v) => { if (!v) return 'Required to create the database'; },
-        });
-        if (isCancel(adminPassword)) { cancel('Setup cancelled.'); process.exit(0); }
-
-        const bootstrapSpinner = spinner();
-        bootstrapSpinner.start('Creating database, user, and pgvector extension...');
-        try {
-          const { actions } = await ensurePostgresDatabase({
-            admin: { host: dbHost, port: dbPort, user: adminUser, password: adminPassword },
-            sigil: { database: dbName, user: dbUser, password: finalDbPassword },
-          });
-          bootstrapSpinner.stop(`Bootstrapped: ${actions.join(', ')}`);
-        } catch (err) {
-          bootstrapSpinner.stop('Bootstrap failed');
-          cancel(err.message);
+        if (isCancel(proceed) || !proceed) {
+          cancel(
+            'Cancelled. Install pgvector on your database first:\n'
+            + (urlProbe.provider === 'neon'             ? '  Neon:     extensions are auto-enabled, but the role may need the right privileges' : '')
+            + (urlProbe.provider.startsWith('supabase') ? '  Supabase: enable via Dashboard → Database → Extensions → vector' : '')
+            + (urlProbe.provider === 'aws-rds'          ? '  RDS:      add `vector` to the parameter group `shared_preload_libraries`' : '')
+            + '\nThen re-run sigil init.',
+          );
           process.exit(1);
         }
       } else {
-        cancel(`Postgres setup failed: ${diag.hint}`);
-        process.exit(1);
+        probeSpinner.stop(`Connected (${urlProbe.provider}, ${urlProbe.connectMs}ms) — pgvector ✓`);
+      }
+    }
+  } else {
+    // ── Local Postgres install path ────────────────────────────────────────
+    const dbHostInput = await text({
+      message: 'Postgres host',
+      placeholder: existing.SIGIL_DB_HOST || 'localhost',
+      initialValue: existing.SIGIL_DB_HOST || 'localhost',
+    });
+    if (isCancel(dbHostInput)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbHost = dbHostInput;
+
+    const dbPortStr = await text({
+      message: 'Postgres port',
+      placeholder: existing.SIGIL_DB_PORT || '5432',
+      initialValue: existing.SIGIL_DB_PORT || '5432',
+      validate: (v) => { if (v && !/^\d+$/.test(v)) return 'Port must be a number'; },
+    });
+    if (isCancel(dbPortStr)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbPort = Number(dbPortStr);
+
+    const dbNameInput = await text({
+      message: 'Sigil database name',
+      placeholder: existing.SIGIL_DB_NAME || 'sigil',
+      initialValue: existing.SIGIL_DB_NAME || 'sigil',
+    });
+    if (isCancel(dbNameInput)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbName = dbNameInput;
+
+    const dbUserInput = await text({
+      message: 'Sigil database user',
+      placeholder: existing.SIGIL_DB_USER || 'sigil_app',
+      initialValue: existing.SIGIL_DB_USER || 'sigil_app',
+    });
+    if (isCancel(dbUserInput)) { cancel('Setup cancelled.'); process.exit(0); }
+    dbUser = dbUserInput;
+
+    const dbPassword = await text({
+      message: existing.SIGIL_DB_PASSWORD ? 'Sigil database password (keep existing — press Enter)' : 'Sigil database password',
+      placeholder: existing.SIGIL_DB_PASSWORD ? '(unchanged)' : 'sigil_dev or generate',
+      validate: (v) => { if (!v && !existing.SIGIL_DB_PASSWORD) return 'Password required'; },
+    });
+    if (isCancel(dbPassword)) { cancel('Setup cancelled.'); process.exit(0); }
+    finalDbPassword = dbPassword || existing.SIGIL_DB_PASSWORD;
+
+    if (!dryRun) {
+      const { probeSigilConnection, ensurePostgresDatabase, diagnoseConnectionError } =
+        await import('./db/setup.js');
+      const probeSpinner = spinner();
+      probeSpinner.start('Probing Postgres connection...');
+      const probe = await probeSigilConnection({
+        host: dbHost, port: dbPort, database: dbName, user: dbUser, password: finalDbPassword,
+      });
+
+      if (probe.ok) {
+        probeSpinner.stop(`Connected to ${dbUser}@${dbHost}:${dbPort}/${dbName}`);
+      } else {
+        const diag = diagnoseConnectionError({ code: probe.code, message: probe.message });
+        probeSpinner.stop(`Connection failed (${diag.kind})`);
+
+        if (diag.kind === 'unreachable') {
+          cancel(`Postgres unreachable at ${dbHost}:${dbPort}.\n${diag.hint}`);
+          process.exit(1);
+        }
+
+        if (diag.kind === 'missing-db' || diag.kind === 'auth') {
+          const wantsBootstrap = await confirm({
+            message: diag.kind === 'missing-db'
+              ? `Database "${dbName}" does not exist. Create it now (requires admin credentials)?`
+              : `Authentication failed for ${dbUser}@${dbName}. Create / reset the user now (requires admin credentials)?`,
+            initialValue: true,
+          });
+          if (isCancel(wantsBootstrap) || !wantsBootstrap) {
+            cancel('Setup cancelled — fix Postgres credentials and re-run sigil init.');
+            process.exit(0);
+          }
+
+          const adminUser = await text({
+            message: 'Postgres admin user',
+            placeholder: 'postgres',
+            initialValue: 'postgres',
+          });
+          if (isCancel(adminUser)) { cancel('Setup cancelled.'); process.exit(0); }
+
+          const adminPassword = await text({
+            message: 'Postgres admin password (used once, not stored)',
+            placeholder: 'admin password',
+            validate: (v) => { if (!v) return 'Required to create the database'; },
+          });
+          if (isCancel(adminPassword)) { cancel('Setup cancelled.'); process.exit(0); }
+
+          const bootstrapSpinner = spinner();
+          bootstrapSpinner.start('Creating database, user, and pgvector extension...');
+          try {
+            const { actions } = await ensurePostgresDatabase({
+              admin: { host: dbHost, port: dbPort, user: adminUser, password: adminPassword },
+              sigil: { database: dbName, user: dbUser, password: finalDbPassword },
+            });
+            bootstrapSpinner.stop(`Bootstrapped: ${actions.join(', ')}`);
+          } catch (err) {
+            bootstrapSpinner.stop('Bootstrap failed');
+            cancel(err.message);
+            process.exit(1);
+          }
+        } else {
+          cancel(`Postgres setup failed: ${diag.hint}`);
+          process.exit(1);
+        }
       }
     }
   }
@@ -546,11 +722,23 @@ during init; existing tables are detected and preserved.`);
   finalEnv.DEFAULT_NAMESPACE = namespace;
   finalEnv.SIGIL_ENCRYPTION_KEY = encryptionKey;
   finalEnv.SIGIL_DB_TYPE = 'postgres';
-  finalEnv.SIGIL_DB_HOST = dbHost;
-  finalEnv.SIGIL_DB_PORT = String(dbPort);
-  finalEnv.SIGIL_DB_NAME = dbName;
-  finalEnv.SIGIL_DB_USER = dbUser;
-  finalEnv.SIGIL_DB_PASSWORD = finalDbPassword;
+  if (dbMode === 'url') {
+    finalEnv.SIGIL_DATABASE_URL = urlValue;
+    // Strip stale discrete-mode keys so the driver selector unambiguously
+    // picks the URL path on next start.
+    delete finalEnv.SIGIL_DB_HOST;
+    delete finalEnv.SIGIL_DB_PORT;
+    delete finalEnv.SIGIL_DB_NAME;
+    delete finalEnv.SIGIL_DB_USER;
+    delete finalEnv.SIGIL_DB_PASSWORD;
+  } else {
+    delete finalEnv.SIGIL_DATABASE_URL;
+    finalEnv.SIGIL_DB_HOST = dbHost;
+    finalEnv.SIGIL_DB_PORT = String(dbPort);
+    finalEnv.SIGIL_DB_NAME = dbName;
+    finalEnv.SIGIL_DB_USER = dbUser;
+    finalEnv.SIGIL_DB_PASSWORD = finalDbPassword;
+  }
 
   const envContent = [
     `# Sigil — generated ${new Date().toISOString().slice(0, 10)}`,
@@ -628,7 +816,10 @@ during init; existing tables are detected and preserved.`);
       process.exit(1);
     }
   } else {
-    planFile('migrate', 'postgres', `${config.db.host}:${config.db.port}/${config.db.database}`);
+    const dest = dbMode === 'url'
+      ? `connection URL (${urlValue ? new URL(urlValue).hostname : '—'})`
+      : `${dbHost}:${dbPort}/${dbName}`;
+    planFile('migrate', 'postgres', dest);
     planFile('verify', 'embedder', `${embeddingProvider}/${embeddingModel} — live ping (skipped in dry-run)`);
   }
 
@@ -840,12 +1031,22 @@ Checks: Postgres connection, LLM provider, embedding provider, hook registration
     log('warn', 'Config validation', `unable to run: ${err.message}`);
   }
 
-  // Database
+  // Database — surface which driver path is in use so a user troubleshooting
+  // a Neon outage sees "DB driver: url (neon)" rather than wondering why
+  // SIGIL_DB_HOST is empty.
   try {
     const cortexDb = (await import('./db/cortex.js')).default;
     const config = (await import('./config.js')).default;
+    const { selectDriver } = await import('./db/drivers/index.js');
+    const driver = selectDriver(config);
+
     await cortexDb.raw('SELECT 1');
-    log('ok', 'Database', `Postgres @ ${config.db.host}:${config.db.port}/${config.db.database}`);
+    if (driver.kind === 'url') {
+      const host = driver.connection.host;
+      log('ok', 'DB driver', `URL (${driver.provider}, host=${host})`);
+    } else {
+      log('ok', 'DB driver', `local (${config.db.host}:${config.db.port}/${config.db.database})`);
+    }
 
     const { getFactCount } = await import('./memory/facts/store.js');
     const { getStats } = await import('./memory/documents/store.js');
@@ -853,12 +1054,24 @@ Checks: Postgres connection, LLM provider, embedding provider, hook registration
     log('ok', 'Stored data', `${stats.documentCount} docs, ${stats.totalChunks} chunks, ${facts} facts`);
     await cortexDb.destroy();
   } catch (err) {
-    const msg = err.message || String(err);
+    // Unwrap AggregateError (thrown by pg under multi-address connect
+    // when every candidate fails) so the user sees ECONNREFUSED instead
+    // of just "AggregateError". Mirrors src/lib/errors.js#serializeError.
+    let msg = err.message || String(err);
+    if (err instanceof AggregateError && Array.isArray(err.errors) && err.errors.length) {
+      msg = err.errors[0].message || msg;
+    } else if (err.cause && (!msg || msg === 'AggregateError')) {
+      msg = err.cause.message || msg;
+    }
+    const config = (await import('./config.js')).default;
     if (/ECONNREFUSED|connection refused|password authentication failed/i.test(msg)) {
       log('fail', 'Database', `Postgres unreachable — ${msg.split('\n')[0]}`);
-      log('warn', 'Recovery', "check that Postgres is running and SIGIL_DB_* env vars are set in ~/.sigil/.env");
+      log('warn', 'Recovery',
+        config.db.url
+          ? 'verify SIGIL_DATABASE_URL is valid and the provider is reachable'
+          : 'check that Postgres is running and SIGIL_DB_* env vars are set in ~/.sigil/.env');
     } else {
-      log('fail', 'Database', msg);
+      log('fail', 'Database', msg.split('\n')[0]);
     }
   }
 
@@ -1399,27 +1612,26 @@ Options:
     process.exit(0);
   }
 
-  const { listFacts } = await import('./memory/facts/store.js');
-  const config = (await import('./config.js')).default;
-  const cortexDb = (await import('./db/cortex.js')).default;
-
-  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || config.defaults.namespace;
+  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1];
   const category = args.find((a) => a.startsWith('--category='))?.split('=')[1];
   const limit = Number(args.find((a) => a.startsWith('--limit='))?.split('=')[1] || 20);
 
-  const facts = await listFacts({ namespace, category, limit });
-
-  if (!facts.length) {
-    console.log('No facts found.');
-  } else {
-    for (const fact of facts) {
-      const importance = fact.importance === 'vital' ? ' [VITAL]' : '';
-      console.log(`${fact.uid.slice(0, 8)} [${fact.category}]${importance} ${fact.content}`);
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('listFacts', { namespace, category, limit });
+    if (!data.facts.length) {
+      console.log('No facts found.');
+    } else {
+      for (const fact of data.facts) {
+        const importance = fact.importance === 'vital' ? ' [VITAL]' : '';
+        console.log(`${fact.uid.slice(0, 8)} [${fact.category}]${importance} ${fact.content}`);
+      }
+      console.log(`\n${data.facts.length} fact${data.facts.length > 1 ? 's' : ''} shown. Use 'sigil forget <id>' to delete.`);
     }
-    console.log(`\n${facts.length} fact${facts.length > 1 ? 's' : ''} shown. Use 'sigil forget <id>' to delete.`);
+  } finally {
+    await client.close();
   }
-
-  await cortexDb.destroy();
 }
 
 // ─── Forget ──────────────────────────────────────────────────────────────────
@@ -1438,41 +1650,19 @@ The <id> can be any of:
     process.exit(args[0] ? 0 : 1);
   }
 
-  const { deleteFact } = await import('./memory/facts/store.js');
-  const cortexDb = (await import('./db/cortex.js')).default;
-
   const idArg = args[0];
-
-  // Resolve to a UID — accept three input forms so users can paste whatever
-  // they see in `sigil facts` / `sigil search` output without thinking
-  // about which kind of identifier it is.
-  let match;
-  if (/^\d+$/.test(idArg)) {
-    // Pure-numeric → numeric row id
-    [match] = await cortexDb('fact').where({ id: Number(idArg) }).limit(1);
-  } else if (idArg.startsWith('fact-')) {
-    // UID or UID prefix
-    [match] = await cortexDb('fact').where('uid', 'like', `${idArg}%`).limit(1);
-  } else {
-    // Bare prefix fallback
-    [match] = await cortexDb('fact').where('uid', 'like', `${idArg}%`).limit(1);
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('forgetFact', { id: idArg });
+    if (data.notFound) {
+      console.error(`No fact matches: ${idArg}`);
+      process.exit(1);
+    }
+    console.log(`Forgotten: ${data.deleted.content}`);
+  } finally {
+    await client.close();
   }
-
-  if (!match) {
-    console.error(`No fact matches: ${idArg}`);
-    await cortexDb.destroy();
-    process.exit(1);
-  }
-
-  const deleted = await deleteFact(match.uid);
-  if (!deleted) {
-    console.error(`No fact matches: ${idArg}`);
-    await cortexDb.destroy();
-    process.exit(1);
-  }
-
-  console.log(`Forgotten: ${deleted.content}`);
-  await cortexDb.destroy();
 }
 
 // ─── Remember ────────────────────────────────────────────────────────────────
@@ -1515,7 +1705,10 @@ Examples:
   }
 
   if (background) {
-    // Spawn detached process and return immediately
+    // Spawn detached subprocess that itself routes through the daemon.
+    // The user gets an instant return; the actual ingest happens in the
+    // daemon process anyway (the detached child just sends the RPC and
+    // exits once the call resolves).
     const { spawn } = await import('node:child_process');
     const child = spawn(
       process.execPath,
@@ -1527,51 +1720,18 @@ Examples:
     return;
   }
 
-  const { ingestDocument } = await import('./ingestion/pipeline.js');
-  const config = (await import('./config.js')).default;
-  const cortexDb = (await import('./db/cortex.js')).default;
-
-  // Ingest sequentially. Parallel ingests with shared topics ("auth",
-  // "TypeScript", "Smara") race on entity creation AND on entity-rename
-  // updates — Stage 4's insert-on-conflict handles the create race, but
-  // updateName can still hit a unique-violation when two ingests try to
-  // rename different entity rows to the same canonical name. Sequential
-  // is ~Nx slower for N facts but eliminates the contention class entirely
-  // and preserves AUDM's pairwise dedup invariants. (`sigil remember A B C`
-  // typical: 3 facts × ~1.5s = 4.5s, fine for any UX.)
-  const results = [];
-  for (const text of facts) {
-    const result = await ingestDocument({ content: text, namespace: config.defaults.namespace, classify: true });
-    results.push(result);
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('remember', { facts });
+    const parts = [];
+    if (data.added)        parts.push(`${data.added} new`);
+    if (data.updated)      parts.push(`${data.updated} updated`);
+    if (data.alreadyKnown) parts.push(`${data.alreadyKnown} already known`);
+    console.log(parts.length ? `Remembered. (${parts.join(', ')})` : 'Already known.');
+  } finally {
+    await client.close();
   }
-
-  let totalAdded = 0;
-  let totalUpdated = 0;
-  let alreadyKnown = 0;
-
-  for (const result of results) {
-    if (result.skipped || result.route === 'noise') {
-      alreadyKnown++;
-    } else {
-      totalAdded += result.facts?.added ?? 0;
-      totalUpdated += result.facts?.updated ?? 0;
-      if ((result.facts?.added ?? 0) + (result.facts?.updated ?? 0) === 0) alreadyKnown++;
-    }
-  }
-
-  // Refresh hot-context snapshot so new facts are available at next session start
-  if (totalAdded + totalUpdated > 0) {
-    const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
-    await updateContextSnapshot({ namespace: config.defaults.namespace }).catch(() => {});
-  }
-
-  await cortexDb.destroy();
-
-  const parts = [];
-  if (totalAdded)   parts.push(`${totalAdded} new`);
-  if (totalUpdated) parts.push(`${totalUpdated} updated`);
-  if (alreadyKnown) parts.push(`${alreadyKnown} already known`);
-  console.log(parts.length ? `Remembered. (${parts.join(', ')})` : 'Already known.');
 }
 
 
@@ -1712,10 +1872,8 @@ Examples:
     process.exit(0);
   }
 
-  const { ingestDocument } = await import('./ingestion/pipeline.js');
   const { readSource, readSources } = await import('./ingestion/sources/file.js');
   const { fetchSource } = await import('./ingestion/sources/url.js');
-  const cortexDb = (await import('./db/cortex.js')).default;
 
   const namespace = flags.find((f) => f.startsWith('--namespace='))?.split('=')[1];
   const skipFacts = flags.includes('--skip-facts');
@@ -1724,61 +1882,64 @@ Examples:
   const results = { success: [], failed: [], skipped: [] };
   const startTime = Date.now();
 
-  for (const input of inputs) {
-    try {
-      let sources;
-
-      if (input.startsWith('http://') || input.startsWith('https://')) {
-        sources = [await fetchSource(input)];
-      } else if (input.includes('*')) {
-        sources = await readSources(input);
-        if (!sources.length) {
-          console.error(`Error: No files matched pattern: ${input}`);
-          results.failed.push({ input, error: 'no files matched' });
-          continue;
-        }
-      } else {
-        sources = [await readSource(input)];
-      }
-
-      for (const source of sources) {
-        console.log(`Ingesting: ${source.title}`);
-        const result = await ingestDocument({
-          content: source.content,
-          title: source.title,
-          sourcePath: source.sourcePath,
-          sourceType: source.sourceType,
-          contentType: source.contentType,
-          namespace,
-          metadata: source.metadata,
-          skipFacts,
-          skipEntities,
-        });
-
-        if (result.skipped) {
-          results.skipped.push(source.title);
-          console.log(`  Skipped (unchanged)`);
+  // File/URL/glob resolution stays in CLI — these are local filesystem
+  // operations and don't need to run in the daemon. The daemon does the
+  // heavy lifting (chunking, embedding, fact extraction) per source.
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    for (const input of inputs) {
+      try {
+        let sources;
+        if (input.startsWith('http://') || input.startsWith('https://')) {
+          sources = [await fetchSource(input)];
+        } else if (input.includes('*')) {
+          sources = await readSources(input);
+          if (!sources.length) {
+            console.error(`Error: No files matched pattern: ${input}`);
+            results.failed.push({ input, error: 'no files matched' });
+            continue;
+          }
         } else {
-          results.success.push(source.title);
-          console.log(`  Done — ${result.chunkCount} chunks, ${result.facts.total} facts (${result.facts.added} new, ${result.facts.updated} updated)`);
+          sources = [await readSource(input)];
         }
+
+        for (const source of sources) {
+          console.log(`Ingesting: ${source.title}`);
+          const { data } = await client.call('ingestDoc', {
+            content: source.content,
+            title: source.title,
+            filePath: source.sourcePath,
+            sourceType: source.sourceType,
+            namespace,
+            metadata: source.metadata,
+            skipFacts,
+            skipEntities,
+          });
+          if (data.skipped) {
+            results.skipped.push(source.title);
+            console.log('  Skipped (unchanged)');
+          } else {
+            results.success.push(source.title);
+            const f = data.facts;
+            console.log(`  Done — ${data.chunkCount} chunks${f ? `, ${f.total} facts (${f.added} new, ${f.updated ?? 0} updated)` : ''}`);
+          }
+        }
+      } catch (err) {
+        console.error(`  Failed: ${input} — ${err.message}`);
+        results.failed.push({ input, error: err.message });
       }
-    } catch (err) {
-      console.error(`  Failed: ${input} — ${err.message}`);
-      results.failed.push({ input, error: err.message });
     }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\nDone in ${elapsed}s — ${results.success.length} ingested, ${results.skipped.length} skipped, ${results.failed.length} failed`);
+
+    if (results.success.length > 0) {
+      await client.call('refreshContext', {}).catch(() => {});
+    }
+  } finally {
+    await client.close();
   }
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`\nDone in ${elapsed}s — ${results.success.length} ingested, ${results.skipped.length} skipped, ${results.failed.length} failed`);
-
-  if (results.success.length > 0) {
-    const config = (await import('./config.js')).default;
-    const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
-    await updateContextSnapshot({ namespace: config.defaults.namespace }).catch(() => {});
-  }
-
-  await cortexDb.destroy();
 
   if (results.failed.length && !results.success.length) process.exit(1);
 }
@@ -1803,59 +1964,60 @@ Options:
   --synthesize        Enable LLM answer synthesis
   --chunks            Include raw chunk matches
   --no-graph          Disable graph enhancement
+  --scope             Scope to the active project/session pods (default: search everything)
 
 Examples:
   sigil search "authentication flow"
   sigil search "deploy process" --namespace=engineering
-  sigil search "API design" --limit=5`);
+  sigil search "API design" --limit=5
+  sigil search "that decision" --scope          # only this project's memory`);
     process.exit(0);
   }
 
-  const { search } = await import('./memory/search/hybrid.js');
-  const config = (await import('./config.js')).default;
-  const cortexDb = (await import('./db/cortex.js')).default;
-
   const nsFlag = flags.find((f) => f.startsWith('--namespace='))?.split('=')[1];
-  const namespaces = nsFlag ? nsFlag.split(',') : [config.defaults.namespace];
+  const namespaces = nsFlag ? nsFlag.split(',') : undefined;
   const limit = Number(flags.find((f) => f.startsWith('--limit='))?.split('=')[1] || 10);
   const useGraph = flags.includes('--graph') && !flags.includes('--no-graph');
   const route = flags.includes('--route');
   const synthesize = flags.includes('--synthesize');
   const includeChunks = flags.includes('--chunks') || synthesize;
 
-  const { facts, chunks, synthesized } = await search(query, {
-    namespaces,
-    limit,
-    useGraph,
-    route,
-    synthesize,
-    includeChunks,
-  });
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    // Explicit human search defaults to the WHOLE brain; --scope narrows to
+    // the active project/session pods (cwd lets 'auto' resolve them). This is
+    // distinct from the hook's auto-injection, which is always project-scoped
+    // + floored. No floor here — a human searching sees every match.
+    const podScope = flags.includes('--scope') ? 'auto' : 'global';
+    const { data } = await client.call('search', {
+      query, namespaces, limit, useGraph, route, synthesize, includeChunks,
+      podScope, cwd: process.cwd(),
+    });
 
-  if (synthesized) {
-    console.log(synthesized);
-  }
+    if (data.synthesized) console.log(data.synthesized);
 
-  if (facts.length) {
-    console.log(`\nFacts (${facts.length}):`);
-    for (const fact of facts) {
-      console.log(`  ${fact.content}${formatRelevance(fact)}`);
+    if (data.facts.length) {
+      console.log(`\nFacts (${data.facts.length}):`);
+      for (const fact of data.facts) {
+        console.log(`  ${fact.content}${formatRelevance(fact)}`);
+      }
     }
-  }
 
-  if (chunks.length) {
-    console.log(`\nChunks (${chunks.length}):`);
-    for (const chunk of chunks) {
-      const preview = chunk.content?.slice(0, 120).replace(/\n/g, ' ');
-      console.log(`  ${preview}...${formatRelevance(chunk)}`);
+    if (data.chunks.length) {
+      console.log(`\nChunks (${data.chunks.length}):`);
+      for (const chunk of data.chunks) {
+        const preview = chunk.content?.slice(0, 120).replace(/\n/g, ' ');
+        console.log(`  ${preview}...${formatRelevance(chunk)}`);
+      }
     }
-  }
 
-  if (!facts.length && !chunks.length) {
-    console.log('No results found.');
+    if (!data.facts.length && !data.chunks.length) {
+      console.log('No results found.');
+    }
+  } finally {
+    await client.close();
   }
-
-  await cortexDb.destroy();
 }
 
 // Display a meaningful relevance signal for a search hit.
@@ -1900,59 +2062,45 @@ Options:
     process.exit(0);
   }
 
-  const config = (await import('./config.js')).default;
-  const cortexDb = (await import('./db/cortex.js')).default;
-  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || config.defaults.namespace;
+  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1];
   const limitArg = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
   const limit = limitArg ? Number(limitArg) : 20;
   const explain = args.includes('--explain');
 
-  if (explain) {
-    // Don't write the snapshot — show which kind each fact came from.
-    await import('./memory/pods/kinds/index.js');
-    const { activeKinds } = await import('./memory/pods/registry.js');
-    const { factsInPodsByRecency } = await import('./memory/facts/hot-context.js');
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('refreshContext', {
+      namespace,
+      limit,
+      explain,
+      cwd: process.cwd(),
+    });
 
-    const ctx = { namespace, cwd: process.cwd() };
-    const active = await activeKinds(ctx);
-    console.log(`Hot-context blend for namespace=${namespace}:`);
-    console.log('');
-    for (const { kind, scope } of active) {
-      console.log(`  ${kind.name} (budget=${kind.hotContextBudget}, ${kind.visibility})`);
-      let facts;
-      try {
-        if (typeof kind.fetchFacts === 'function') {
-          facts = await kind.fetchFacts(ctx, { slots: kind.hotContextBudget, namespace });
+    if (data.mode === 'explain') {
+      console.log(`Hot-context blend for namespace=${data.namespace}:\n`);
+      for (const section of data.sections) {
+        console.log(`  ${section.name} (budget=${section.budget}, ${section.visibility})`);
+        if (section.error) console.log(`    (failed: ${section.error})`);
+        if (!section.facts.length) {
+          console.log('    (no facts)');
         } else {
-          facts = await factsInPodsByRecency(scope, namespace, kind.hotContextBudget);
+          for (const f of section.facts) {
+            console.log(`    - ${(f.content || '').slice(0, 120)}`);
+          }
         }
-      } catch (err) {
-        facts = [];
-        console.log(`    (failed: ${err.message})`);
+        console.log('');
       }
-      if (!facts || facts.length === 0) {
-        console.log('    (no facts)');
-      } else {
-        for (const f of facts.slice(0, kind.hotContextBudget)) {
-          console.log(`    - ${(typeof f === 'string' ? f : f.content || '').slice(0, 120)}`);
-        }
-      }
-      console.log('');
+      return;
     }
-    await cortexDb.destroy();
-    return;
-  }
 
-  const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
-  const { writeSharedInstructions } = await import('./lib/clients/instructions.js');
-  await writeSharedInstructions();
-  const count = await updateContextSnapshot({ namespace, limit });
-  await cortexDb.destroy();
-
-  if (count) {
-    console.log(`Context refreshed — ${count} facts written to ~/.sigil/CLAUDE.md`);
-  } else {
-    console.log('No facts found. Ingest some content first.');
+    if (data.count) {
+      console.log(`Context refreshed — ${data.count} facts written to ~/.sigil/CLAUDE.md`);
+    } else {
+      console.log('No facts found. Ingest some content first.');
+    }
+  } finally {
+    await client.close();
   }
 }
 
@@ -1967,52 +2115,37 @@ Usage:
     process.exit(0);
   }
 
-  const { getStats } = await import('./memory/documents/store.js');
-  const { getEntityCount } = await import('./memory/entities/store.js');
-  const { getRelationCount } = await import('./memory/entities/relations.js');
-  const { getFactCount } = await import('./memory/facts/store.js');
-  const { getEntityHebbianStats } = await import('./memory/lifecycle/entity-hebbian.js');
-  const cortexDb = (await import('./db/cortex.js')).default;
-
   const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1];
 
-  const [docStats, factCount, documents, people, topics, relations, podRows, hebbian] = await Promise.all([
-    getStats(namespace),
-    getFactCount(namespace),
-    getEntityCount('document'),
-    getEntityCount('person'),
-    getEntityCount('topic'),
-    getRelationCount(),
-    cortexDb('pod').where({ status: 'active' }).select('podType').then((rows) => rows),
-    getEntityHebbianStats({ topN: 3 }).catch(() => null),
-  ]);
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('status', { namespace: namespace || null });
+    const podSummary = Object.entries(data.podsByType || {})
+      .map(([t, n]) => `${n} ${t}`)
+      .join(', ') || '—';
 
-  const podsByType = podRows.reduce((acc, r) => {
-    acc[r.podType] = (acc[r.podType] || 0) + 1;
-    return acc;
-  }, {});
-  const podSummary = Object.entries(podsByType).map(([t, n]) => `${n} ${t}`).join(', ') || '—';
-
-  console.log(`Sigil Knowledge Base${namespace ? ` (${namespace})` : ''}`);
-  console.log(`  Documents:  ${docStats.documentCount}`);
-  console.log(`  Chunks:     ${docStats.totalChunks}`);
-  console.log(`  Facts:      ${factCount} active`);
-  console.log(`  Entities:   ${documents} documents, ${people} people, ${topics} topics`);
-  console.log(`  Relations:  ${relations}`);
-  console.log(`  Pods:       ${podSummary}`);
-  if (hebbian) {
-    const avg = hebbian.avgStrength ? hebbian.avgStrength.toFixed(2) : '0';
-    const max = hebbian.maxStrength ? hebbian.maxStrength.toFixed(2) : '0';
-    console.log(`  Co-retrieval edges: ${hebbian.edgeCount} (avg ${avg}, max ${max})`);
-    if (hebbian.topPairs.length) {
-      console.log('  Top pairs by decayed strength:');
-      for (const p of hebbian.topPairs) {
-        console.log(`    ${p.aName} ↔ ${p.bName}  (decayed ${Number(p.decayed).toFixed(2)})`);
+    console.log(`Sigil Knowledge Base${data.namespace ? ` (${data.namespace})` : ''}`);
+    console.log(`  Documents:  ${data.documents}`);
+    console.log(`  Chunks:     ${data.chunks}`);
+    console.log(`  Facts:      ${data.facts} active`);
+    console.log(`  Entities:   ${data.entities.documents} documents, ${data.entities.people} people, ${data.entities.topics} topics`);
+    console.log(`  Relations:  ${data.relations}`);
+    console.log(`  Pods:       ${podSummary}`);
+    if (data.hebbian) {
+      const avg = data.hebbian.avgStrength ? data.hebbian.avgStrength.toFixed(2) : '0';
+      const max = data.hebbian.maxStrength ? data.hebbian.maxStrength.toFixed(2) : '0';
+      console.log(`  Co-retrieval edges: ${data.hebbian.edgeCount} (avg ${avg}, max ${max})`);
+      if (data.hebbian.topPairs.length) {
+        console.log('  Top pairs by decayed strength:');
+        for (const p of data.hebbian.topPairs) {
+          console.log(`    ${p.a} ↔ ${p.b}  (decayed ${Number(p.decayed).toFixed(2)})`);
+        }
       }
     }
+  } finally {
+    await client.close();
   }
-
-  await cortexDb.destroy();
 }
 
 // ─── Maintain ────────────────────────────────────────────────────────────────

@@ -25,11 +25,14 @@ const EXTERNAL = [
   '@modelcontextprotocol/sdk/server/mcp.js',
   '@modelcontextprotocol/sdk/server/stdio.js',
   'dotenv',                    // light, better to externalize for config flexibility
+  'ws',                        // WebSocket — bufferutil/utf-8-validate optional natives
+  '@number0/iroh',             // Iroh NAPI binding — prebuilt native, must be external
 ];
 
 const ENTRIES = [
   { in: 'src/cli.js', out: 'cli.js', shebang: true },
   { in: 'src/server.js', out: 'server.js', shebang: true },
+  { in: 'src/daemon/index.js', out: 'daemon.js', shebang: true },
   { in: 'src/hooks/user-prompt-submit.js', out: 'hooks/user-prompt-submit.js', shebang: true },
   { in: 'src/hooks/post-tool-use.js', out: 'hooks/post-tool-use.js', shebang: true },
   { in: 'src/hooks/stop.js', out: 'hooks/stop.js', shebang: true },
@@ -59,6 +62,13 @@ async function run() {
       external: EXTERNAL,
       logLevel: 'warning',
       legalComments: 'none',
+      // ESM output can't synchronously `require()` a bundled CJS dep's
+      // `require("stream")` etc. — esbuild emits a shim that throws
+      // unless we hand it a real `require` via createRequire. (Surfaced
+      // by `sigil doctor` on a fresh install — see PR #9 review.)
+      banner: {
+        js: "import { createRequire as __sigilCreateRequire } from 'node:module'; const require = __sigilCreateRequire(import.meta.url);",
+      },
     });
 
     // Normalize shebang: ensure exactly one at the very top
