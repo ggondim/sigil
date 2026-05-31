@@ -11,15 +11,14 @@ Local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any a
 </div>
 
 ```bash
-docker run -d --name sigil-pg -p 5432:5432 \
-  -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
-npm install -g @anmol-srv/sigil
-sigil init
+npx @anmol-srv/sigil
 ```
+
+That's it. The command launches Sigil and opens a dashboard in your browser where you configure everything — database, LLM, and embedding provider — with live connection tests and one-click fixes. No config files to edit, no setup prompts in the terminal.
 
 <div align="center">
 
-Open Claude Code. Memory is already wired in.
+Configure in the dashboard. Open Claude Code. Memory is already wired in.
 
 [![npm](https://img.shields.io/npm/v/@anmol-srv%2Fsigil)](https://www.npmjs.com/package/@anmol-srv/sigil)
 [![Docs](https://img.shields.io/badge/docs-anmol--srv.github.io%2Fsigil-5e8cff)](https://anmol-srv.github.io/sigil/)
@@ -155,49 +154,44 @@ Retrieval is hybrid: pgvector cosine + tsvector keyword fused via Reciprocal Ran
 
 ## Quickstart
 
-Sigil needs **Postgres 13+ with the `pgvector` extension** running somewhere reachable. You bring the server; `sigil init` does everything else.
+Sigil needs **Postgres 13+ with the `pgvector` extension** running somewhere reachable. You bring the server; the dashboard does everything else.
 
-### 1. Have Postgres available
+### 1. Launch
 
-Two paths — pick whichever is easier for you.
-
-**A. Local install** (laptop dev, single machine):
 ```bash
-# Recommended: pgvector image includes the extension out of the box
+npx @anmol-srv/sigil
+```
+
+This starts the Sigil daemon and opens the dashboard in your browser. The daemon runs even before anything is configured, so the setup wizard is always reachable. Everything below happens in the UI — no terminal prompts, no editing `~/.sigil/.env` by hand.
+
+### 2. Configure in the dashboard
+
+The first-run wizard walks you through three things, each with a live test before it's saved:
+
+1. **Database** — paste a connection URL (Neon, Supabase, AWS RDS, Render, Railway, CockroachDB, …) or point at a local Postgres. The dashboard tests the connection, offers one-click **Install pgvector** if the extension is missing, and runs migrations. Pooled connection URLs (e.g. Neon's `-pooler` host) are handled automatically — migrations run against the direct endpoint.
+2. **LLM provider** — OpenRouter, OpenAI, Anthropic, Ollama, or your Claude Code subscription. Tested with a live call.
+3. **Embedding provider** — OpenAI, Voyage, or Ollama. If your database already holds vectors at a different dimension than the provider produces, the dashboard tells you exactly how many rows are affected and lets you wipe and start fresh or cancel — never a silent failure.
+
+When a step fails, the dashboard shows the real cause and the fix, not a generic error. Switch any provider later from **Settings → Change** — it re-tests, applies, and restarts the daemon for you.
+
+Need a local Postgres? The pgvector image includes the extension out of the box:
+```bash
 docker run -d --name sigil-pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
 ```
-Alternatives: `brew install postgresql@15 pgvector && brew services start postgresql@15`, apt, asdf, etc.
 
-**B. Managed / cloud Postgres** (Neon, Supabase, AWS RDS, Render, Railway, CockroachDB, Crunchy, …): grab the connection URL from your provider's dashboard. Make sure the `vector` extension is enabled (one-click on Neon/Supabase; parameter group on RDS). Nothing to install locally.
+Finishing the wizard auto-detects every AI client on your machine (Claude Code, Codex CLI, Cursor, Kiro) and wires Sigil into each: hooks for Claude Code, MCP server registration + steering rules for the rest, plus `@~/.sigil/CLAUDE.md` in your global Claude config so hot-context is always loaded.
 
-### 2. Install + setup
+### Prefer the terminal?
 
+The interactive CLI setup still works and is fully equivalent:
 ```bash
 npm install -g @anmol-srv/sigil
-sigil init
+sigil init                                                    # interactive
+sigil init --url "postgres://user:pass@ep-foo.neon.tech/sigil?sslmode=require"  # non-interactive (CI / dotfiles)
+sigil doctor                                                  # verify everything's wired
 ```
-
-`sigil init`:
-
-1. Asks for your LLM provider (OpenRouter, OpenAI, Anthropic, Ollama, or Claude Code subscription).
-2. Asks for your embedding provider (OpenAI, Voyage, or Ollama).
-3. Asks **Local Postgres install** or **Connection URL**.
-   - *Local:* prompts for host/port/user/password. If the database doesn't exist yet, it asks once for Postgres admin credentials and auto-creates the database, the `sigil_app` user, and the `vector` extension. Admin creds are used once and never written to disk.
-   - *URL:* prompts for a `postgres://…` connection string (Neon, Supabase, RDS, etc.), probes it, and verifies `pgvector` is installed. Stored as `SIGIL_DATABASE_URL` — the only DB key you need.
-4. Runs schema migrations.
-5. Auto-detects every AI client on your machine (Claude Code, Codex CLI, Cursor, Kiro) and wires Sigil into each one: hooks for Claude Code, MCP server registration + steering rules for the rest. Adds `@~/.sigil/CLAUDE.md` to your global Claude config so hot-context is always loaded.
-
-Non-interactive (CI / dotfiles):
-```bash
-sigil init --url "postgres://user:pass@ep-foo.neon.tech/sigil?sslmode=require"
-```
-
-Re-running `sigil init` is idempotent. Existing `~/.sigil/.env` keys are preserved; only prompted values are updated.
-
-```bash
-sigil doctor   # verify everything's wired
-```
+Re-running `sigil init` is idempotent — existing `~/.sigil/.env` keys are preserved.
 ```
 Sigil diagnostic
 
