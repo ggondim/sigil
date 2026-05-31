@@ -145,6 +145,44 @@ header.header {
 }
 .site-title img { width: 20px; height: 20px; }
 
+/* `docs` mono badge next to "Sigil" — matches dashboard's `solo` badge */
+.site-title span::after {
+  content: "docs";
+  display: inline-block;
+  margin-left: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fg-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
+/* `stable` status indicator on the right — matches dashboard's connection pill */
+.right-group::before {
+  content: "stable";
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  color: var(--ok);
+  padding-right: var(--s-4);
+  border-right: 1px solid var(--border);
+  height: 24px;
+  margin-right: var(--s-3);
+}
+.right-group {
+  align-items: center !important;
+  gap: var(--s-3) !important;
+}
+
 /* Search box */
 site-search button,
 .site-search button {
@@ -252,14 +290,14 @@ ul.top-level > li > details > summary svg { display: none !important; }
   border: none !important;
 }
 .right-sidebar-panel a {
-  padding: 4px 0 !important;
-  font-size: var(--t-sm) !important;
+  padding: 5px var(--s-3) !important;
+  font-size: var(--t-base) !important;
   color: var(--fg-3) !important;
   border-radius: 0 !important;
   text-decoration: none !important;
   border-left: 2px solid transparent;
-  padding-left: var(--s-3) !important;
   margin-left: calc(-1 * var(--s-3));
+  display: block;
 }
 .right-sidebar-panel a:hover { color: var(--fg-2) !important; }
 .right-sidebar-panel a[aria-current='true'] {
@@ -282,17 +320,40 @@ main {
   padding-top: var(--s-6) !important;
 }
 
-/* Page H1 */
-.sl-markdown-content h1,
+/* Page H1 — dashboard-style: big title, no border (we use a wrapper border
+   so it sits below both the title and the lede paragraph) */
 main h1 {
-  font-size: 1.75rem !important;
-  font-weight: 600;
+  font-size: 1.5rem !important;
+  font-weight: 600 !important;
   letter-spacing: -0.02em;
   line-height: var(--lh-tight);
   color: var(--fg) !important;
-  margin: 0 0 var(--s-4) 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+}
+
+/* The H1 lives in its own content-panel; the markdown content (with the
+   first paragraph acting as a lede) lives in the next content-panel. We
+   join them visually by putting a separator below the lede paragraph. */
+main > .content-panel:first-of-type {
+  padding-bottom: var(--s-3) !important;
+}
+main > .content-panel:nth-of-type(2) {
+  padding-top: 0 !important;
+}
+
+/* First paragraph after the H1 acts as a lede — larger, muted, with a
+   separator border underneath that visually closes the section head.
+   Scoped to non-splash pages so the splash landing's first p stays normal. */
+html:not([data-has-hero]) .sl-markdown-content > p:first-child {
+  font-size: var(--t-md) !important;
+  color: var(--fg-3) !important;
+  max-width: 42rem;
+  margin: 0 0 var(--s-5) 0 !important;
   padding-bottom: var(--s-5) !important;
-  border-bottom: 1px solid var(--border) !important;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.55 !important;
 }
 
 /* Section headings */
