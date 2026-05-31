@@ -9,6 +9,9 @@ docs/.astro/
 # pnpm workspace artifacts at root (docs/ is standalone)
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# docs design iteration screenshots (local-only)
+docs-screenshots/
 .DS_Store
 output/
 .claude/

@@ -15,10 +15,17 @@ export default defineConfig({
         replacesTitle: false,
       },
       customCss: ['./src/styles/custom.css'],
+      // Force dark mode before Starlight's ThemeProvider runs.
+      // This runs synchronously in <head>, so it lands before any FOUC.
       head: [
         {
           tag: 'script',
-          content: "document.documentElement.setAttribute('data-theme','dark')",
+          content: `
+            try {
+              localStorage.setItem('starlight-theme', 'dark');
+            } catch (_) {}
+            document.documentElement.dataset.theme = 'dark';
+          `.trim(),
         },
       ],
       social: [
@@ -59,8 +66,19 @@ export default defineConfig({
         },
       ],
       expressiveCode: {
+        themes: ['github-dark'],
         styleOverrides: {
-          borderRadius: '2px',
+          borderRadius: '0px',
+          borderColor: '#1f2229',
+          codeBackground: '#07080a',
+          frames: {
+            shadowColor: 'transparent',
+            editorActiveTabBackground: '#0f1115',
+            editorTabBarBackground: '#0f1115',
+            editorBackground: '#07080a',
+            terminalBackground: '#07080a',
+            terminalTitlebarBackground: '#0f1115',
+          },
         },
       },
     }),
