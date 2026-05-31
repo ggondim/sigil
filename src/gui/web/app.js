@@ -1,6 +1,16 @@
 // Sigil GUI — vanilla JS. Onboarding wizard + dashboard.
+import { toast } from './toast.js';
+import { connectorCard, dbFlowRow, setFlowRow } from './components.js';
+
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => root.querySelectorAll(sel);
+
+// Onboarding machine step (SCREAMING_SNAKE) → wizard section id.
+const MACHINE_TO_STEP = { CONNECTORS: 'connectors', PROVIDER: 'llm', EMBEDDING: 'embedding', DATABASE: 'database', FINISH: 'finish' };
+async function persistStep(step, status, data = {}) {
+  try { await rpc('onboardingAdvance', { step, status, data }); }
+  catch (err) { /* non-fatal: state persistence is best-effort */ void err; }
+}
 
 // ── RPC ──────────────────────────────────────────────────────────────
 async function rpc(method, params = {}) {
@@ -12,7 +22,10 @@ async function rpc(method, params = {}) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = await res.json();
-  if (!body.ok) throw new Error(body.error?.message || 'rpc error');
+  if (!body.ok) {
+    const e = body.error || {};
+    throw Object.assign(new Error(e.message || 'rpc error'), { code: e.code, hint: e.hint });
+  }
   return body.data;
 }
 
@@ -45,27 +58,27 @@ async function copyToClipboard(text) {
 // ════════════════════════════════════════════════════════════════════
 // ONBOARDING WIZARD
 // ════════════════════════════════════════════════════════════════════
-const wizardState = { step: 'welcome', llmProvider: null, embProvider: null, llmProviders: [], embProviders: [] };
+const wizardState = { step: 'connectors', llmProvider: null, embProvider: null, llmProviders: [], embProviders: [], connectorsLoaded: false, dbInit: false, connectedCount: 0 };
+
+const STEP_ORDER = ['connectors', 'llm', 'embedding', 'database', 'finish'];
 
 function setOnbStep(stepId) {
   wizardState.step = stepId;
-  // Update step list state — done/active/future
-  const order = ['welcome', 'database', 'llm', 'embedding', 'finish'];
-  const idx = order.indexOf(stepId);
+  const idx = STEP_ORDER.indexOf(stepId);
   $$('.onboarding-step').forEach((el) => {
-    const i = order.indexOf(el.dataset.obStep);
+    const i = STEP_ORDER.indexOf(el.dataset.obStep);
     el.classList.remove('active', 'done', 'future');
     if (i < idx) el.classList.add('done');
     else if (i === idx) el.classList.add('active');
     else el.classList.add('future');
   });
-  // Show only the active step
   $$('.wizard-step').forEach((el) => el.classList.toggle('active', el.dataset.step === stepId));
-  // Lazy-fetch provider lists when entering those steps
+  // Lazy-fetch per-step data when first entering a step.
+  if (stepId === 'connectors' && !wizardState.connectorsLoaded) loadConnectors();
   if (stepId === 'llm' && !wizardState.llmProviders.length) loadLlmProviders();
   if (stepId === 'embedding' && !wizardState.embProviders.length) loadEmbeddingProviders();
+  if (stepId === 'database' && !wizardState.dbInit) initDbStep();
   if (stepId === 'finish') renderFinish();
-  // Scroll content to top
   document.querySelector('.onboarding-content')?.scrollTo(0, 0);
 }
 
@@ -77,37 +90,96 @@ async function loadOnboardingState() {
       return;
     }
     $('#onboarding').hidden = false;
-    // Pre-fill DB step's "next" enabled if already done
-    if (state.steps.database.done) {
-      $('#ob-db-next').disabled = false;
-    }
-    if (state.steps.llm.done) {
-      $('#ob-llm-next').disabled = false;
-    }
-    if (state.steps.embedding.done) {
-      $('#ob-emb-next').disabled = false;
-    }
-  } catch (err) {
-    // Could not reach daemon — show welcome anyway
+    if (state.steps.database.done) $('#ob-db-next').disabled = false;
+    if (state.steps.llm.done) $('#ob-llm-next').disabled = false;
+    if (state.steps.embedding.done) $('#ob-emb-next').disabled = false;
+    // Resume at the machine's current step (refresh mid-wizard → same place).
+    const resume = MACHINE_TO_STEP[state.machine?.currentStep];
+    if (resume && resume !== 'connectors') setOnbStep(resume);
+    else setOnbStep('connectors');
+  } catch {
+    // Could not reach daemon — show the first step anyway.
     $('#onboarding').hidden = false;
   }
 }
 
-// ── DB step ──────────────────────────────────────────────────────────
+// ── Connectors step ──────────────────────────────────────────────────
+async function loadConnectors() {
+  wizardState.connectorsLoaded = true;
+  const host = $('#ob-connectors');
+  try {
+    const { connectors } = await rpc('listConnectors');
+    wizardState.connectedCount = connectors.filter((c) => c.status === 'connected').length;
+    renderConnectors(connectors);
+  } catch (err) {
+    host.innerHTML = `<div class="muted">could not load connectors: ${escape(err.message)}</div>`;
+  }
+}
+
+function renderConnectors(connectors) {
+  const host = $('#ob-connectors');
+  host.innerHTML = '';
+  connectors.forEach((c) => host.appendChild(connectorCard(c, onConnectorAction)));
+}
+
+async function onConnectorAction(id, action) {
+  const host = $('#ob-connectors');
+  const card = host.querySelector(`[data-id="${id}"]`);
+  if (action === 'disconnect') {
+    try {
+      await rpc('disconnectConnector', { id });
+      toast({ variant: 'success', message: `${id} disconnected` });
+    } catch (err) { toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code }); }
+    return loadConnectors();
+  }
+  // connect / retry → optimistic "connecting" card, then refresh.
+  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onConnectorAction));
+  try {
+    await rpc('connectConnector', { id });
+    toast({ variant: 'success', message: `${id} connected` });
+  } catch (err) {
+    toast({ variant: 'error', message: err.message || `could not connect ${id}`, hint: err.hint, code: err.code });
+  }
+  return loadConnectors();
+}
+
+// ── DB step (linear guided flow) ─────────────────────────────────────
+function dbMode() {
+  return $('input[name="db-mode"]:checked')?.value || 'url';
+}
+
 $('#db-mode-cards')?.addEventListener('click', (e) => {
   const card = e.target.closest('[data-db-mode]');
-  if (!card) return;
+  if (!card || card.hidden) return;
   $$('#db-mode-cards .provider-card').forEach((c) => c.classList.remove('selected'));
   card.classList.add('selected');
   card.querySelector('input').checked = true;
-  $('#ob-db-url').style.display    = card.dataset.dbMode === 'url'    ? '' : 'none';
-  $('#ob-db-fields').style.display = card.dataset.dbMode === 'fields' ? '' : 'none';
+  const mode = card.dataset.dbMode;
+  $('#ob-db-url').style.display    = mode === 'url'    ? '' : 'none';
+  $('#ob-db-fields').style.display = mode === 'fields' ? '' : 'none';
+  $('#ob-db-setup').textContent = mode === 'docker' ? 'Create local database' : 'Set up database';
 });
-$('#db-mode-cards .provider-card')?.classList.add('selected');
+
+// Probe Docker once; if present, surface the recommended "Local (automatic)"
+// mode and select it by default. Otherwise leave URL selected.
+async function initDbStep() {
+  wizardState.dbInit = true;
+  try {
+    const d = await rpc('dbDockerAvailable');
+    const note = $('#ob-db-docker-note');
+    if (d.available) {
+      const dockerCard = $('#ob-db-mode-docker');
+      dockerCard.hidden = false;
+      dockerCard.click();
+    } else if (note) {
+      note.hidden = false;
+      note.textContent = `Docker not detected (${d.reason || 'unavailable'}) — use a connection URL or local Postgres.`;
+    }
+  } catch { /* leave URL mode as the default */ }
+}
 
 function obDbParams() {
-  const isUrl = $('input[name="db-mode"]:checked').value === 'url';
-  if (isUrl) return { url: $('#ob-db-url-input').value.trim() };
+  if (dbMode() === 'url') return { url: $('#ob-db-url-input').value.trim() };
   return {
     host: $('#ob-db-host').value.trim(),
     port: Number($('#ob-db-port').value),
@@ -117,78 +189,97 @@ function obDbParams() {
   };
 }
 
-$('#ob-db-test')?.addEventListener('click', async () => {
-  const out = $('#ob-db-result');
-  out.hidden = false;
-  out.className = 'result';
-  out.textContent = 'testing…';
+function dbFlowInit(rows) {
+  const flow = $('#ob-db-flow');
+  flow.hidden = false;
+  flow.innerHTML = '';
+  rows.forEach(([id, label]) => flow.appendChild(dbFlowRow(id, label)));
+  return flow;
+}
+
+$('#ob-db-setup')?.addEventListener('click', async () => {
+  const btn = $('#ob-db-setup');
+  btn.disabled = true;
+  $('#ob-db-next').disabled = true;
+  const mode = dbMode();
   try {
-    const data = await rpc('testDbConnection', obDbParams());
-    out.textContent = JSON.stringify(data, null, 2);
-    out.classList.add(data.ok ? 'ok' : 'err');
-    if (data.ok && !data.pgvector) {
-      $('#ob-db-install-pgv').hidden = false;
-      $('#ob-db-migrate').hidden = true;
-      $('#ob-db-next').disabled = true;
-      out.textContent += '\n\npgvector is not installed yet. Click "Install pgvector".';
-    } else if (data.ok) {
-      $('#ob-db-install-pgv').hidden = true;
-      $('#ob-db-migrate').hidden = false;
-      out.textContent += '\n\npgvector is installed. Click "Run migrations" to finish.';
+    if (mode === 'docker') {
+      await runDockerFlow();
     } else {
-      $('#ob-db-install-pgv').hidden = true;
-      $('#ob-db-migrate').hidden = true;
-      $('#ob-db-next').disabled = true;
+      await runUrlFlow();
     }
-  } catch (err) {
-    out.textContent = `ERROR: ${err.message}`;
-    out.classList.add('err');
+  } finally {
+    btn.disabled = false;
   }
 });
 
-$('#ob-db-install-pgv')?.addEventListener('click', async () => {
-  const out = $('#ob-db-result');
-  out.textContent += '\n\nInstalling pgvector…';
+async function runDockerFlow() {
+  const flow = dbFlowInit([['provision', 'Create pgvector container'], ['migrate', 'Run migrations']]);
+  setFlowRow(flow, 'provision', { phase: 'active', detail: 'pulling image + starting…' });
   try {
-    const data = await rpc('ensurePgvector', obDbParams());
-    if (data.ok && data.installed) {
-      out.textContent += `\n✓ pgvector ${data.version} installed`;
-      $('#ob-db-install-pgv').hidden = true;
-      $('#ob-db-migrate').hidden = false;
-    } else {
-      out.textContent += `\n✗ ${data.error || 'unknown'} (${data.stage})`;
-    }
-  } catch (err) { out.textContent += `\nERROR: ${err.message}`; }
-});
+    const r = await rpc('dbProvisionDocker');
+    setFlowRow(flow, 'provision', { phase: 'done', detail: `${r.container} :${r.port}${r.reused ? ' (reused)' : ''}` });
+    setFlowRow(flow, 'migrate', { phase: 'done', detail: `${r.migrationsRan} migrations · pgvector ✓` });
+    await onDbReady({ pgvector: true, migrationsRan: r.migrationsRan, mode: 'docker' });
+  } catch (err) {
+    setFlowRow(flow, 'provision', { phase: 'error', detail: err.code || 'failed' });
+    toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
+  }
+}
 
-$('#ob-db-migrate')?.addEventListener('click', async () => {
-  const out = $('#ob-db-result');
-  out.textContent += '\n\nPersisting connection to ~/.sigil/.env…';
+async function runUrlFlow() {
+  const params = obDbParams();
+  const flow = dbFlowInit([['test', 'Test connection'], ['pgvector', 'Enable pgvector'], ['migrate', 'Run migrations']]);
+  // 1. test
+  setFlowRow(flow, 'test', { phase: 'active', detail: 'connecting…' });
+  let test;
   try {
-    const params = obDbParams();
+    test = await rpc('testDbConnection', params);
+  } catch (err) {
+    setFlowRow(flow, 'test', { phase: 'error', detail: err.code || 'failed' });
+    return toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
+  }
+  if (!test.ok) {
+    setFlowRow(flow, 'test', { phase: 'error', detail: test.code || test.stage || 'failed' });
+    return toast({ variant: 'error', message: test.error || 'connection failed', hint: test.fixHint, code: test.kind });
+  }
+  setFlowRow(flow, 'test', { phase: 'done', detail: `${test.provider} · ${test.connectMs}ms` });
+  // 2. pgvector
+  if (!test.pgvector) {
+    setFlowRow(flow, 'pgvector', { phase: 'active', detail: 'installing…' });
+    try {
+      const pg = await rpc('ensurePgvector', params);
+      if (!pg.ok || !pg.installed) throw Object.assign(new Error(pg.error || 'could not enable pgvector'), { hint: pg.fixHint });
+      setFlowRow(flow, 'pgvector', { phase: 'done', detail: pg.version ? `v${pg.version}` : 'enabled' });
+    } catch (err) {
+      setFlowRow(flow, 'pgvector', { phase: 'error', detail: err.code || 'failed' });
+      return toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
+    }
+  } else {
+    setFlowRow(flow, 'pgvector', { phase: 'done', detail: 'already enabled' });
+  }
+  // 3. persist + migrate
+  setFlowRow(flow, 'migrate', { phase: 'active', detail: 'writing env + migrating…' });
+  try {
     if (params.url) {
-      await rpc('writeEnv', { patch: {
-        SIGIL_DATABASE_URL: params.url,
-        SIGIL_DB_HOST: null, SIGIL_DB_PORT: null, SIGIL_DB_NAME: null, SIGIL_DB_USER: null, SIGIL_DB_PASSWORD: null,
-      } });
+      await rpc('writeEnv', { patch: { SIGIL_DATABASE_URL: params.url, SIGIL_DB_HOST: null, SIGIL_DB_PORT: null, SIGIL_DB_NAME: null, SIGIL_DB_USER: null, SIGIL_DB_PASSWORD: null } });
     } else {
-      await rpc('writeEnv', { patch: {
-        SIGIL_DB_HOST: params.host, SIGIL_DB_PORT: String(params.port),
-        SIGIL_DB_NAME: params.database, SIGIL_DB_USER: params.user, SIGIL_DB_PASSWORD: params.password,
-        SIGIL_DATABASE_URL: null,
-      } });
+      await rpc('writeEnv', { patch: { SIGIL_DB_HOST: params.host, SIGIL_DB_PORT: String(params.port), SIGIL_DB_NAME: params.database, SIGIL_DB_USER: params.user, SIGIL_DB_PASSWORD: params.password, SIGIL_DATABASE_URL: null } });
     }
-    out.textContent += '\n✓ env written. Running migrations…';
-    // Pass connection params so runMigrations uses a one-shot pool against
-    // the new URL — the daemon's existing pool is still bound to the
-    // pre-onboarding env (localhost:5432 by default).
-    const data = await rpc('runMigrations', params);
-    out.textContent += `\n✓ batch ${data.batchNo}: ${data.ran.length} migrations applied (${data.against})`;
-    $('#ob-db-next').disabled = false;
+    const m = await rpc('runMigrations', params);
+    setFlowRow(flow, 'migrate', { phase: 'done', detail: `batch ${m.batchNo} · ${m.ran.length} applied` });
+    await onDbReady({ pgvector: true, migrationsRan: m.ran.length, mode: dbMode() });
   } catch (err) {
-    out.textContent += `\n✗ ${err.message}`;
+    setFlowRow(flow, 'migrate', { phase: 'error', detail: err.code || 'failed' });
+    toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
   }
-});
+}
+
+async function onDbReady(data) {
+  $('#ob-db-next').disabled = false;
+  toast({ variant: 'success', message: 'Database ready.' });
+  await persistStep('DATABASE', 'DONE', data);
+}
 
 // ── LLM provider step ───────────────────────────────────────────────
 async function loadLlmProviders() {
@@ -243,9 +334,11 @@ $('#ob-llm-save')?.addEventListener('click', async () => {
       out.classList.add('ok');
       out.textContent += `\n✓ provider responded: "${test.response}"`;
       $('#ob-llm-next').disabled = false;
+      await persistStep('PROVIDER', 'DONE', { llmProvider: wizardState.llmProvider });
     } else {
       out.classList.add('err');
       out.textContent += `\n✗ test failed: ${test.error}`;
+      toast({ variant: 'error', message: test.error || 'LLM test failed', hint: test.fixHint, code: test.kind });
     }
   } catch (err) {
     out.classList.add('err');
@@ -396,7 +489,10 @@ $('#ob-emb-save')?.addEventListener('click', async () => {
     fields,
     out: $('#ob-emb-result'),
     conflictHost: $('#ob-emb-fields')?.parentElement,
-    onSuccess: () => { $('#ob-emb-next').disabled = false; },
+    onSuccess: () => {
+      $('#ob-emb-next').disabled = false;
+      persistStep('EMBEDDING', 'DONE', { provider: wizardState.embProvider });
+    },
   });
   if (!ok) $('#ob-emb-next').disabled = true;
 });
@@ -416,16 +512,32 @@ async function renderFinish() {
   } catch { /* ignore */ }
 }
 $('#ob-complete')?.addEventListener('click', async () => {
-  try { await rpc('markOnboardingComplete'); }
-  catch { /* ignore */ }
+  const installService = $('#ob-always-up')?.checked === true;
+  try {
+    const r = await rpc('markOnboardingComplete', { installService });
+    if (installService && r && r.serviceInstalled === false) {
+      toast({ variant: 'info', message: 'Could not install the always-up service on this platform.', hint: 'Sigil still auto-starts on first use; retry with `sigil service install`.' });
+    }
+  } catch { /* daemon restarts on complete — expected to drop */ }
   $('#onboarding').hidden = true;
-  refreshHealth();
+  // Daemon is handing off (restart / service). Give it a moment, then refresh.
+  setTimeout(() => refreshHealth(), 1500);
 });
 
 // ── Navigation between wizard steps ──────────────────────────────────
 document.addEventListener('click', (e) => {
   const n = e.target.closest('[data-ob-next]');
-  if (n) { e.preventDefault(); setOnbStep(n.dataset.obNext); return; }
+  if (n) {
+    e.preventDefault();
+    // Persist the step we're leaving (connectors is skippable — DONE if any
+    // tool connected, else SKIPPED). Provider/Embedding/Database persist on
+    // their own success handlers.
+    if (wizardState.step === 'connectors') {
+      persistStep('CONNECTORS', wizardState.connectedCount > 0 ? 'DONE' : 'SKIPPED', {});
+    }
+    setOnbStep(n.dataset.obNext);
+    return;
+  }
   const b = e.target.closest('[data-ob-back]');
   if (b) { e.preventDefault(); setOnbStep(b.dataset.obBack); return; }
 });

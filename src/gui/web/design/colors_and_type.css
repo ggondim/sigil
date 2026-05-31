@@ -1,0 +1,178 @@
+/* ============================================================
+   SIGIL DESIGN SYSTEM — colors_and_type.css
+   Dark, sharp-edged console. Blue brand mark, monospace data,
+   restrained status color. Import this file to inherit all tokens.
+   ============================================================ */
+
+/* ---- Webfonts ---------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ========================================================
+     COLOR — cool-neutral dark ramp
+     Surfaces are layered near-black; text is a desaturated
+     white ramp. Chroma is kept extremely low (cool grey).
+     ======================================================== */
+
+  /* Backgrounds / surfaces (low → high elevation) */
+  --bg-0:        #08090b;   /* app background, deepest */
+  --bg-1:        #0b0c0e;   /* page canvas */
+  --surface-1:   #101113;   /* card / panel */
+  --surface-2:   #151618;   /* row hover, inset, raised */
+  --surface-3:   #1b1d20;   /* active / pressed surface */
+
+  /* Borders / hairlines */
+  --border-1:    #1d1f23;   /* default hairline divider */
+  --border-2:    #292c31;   /* stronger border / card edge */
+  --border-strong: #3a3e44; /* focus-adjacent, input border hover */
+
+  /* Foreground text ramp */
+  --fg-1:        #f4f5f6;   /* primary text, headings, key values */
+  --fg-2:        #a2a5ab;   /* body, secondary text */
+  --fg-3:        #74777d;   /* labels, captions, footer */
+  --fg-4:        #50535a;   /* disabled, faint meta */
+
+  /* ---- Brand (from the Sigil mark gradient) ---- */
+  --brand:       #0084ff;   /* primary blue — active, links, focus */
+  --brand-deep:  #004ce6;   /* gradient anchor / pressed */
+  --brand-light: #99d5ff;   /* gradient highlight / on-dark accents */
+  --brand-tint:  rgba(0, 132, 255, 0.12);  /* selected/active wash */
+  --brand-ring:  rgba(0, 132, 255, 0.45);  /* focus ring */
+
+  /* ---- Status (semantic, used sparingly) ---- */
+  --ok:          #3ddc84;   /* connected / healthy */
+  --ok-tint:     rgba(61, 220, 132, 0.12);
+  --warn:        #f5b544;   /* degraded / attention */
+  --warn-tint:   rgba(245, 181, 68, 0.12);
+  --danger:      #ff5a52;   /* error / disconnected */
+  --danger-tint: rgba(255, 90, 82, 0.12);
+  --info:        var(--brand);
+
+  /* ========================================================
+     TYPE — Geist (UI) + Geist Mono (data / identifiers)
+     UI copy is grotesk; anything machine-derived (pids,
+     versions, hashes, ids, durations) is monospace.
+     ======================================================== */
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+
+  /* Type scale (px → rem at 16px base) */
+  --text-display: 2.25rem;  /* 36 — page hero (rare) */
+  --text-h1:      1.625rem; /* 26 — page title */
+  --text-h2:      1.125rem; /* 18 — section / card value */
+  --text-h3:      1rem;     /* 16 — sub-section */
+  --text-body:    0.9375rem;/* 15 — body copy */
+  --text-sm:      0.8125rem;/* 13 — table cells, meta */
+  --text-label:   0.6875rem;/* 11 — UPPERCASE eyebrow labels */
+  --text-xs:      0.625rem; /* 10 — micro meta */
+
+  /* Weights */
+  --w-regular: 400;
+  --w-medium:  500;
+  --w-semibold:600;
+  --w-bold:    700;
+
+  /* Tracking */
+  --track-label: 0.12em;   /* uppercase eyebrows */
+  --track-tight: -0.01em;  /* large headings */
+  --track-normal: 0;
+
+  /* Line heights */
+  --lh-tight: 1.15;
+  --lh-snug:  1.35;
+  --lh-body:  1.55;
+
+  /* ========================================================
+     GEOMETRY — sharp edges. Radius is near-zero by design.
+     ======================================================== */
+  --radius-0: 0px;     /* default — sharp */
+  --radius-1: 2px;     /* inputs, badges (barely softened) */
+  --radius-2: 3px;     /* the largest we ever go */
+
+  /* Borders */
+  --bw: 1px;
+
+  /* ========================================================
+     SPACING — 4px base grid
+     ======================================================== */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+
+  /* Layout */
+  --maxw: 1680px;          /* content max width */
+  --gutter: 32px;          /* page horizontal padding */
+  --nav-h: 64px;           /* top bar height */
+
+  /* ========================================================
+     ELEVATION — shadows are flat & subtle (console, not card UI)
+     ======================================================== */
+  --shadow-0: none;
+  --shadow-1: 0 1px 0 rgba(0,0,0,0.4);
+  --shadow-2: 0 8px 24px rgba(0,0,0,0.45);
+  --shadow-pop: 0 12px 40px rgba(0,0,0,0.6);
+
+  /* Focus */
+  --focus-ring: 0 0 0 1px var(--brand), 0 0 0 4px var(--brand-ring);
+
+  /* Motion — minimal, quick, no bounce */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-1: 90ms;
+  --dur-2: 150ms;
+}
+
+/* ============================================================
+   SEMANTIC ELEMENT STYLES — opt-in helpers
+   ============================================================ */
+
+.sig-display {
+  font-family: var(--font-sans);
+  font-size: var(--text-display);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+  color: var(--fg-1);
+}
+.sig-h1 {
+  font-family: var(--font-sans);
+  font-size: var(--text-h1);
+  font-weight: var(--w-bold);
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+  color: var(--fg-1);
+}
+.sig-h2 {
+  font-family: var(--font-sans);
+  font-size: var(--text-h2);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-snug);
+  color: var(--fg-1);
+}
+.sig-label {
+  font-family: var(--font-sans);
+  font-size: var(--text-label);
+  font-weight: var(--w-semibold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.sig-body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+.sig-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--w-medium);
+  color: var(--fg-1);
+  font-feature-settings: 'ss01' on, 'zero' on;
+}

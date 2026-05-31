@@ -5,45 +5,45 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* ── Color tokens (OKLCH-style flat dark) ──────────────────────────── */
-  --bg-canvas:      #07080a;          /* page background */
-  --bg-surface:     #0f1115;          /* card / panel */
-  --bg-surface-2:   #161920;          /* nested panel / hover */
-  --bg-surface-3:   #1d2129;          /* tertiary */
-  --bg-overlay:     rgba(7,8,10,0.78);
+  /* ── Re-skinned onto the Sigil design system ───────────────────────────
+     design/colors_and_type.css (linked BEFORE this file) owns the brand:
+     palette, Geist/Geist Mono type, 4px spacing, sharp geometry. Here we
+     re-point this dashboard's local token names at those design tokens, so
+     every existing rule adopts the brand with no markup churn.
 
-  --fg:             #e8eaee;
-  --fg-2:           #b6bcc7;
-  --fg-3:           #828893;
-  --fg-4:           #565b66;
+     Names that ALSO exist in the design tokens (--fg-2/3/4, --border-2,
+     --border-strong, --ok, --warn, --font-mono, --focus-ring) are deliberately
+     NOT redefined here — the design values flow through unchanged. */
 
-  --border:         #1f2229;
-  --border-2:       #2c3038;
-  --border-strong:  #3a3f49;
+  /* surfaces (app-local aliases → design surfaces) */
+  --bg-canvas:    var(--bg-1);
+  --bg-surface:   var(--surface-1);
+  --bg-surface-2: var(--surface-2);
+  --bg-surface-3: var(--surface-3);
+  --bg-overlay:   rgba(8, 9, 11, 0.78);
 
-  --accent:         #5e8cff;
-  --accent-2:       #466ce0;
-  --accent-fg:      #ffffff;
+  /* text + borders */
+  --fg:           var(--fg-1);
+  --border:       var(--border-1);
 
-  --ok:             #4ec46c;
-  --ok-bg:          rgba(78,196,108,0.10);
-  --warn:           #e8a94a;
-  --warn-bg:        rgba(232,169,74,0.10);
-  --err:            #e26464;
-  --err-bg:         rgba(226,100,100,0.10);
-  --info-bg:        rgba(94,140,255,0.10);
+  /* brand / accent — the only chromatic UI color is brand blue */
+  --accent:       var(--brand);
+  --accent-2:     var(--brand-deep);
+  --accent-fg:    #ffffff;
 
-  /* ── Spacing scale (multiples of 4px) ──────────────────────────────── */
-  --s-1: 4px;
-  --s-2: 8px;
-  --s-3: 12px;
-  --s-4: 16px;
-  --s-5: 24px;
-  --s-6: 32px;
-  --s-7: 48px;
-  --s-8: 64px;
+  /* status: foreground --ok/--warn come from design tokens; backgrounds map
+     to the design's restrained tints (used only as small dot/row washes) */
+  --ok-bg:        var(--ok-tint);
+  --warn-bg:      var(--warn-tint);
+  --err:          var(--danger);
+  --err-bg:       var(--danger-tint);
+  --info-bg:      var(--brand-tint);
 
-  /* ── Type scale ────────────────────────────────────────────────────── */
+  /* spacing → design 4px grid */
+  --s-1: var(--sp-1); --s-2: var(--sp-2); --s-3: var(--sp-3); --s-4: var(--sp-4);
+  --s-5: var(--sp-5); --s-6: var(--sp-6); --s-7: var(--sp-7); --s-8: var(--sp-8);
+
+  /* type scale (px; hierarchy preserved) */
   --t-xs:   11px;
   --t-sm:   12px;
   --t-base: 13px;
@@ -55,21 +55,19 @@
   --lh:     1.5;
   --lh-tight: 1.25;
 
-  /* ── Fonts ─────────────────────────────────────────────────────────── */
-  --font-ui:   ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text",
-               system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace;
+  /* fonts → Geist (UI) / Geist Mono (data). --font-mono flows from design. */
+  --font-ui: var(--font-sans);
 
-  /* ── Layout ────────────────────────────────────────────────────────── */
-  --container:   1200px;
-  --sidebar:     232px;
-  --header-h:    52px;
-
-  /* ── Misc ──────────────────────────────────────────────────────────── */
-  --focus-ring: 0 0 0 2px var(--accent);
+  /* layout — header height matches the design's 64px top bar */
+  --container: 1200px;
+  --sidebar:   232px;
+  --header-h:  var(--nav-h);
 }
 
 * { box-sizing: border-box; }
+/* `hidden` must win over component display rules (e.g. .provider-card flex),
+   so JS-toggled cards/panes (Docker mode when unavailable) actually hide. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg-canvas);
@@ -881,3 +879,69 @@ footer .footer-inner {
 .flex-row { display: flex; align-items: center; gap: var(--s-3); }
 .text-sm { font-size: var(--t-sm); }
 .text-xs { font-size: var(--t-xs); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Design-system components (Phase 7/8) — toasts, connector cards, DB flow.
+   All sharp-edged, hairline-bordered, status as a 7px square + word.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Toasts ─────────────────────────────────────────────────────────────── */
+.toast-stack {
+  position: fixed; top: var(--s-4); right: var(--s-4); z-index: 100;
+  display: flex; flex-direction: column; gap: var(--s-2); max-width: 400px;
+}
+.toast {
+  display: flex; gap: var(--s-3); align-items: flex-start;
+  background: var(--surface-1); border: 1px solid var(--border-2);
+  padding: var(--s-3) var(--s-4); box-shadow: var(--shadow-pop);
+}
+.toast-sq { width: 7px; height: 7px; margin-top: 6px; flex: none; background: var(--fg-3); }
+.toast-error .toast-sq { background: var(--danger); }
+.toast-success .toast-sq { background: var(--ok); }
+.toast-info .toast-sq { background: var(--brand); }
+.toast-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.toast-msg { font-size: var(--t-base); color: var(--fg-1); line-height: 1.4; }
+.toast-hint { font-size: var(--t-sm); color: var(--fg-3); line-height: 1.4; }
+.toast-code {
+  align-self: flex-start; margin-top: 2px; font-family: var(--font-mono);
+  font-size: var(--t-xs); color: var(--fg-4); border: 1px solid var(--border-2);
+  padding: 1px 6px; border-radius: var(--radius-1);
+}
+.toast-x { background: none; border: none; color: var(--fg-4); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+.toast-x:hover { color: var(--fg-2); }
+
+/* ── Connector cards (click-to-connect) ─────────────────────────────────── */
+.connector-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--s-3); margin-top: var(--s-4); }
+.connector-card {
+  display: flex; flex-direction: column; gap: var(--s-2);
+  border: 1px solid var(--border-2); background: var(--surface-1);
+  padding: var(--s-4); border-radius: var(--radius-0);
+}
+.connector-card .cc-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.connector-card .cc-name { font-size: var(--t-md); font-weight: var(--w-semibold); color: var(--fg-1); }
+.connector-card .cc-hint { font-size: var(--t-sm); color: var(--fg-3); line-height: 1.45; }
+.connector-card.unavailable { opacity: 0.55; }
+.connector-card .cc-actions { margin-top: var(--s-2); }
+
+/* status square + word (shared) */
+.status-dot { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-sm); font-weight: 500; }
+.status-dot .sq { width: 7px; height: 7px; flex: none; background: var(--fg-3); }
+.status-dot.ok { color: var(--ok); } .status-dot.ok .sq { background: var(--ok); }
+.status-dot.warn { color: var(--warn); } .status-dot.warn .sq { background: var(--warn); }
+.status-dot.danger { color: var(--danger); } .status-dot.danger .sq { background: var(--danger); }
+.status-dot.muted { color: var(--fg-3); } .status-dot.muted .sq { background: var(--fg-4); }
+
+/* ── DB guided flow (linear status rows, replaces button-toggling) ──────── */
+.db-flow { border: 1px solid var(--border-2); background: var(--surface-1); margin-top: var(--s-4); }
+.db-flow-row {
+  display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: var(--s-3);
+  padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border-1);
+}
+.db-flow-row:last-child { border-bottom: none; }
+.db-flow-row .step-sq { width: 8px; height: 8px; background: var(--fg-4); justify-self: center; }
+.db-flow-row.active .step-sq { background: var(--brand); }
+.db-flow-row.done .step-sq { background: var(--ok); }
+.db-flow-row.error .step-sq { background: var(--danger); }
+.db-flow-row .step-label { font-size: var(--t-base); color: var(--fg-2); }
+.db-flow-row.done .step-label, .db-flow-row.active .step-label { color: var(--fg-1); }
+.db-flow-row .step-detail { font-family: var(--font-mono); font-size: var(--t-sm); color: var(--fg-3); }
