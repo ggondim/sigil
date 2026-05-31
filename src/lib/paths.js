@@ -49,6 +49,10 @@ export const SIGIL_HOOK_DEDUP = join(SIGIL_HOME, '.hook-dedup.json');
 export const SIGIL_DAEMON_SOCK = join(SIGIL_HOME, 'sock');
 export const SIGIL_DAEMON_PID  = join(SIGIL_HOME, 'sigild.pid');
 export const SIGIL_DAEMON_LOG  = join(SIGIL_HOME, 'sigild.log');
+export const SIGIL_HEARTBEAT   = join(SIGIL_HOME, 'heartbeat.json');
+
+// Onboarding — explicit persisted wizard state (see src/onboarding/state.js)
+export const SIGIL_ONBOARDING_STATE = join(SIGIL_HOME, 'onboarding-state.json');
 
 // GUI
 export const SIGIL_GUI_TOKEN     = join(SIGIL_HOME, 'gui.token');

@@ -55,22 +55,26 @@ const config = {
     openrouterTitle: process.env.EMBEDDING_OPENROUTER_TITLE || process.env.LLM_OPENROUTER_TITLE || 'Sigil',
   },
 
+  // Env-derived getters — same rationale as `embedding` above. The onboarding
+  // wizard writes ~/.sigil/.env mid-session and reloads process.env, so plain
+  // values would freeze at boot-time env and `testLlm` would test the old
+  // provider instead of the one the user just picked.
   llm: {
-    provider: process.env.LLM_PROVIDER || '',
+    get provider() { return process.env.LLM_PROVIDER || ''; },
 
     // OpenAI
-    openaiApiKey: process.env.OPENAI_API_KEY || '',
-    openaiModel: process.env.LLM_OPENAI_MODEL || 'gpt-4o-mini',
+    get openaiApiKey() { return process.env.OPENAI_API_KEY || ''; },
+    get openaiModel() { return process.env.LLM_OPENAI_MODEL || 'gpt-4o-mini'; },
 
     // Ollama
-    ollamaHost: process.env.LLM_OLLAMA_HOST || process.env.OLLAMA_HOST || 'http://localhost:11434',
-    ollamaModel: process.env.LLM_OLLAMA_MODEL || 'qwen2.5:7b',
+    get ollamaHost() { return process.env.LLM_OLLAMA_HOST || process.env.OLLAMA_HOST || 'http://localhost:11434'; },
+    get ollamaModel() { return process.env.LLM_OLLAMA_MODEL || 'qwen2.5:7b'; },
 
     // Claude CLI (dev — uses your Claude Code subscription)
-    cliModel: process.env.LLM_CLI_MODEL || 'haiku',
+    get cliModel() { return process.env.LLM_CLI_MODEL || 'haiku'; },
 
     // Anthropic
-    apiKey: process.env.ANTHROPIC_API_KEY || '',
+    get apiKey() { return process.env.ANTHROPIC_API_KEY || ''; },
 
     // OpenRouter — OpenAI-compatible gateway; one key, namespaced models
     // like "anthropic/claude-sonnet-latest", "openai/gpt-mini-latest", etc.
@@ -79,19 +83,19 @@ const config = {
     // JSON output, ~500ms typical latency. Beats Claude Haiku 2× on cost
     // and 5× on context while matching reasoning + JSON reliability for
     // Sigil's call types (extraction, AUDM, classifier, router, synthesis).
-    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
-    openrouterModel: process.env.LLM_OPENROUTER_MODEL || 'google/gemini-flash-latest',
-    openrouterBaseUrl: process.env.LLM_OPENROUTER_BASE_URL || '',
-    openrouterReferer: process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil',
-    openrouterTitle: process.env.LLM_OPENROUTER_TITLE || 'Sigil',
+    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || ''; },
+    get openrouterModel() { return process.env.LLM_OPENROUTER_MODEL || 'google/gemini-flash-latest'; },
+    get openrouterBaseUrl() { return process.env.LLM_OPENROUTER_BASE_URL || ''; },
+    get openrouterReferer() { return process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil'; },
+    get openrouterTitle() { return process.env.LLM_OPENROUTER_TITLE || 'Sigil'; },
 
     // Per-task model overrides (use provider-specific model names)
-    extractionModel: process.env.LLM_EXTRACTION_MODEL || '',
-    decisionModel: process.env.LLM_DECISION_MODEL || '',
-    entityModel: process.env.LLM_ENTITY_MODEL || '',
+    get extractionModel() { return process.env.LLM_EXTRACTION_MODEL || ''; },
+    get decisionModel() { return process.env.LLM_DECISION_MODEL || ''; },
+    get entityModel() { return process.env.LLM_ENTITY_MODEL || ''; },
 
-    maxRetries: Number(process.env.LLM_MAX_RETRIES) || 3,
-    cliTimeout: Number(process.env.LLM_CLI_TIMEOUT) || 120000,
+    get maxRetries() { return Number(process.env.LLM_MAX_RETRIES) || 3; },
+    get cliTimeout() { return Number(process.env.LLM_CLI_TIMEOUT) || 120000; },
   },
 
   output: {
