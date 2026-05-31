@@ -562,7 +562,7 @@ function setRoute(name) {
   if (name === 'health')   refreshHealth();
   if (name === 'kb')       refreshKb();
   if (name === 'methods')  refreshMethods();
-  if (name === 'settings') refreshEnv();
+  if (name === 'settings') { refreshEnv(); refreshSettingsClients(); }
   if (name === 'devices')  refreshDevices();
   if (name === 'activity') { ensureActivityWs(); loadTraces(); }
 }
@@ -674,6 +674,46 @@ async function refreshEnv() {
   } catch (err) {
     $('#env-table tbody').innerHTML = `<tr><td colspan="2" class="empty">${escape(err.message)}</td></tr>`;
   }
+}
+
+// ── Settings: coding agents ──────────────────────────────────────────
+// Same flow as the onboarding CONNECTORS step, surfaced post-onboarding so
+// users who skipped the step (or completed setup before this card existed)
+// can still wire up Claude Code / Cursor / Codex / Kiro / Hermes.
+async function refreshSettingsClients() {
+  const host = $('#settings-connectors');
+  if (!host) return;
+  try {
+    const { connectors } = await rpc('listConnectors');
+    host.innerHTML = '';
+    if (!connectors.length) {
+      host.innerHTML = '<div class="muted">no agents registered</div>';
+      return;
+    }
+    connectors.forEach((c) => host.appendChild(connectorCard(c, onSettingsClientAction)));
+  } catch (err) {
+    host.innerHTML = `<div class="muted">could not load agents: ${escape(err.message)}</div>`;
+  }
+}
+
+async function onSettingsClientAction(id, action) {
+  const host = $('#settings-connectors');
+  const card = host?.querySelector(`[data-id="${id}"]`);
+  if (action === 'disconnect') {
+    try {
+      await rpc('disconnectConnector', { id });
+      toast({ variant: 'success', message: `${id} disconnected` });
+    } catch (err) { toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code }); }
+    return refreshSettingsClients();
+  }
+  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onSettingsClientAction));
+  try {
+    await rpc('connectConnector', { id });
+    toast({ variant: 'success', message: `${id} connected` });
+  } catch (err) {
+    toast({ variant: 'error', message: err.message || `could not connect ${id}`, hint: err.hint, code: err.code });
+  }
+  return refreshSettingsClients();
 }
 
 // ── Settings: live provider switcher (LLM + embedding) ───────────────
