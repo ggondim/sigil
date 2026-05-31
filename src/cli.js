@@ -84,14 +84,34 @@ if (!command) {
 async function launchAndOpenBrowser() {
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const { getGuiToken } = await import('./daemon/gui-token.js');
+  const { canOpenBrowser, openBrowser } = await import('./lib/open-browser.js');
   process.stderr.write('[sigil] starting daemon…\n');
   const client = await connectOrStartDaemon({ quiet: true });
   const { data } = await client.call('ping', {});
-  await client.close();
 
   const { default: config } = await import('./config.js');
   const token = await getGuiToken();
   const url = `http://${config.http.host}:${config.http.port}/?t=${token}`;
+
+  // Headless (server / SSH / CI / no display): the browser wizard isn't
+  // reachable — print the URL and fall back to the terminal `init` flow if
+  // setup isn't done yet.
+  if (!canOpenBrowser()) {
+    let setupComplete = false;
+    try { const st = await client.call('onboardingState', {}); setupComplete = st.data?.setupComplete; }
+    catch { /* daemon may be mid-init */ }
+    await client.close();
+    console.log('');
+    console.log(`  Sigil is running on this machine (pid ${data.pid}).`);
+    console.log(`  GUI URL (open from a machine with a browser): ${url}`);
+    if (!setupComplete) {
+      console.log('  No display detected — continuing setup in the terminal.\n');
+      return runInit([]);
+    }
+    return;
+  }
+
+  await client.close();
   console.log('');
   console.log(`  Sigil is running on this machine.`);
   console.log('');
@@ -101,15 +121,7 @@ async function launchAndOpenBrowser() {
   console.log(`  Opening the dashboard in your browser…`);
   console.log(`  (Press Ctrl+C at any time. The daemon stays running.)`);
   console.log('');
-
-  // Cross-platform browser open. Fire and forget; user sees the URL above.
-  const opener = process.platform === 'darwin' ? 'open'
-              : process.platform === 'win32'  ? 'start'
-              : 'xdg-open';
-  const { spawn } = await import('node:child_process');
-  try {
-    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
-  } catch { /* user can still paste from terminal */ }
+  openBrowser(url);
 }
 
 const commands = {
@@ -134,6 +146,7 @@ const commands = {
   why: runWhy,
   kind: runKind,
   daemon: runDaemonVerb,
+  service: runServiceVerb,
   pair: runPairVerb,
   join: runJoinVerb,
 };
@@ -141,6 +154,11 @@ const commands = {
 async function runDaemonVerb(args) {
   const { runDaemon } = await import('./cli-handlers/daemon.js');
   return runDaemon(args);
+}
+
+async function runServiceVerb(args) {
+  const { runService } = await import('./cli-handlers/service.js');
+  return runService(args);
 }
 
 async function runPairVerb(args) {
@@ -318,13 +336,11 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
 
   // ── Embeddings ────────────────────────────────────────────────────────────
 
+  const { EMBEDDING_PROVIDERS: EMBEDDING_CATALOG, EMBEDDING_DEFAULTS } =
+    await import('./lib/llm/provider-catalog.js');
   const embeddingProvider = await select({
     message: 'Embedding provider (for semantic search)',
-    options: [
-      { value: 'ollama',     label: 'Ollama',     hint: 'nomic-embed-text — free, runs locally' },
-      { value: 'openai',     label: 'OpenAI',     hint: 'text-embedding-3-large — requires API key' },
-      { value: 'openrouter', label: 'OpenRouter', hint: 'gateway — one key for LLM + embeddings; uses vendor/model names' },
-    ],
+    options: EMBEDDING_CATALOG.map((p) => ({ value: p.id, label: p.label, hint: p.hint })),
     initialValue: existing.EMBEDDING_PROVIDER || (hasOllama ? 'ollama' : (openrouterKey ? 'openrouter' : 'openai')),
   });
   if (isCancel(embeddingProvider)) { cancel('Setup cancelled.'); process.exit(0); }
@@ -346,14 +362,10 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   // nothing while data sat untouched in the DB. We also warn loudly when the
   // dimensions change, because that requires re-embedding every existing fact
   // (which sigil init does not do — only `sigil reset` followed by re-ingest).
-  const embeddingDefaults = {
-    ollama: { model: 'nomic-embed-text', dimensions: 768 },
-    openai: { model: 'text-embedding-3-large', dimensions: 1024 },
-    // OpenRouter proxies the same OpenAI text-embedding-3-large under a
-    // namespaced model id. 1024d via Matryoshka truncation, same as the
-    // direct-OpenAI path so the DB schema lines up.
-    openrouter: { model: 'openai/text-embedding-3-large', dimensions: 1024 },
-  };
+  // Model + dimension defaults come from the shared catalog (EMBEDDING_DEFAULTS),
+  // so the CLI and GUI can never disagree. OpenRouter proxies the same OpenAI
+  // text-embedding-3-large at 1024d (Matryoshka) so the DB schema lines up.
+  const embeddingDefaults = EMBEDDING_DEFAULTS;
   const priorProvider = existing.EMBEDDING_PROVIDER;
   const providerChanged = priorProvider && priorProvider !== embeddingProvider;
 
@@ -722,6 +734,9 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   finalEnv.DEFAULT_NAMESPACE = namespace;
   finalEnv.SIGIL_ENCRYPTION_KEY = encryptionKey;
   finalEnv.SIGIL_DB_TYPE = 'postgres';
+  // Mark setup done so the GUI's onboarding state reconciles to COMPLETED
+  // (the wizard won't re-show after a terminal `sigil init`).
+  finalEnv.SIGIL_SETUP_COMPLETE = 'true';
   if (dbMode === 'url') {
     finalEnv.SIGIL_DATABASE_URL = urlValue;
     // Strip stale discrete-mode keys so the driver selector unambiguously

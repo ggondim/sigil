@@ -123,6 +123,16 @@ async function cmdStop() {
     console.log('sigild is not running');
     return;
   }
+  // If an always-up service is installed, a plain SIGTERM gets resurrected by
+  // launchd KeepAlive / systemd Restart=always. Tell the user the real lever.
+  try {
+    const { isServiceInstalled } = await import('../supervisor/index.js');
+    if (await isServiceInstalled()) {
+      console.log('sigild is managed by the always-up service — it will auto-restart after a stop.');
+      console.log('To keep it down, run:  sigil service stop   (re-enable with `sigil service start`)');
+      return;
+    }
+  } catch { /* supervisor unavailable — fall through to a normal stop */ }
   try {
     process.kill(pid, 'SIGTERM');
   } catch (err) {

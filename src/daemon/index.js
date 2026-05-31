@@ -1,7 +1,7 @@
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 
-import { SIGIL_DAEMON_LOG } from '../lib/paths.js';
+import { SIGIL_DAEMON_LOG, SIGIL_HEARTBEAT } from '../lib/paths.js';
 import {
   detectRunningDaemon,
   ensureSigilHome,
@@ -55,6 +55,13 @@ export async function startDaemon({ foreground = false } = {}) {
   // and non-blocking: the daemon stays up (Claude keeps working) and the flag
   // feeds `status` → GUI banner. Skipped for lite-followers (no local DB).
   if (config.network.mode !== 'lite-follower') {
+    // If the configured DB is our local Docker Postgres and it's stopped (e.g.
+    // after a reboot), start it before probing. Best-effort, never blocks boot.
+    try {
+      const { ensureLocalPostgresRunning } = await import('../db/provision/docker.js');
+      const started = await ensureLocalPostgresRunning();
+      if (started.started) log('started local sigil-postgres container');
+    } catch { /* docker absent / unrelated DB — ignore */ }
     probeDbHealth(log);
   }
   let http = null;
@@ -107,11 +114,32 @@ export async function startDaemon({ foreground = false } = {}) {
     }
   }
 
+  // Heartbeat: a small liveness file the supervisor/CLI/GUI read to tell
+  // "running" from "stale pidfile". Refreshed every 15s; removed on shutdown.
+  const pkgVersion = await readPkgVersion();
+  const writeHeartbeat = () => {
+    try {
+      writeFileSync(SIGIL_HEARTBEAT, JSON.stringify({
+        pid: process.pid,
+        version: pkgVersion,
+        node: process.version,
+        startedAt: STARTED_AT,
+        ts: Date.now(),
+        supervised: process.env.SIGIL_SUPERVISED === '1',
+      }), 'utf8');
+    } catch { /* best-effort */ }
+  };
+  writeHeartbeat();
+  const heartbeatTimer = setInterval(writeHeartbeat, 15_000);
+  heartbeatTimer.unref();
+
   // Lazy-init guard: handlers that touch the DB open the connection on
   // first use (see handlers/*). On shutdown we destroy the pool if it
   // was ever opened.
   installShutdownHooks(async (signal) => {
     log(`received ${signal}, shutting down`);
+    clearInterval(heartbeatTimer);
+    try { rmSync(SIGIL_HEARTBEAT, { force: true }); } catch { /* ignore */ }
     await socket.close();
     if (http) await http.close();
     if (netEnabled) {
@@ -145,6 +173,17 @@ export async function startDaemon({ foreground = false } = {}) {
 // and logs loudly on failure. Never throws, never blocks startup — a down DB
 // must not stop the daemon (so `sigil` keeps responding and the user gets a
 // clear signal rather than silent empty memory).
+async function readPkgVersion() {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { PKG_ROOT } = await import('../lib/paths.js');
+    return JSON.parse(await readFile(join(PKG_ROOT, 'package.json'), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function probeDbHealth(log) {
   try {
     const { default: cortexDb } = await import('../db/cortex.js');

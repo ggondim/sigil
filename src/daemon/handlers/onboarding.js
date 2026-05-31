@@ -10,176 +10,44 @@
  * All RPC methods here are LOCAL_ONLY by design — even on a
  * lite-follower the wizard runs on *this* device.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-
-import { SIGIL_ENV_PATH } from '../../lib/paths.js';
-
-// Provider field schemas. Each entry is what the GUI renders as a form
-// to capture provider credentials. Keeps the existing CLI provider files
-// untouched.
-const LLM_PROVIDERS = [
-  {
-    id: 'claude-cli',
-    label: 'Claude Code',
-    hint: 'Uses your existing Claude Code subscription — no extra API key.',
-    recommended: true,
-    fields: [],
-    env: { LLM_PROVIDER: 'claude-cli' },
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    hint: 'One API key for many models (Anthropic, OpenAI, Gemini, …). Cheapest default.',
-    fields: [
-      { name: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', type: 'password', placeholder: 'sk-or-…' },
-      { name: 'LLM_OPENROUTER_MODEL', label: 'Model (optional)', type: 'text', placeholder: 'google/gemini-flash-latest', optional: true },
-    ],
-    env: { LLM_PROVIDER: 'openrouter' },
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    hint: 'Direct OpenAI access. Requires sk-… key with chat + embeddings.',
-    fields: [
-      { name: 'OPENAI_API_KEY', label: 'OpenAI API key', type: 'password', placeholder: 'sk-…' },
-      { name: 'LLM_OPENAI_MODEL', label: 'Model (optional)', type: 'text', placeholder: 'gpt-4o-mini', optional: true },
-    ],
-    env: { LLM_PROVIDER: 'openai' },
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    hint: 'Direct Anthropic API access.',
-    fields: [
-      { name: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', type: 'password', placeholder: 'sk-ant-…' },
-    ],
-    env: { LLM_PROVIDER: 'anthropic' },
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    hint: 'Local Ollama install. Free + private but slower on small machines.',
-    fields: [
-      { name: 'LLM_OLLAMA_HOST', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' },
-      { name: 'LLM_OLLAMA_MODEL', label: 'Model', type: 'text', placeholder: 'qwen2.5:7b' },
-    ],
-    env: { LLM_PROVIDER: 'ollama' },
-  },
-];
-
-const EMBEDDING_PROVIDERS = [
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    hint: 'text-embedding-3-large @ 1024 dimensions. Best out-of-the-box quality.',
-    recommended: true,
-    fields: [
-      { name: 'OPENAI_API_KEY', label: 'OpenAI API key', type: 'password', placeholder: 'sk-…', sharedWith: 'llm' },
-    ],
-    env: {
-      EMBEDDING_PROVIDER: 'openai',
-      EMBEDDING_MODEL: 'text-embedding-3-large',
-      EMBEDDING_DIMENSIONS: '1024',
-    },
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama (nomic-embed-text)',
-    hint: '768-dim local embeddings. Free, no key. Lower retrieval quality than OpenAI.',
-    fields: [
-      { name: 'OLLAMA_HOST', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' },
-    ],
-    env: {
-      EMBEDDING_PROVIDER: 'ollama',
-      EMBEDDING_MODEL: 'nomic-embed-text',
-      EMBEDDING_DIMENSIONS: '768',
-    },
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    hint: 'Uses OpenRouter as an embedding gateway. Reuses your LLM key.',
-    fields: [
-      { name: 'OPENROUTER_API_KEY', label: 'OpenRouter API key', type: 'password', placeholder: 'sk-or-…', sharedWith: 'llm' },
-    ],
-    env: {
-      EMBEDDING_PROVIDER: 'openrouter',
-      EMBEDDING_MODEL: 'openai/text-embedding-3-large',
-      EMBEDDING_DIMENSIONS: '1024',
-    },
-  },
-];
-
-function readEnvRaw() {
-  if (!existsSync(SIGIL_ENV_PATH)) return {};
-  const raw = readFileSync(SIGIL_ENV_PATH, 'utf8');
-  const out = {};
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/i);
-    if (!m) continue;
-    const v = m[2].trim();
-    out[m[1]] = (v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))
-      ? v.slice(1, -1)
-      : v;
-  }
-  return out;
-}
-
-function writeEnvKeys(patch) {
-  const cur = readEnvRaw();
-  const next = { ...cur, ...patch };
-  // Drop nulls (means "remove this key")
-  for (const k of Object.keys(patch)) {
-    if (patch[k] === null || patch[k] === undefined) delete next[k];
-  }
-  mkdirSync(dirname(SIGIL_ENV_PATH), { recursive: true });
-  const header = `# Sigil — updated ${new Date().toISOString().slice(0, 10)}\n`;
-  const body = Object.entries(next)
-    .map(([k, v]) => `${k}=${/[\s#"']/.test(String(v)) ? `"${String(v).replace(/"/g, '\\"')}"` : v}`)
-    .join('\n');
-  writeFileSync(SIGIL_ENV_PATH, header + body + '\n', 'utf8');
-}
+import { readEnvRaw, writeEnvKeys } from '../../lib/env-file.js';
+// Provider field schemas live in one catalog shared by the CLI init flow and
+// the GUI wizard/settings — see src/lib/llm/provider-catalog.js.
+import { LLM_PROVIDERS, EMBEDDING_PROVIDERS } from '../../lib/llm/provider-catalog.js';
+// Explicit, persisted onboarding state machine — see src/onboarding/state.js.
+import { loadState, saveState, advance, reconcile, defaultState, legacyShape } from '../../onboarding/state.js';
 
 export function registerOnboarding(registry) {
+  // Returns the persisted onboarding machine, reconciled against ground truth
+  // (env + DB probe). Also returns the LEGACY top-level shape the currently
+  // shipped GUI reads (data.setupComplete, data.steps.{database,llm,embedding});
+  // the new GUI reads `data.machine`. Persists only when reconcile changed it.
   registry.register('onboardingState', async () => {
-    const env = readEnvRaw();
-    const dbConfigured = Boolean(env.SIGIL_DATABASE_URL || env.SIGIL_DB_HOST);
-    const llmConfigured = Boolean(env.LLM_PROVIDER);
-    const embConfigured = Boolean(env.EMBEDDING_PROVIDER);
-    const setupComplete = env.SIGIL_SETUP_COMPLETE === 'true';
+    const loaded = loadState();
+    const before = JSON.stringify(loaded);
+    const machine = await reconcile(loaded);
+    if (JSON.stringify(machine) !== before) saveState(machine);
+    return { ...legacyShape(machine), machine };
+  });
 
-    let dbReady = false;
-    let dbPgvector = false;
-    let migrationsRan = 0;
-    if (dbConfigured) {
-      try {
-        const { default: cortexDb } = await import('../../db/cortex.js');
-        await cortexDb.raw('SELECT 1');
-        const ext = await cortexDb.raw("SELECT extname FROM pg_extension WHERE extname = 'vector'");
-        dbPgvector = ext.rows.length > 0;
-        const [migrated] = await cortexDb('knex_migrations').count('* as n').catch(() => [{ n: 0 }]);
-        migrationsRan = Number(migrated?.n ?? 0);
-        dbReady = dbPgvector && migrationsRan > 0;
-      } catch { /* db not reachable */ }
-    }
+  // Guarded save-on-advance from the wizard. Throws AppError on illegal
+  // transitions (serialized to a clean {code,message,hint} by the RPC layer).
+  registry.register('onboardingAdvance', async (params = {}) => {
+    const next = advance(loadState(), {
+      step: params.step,
+      status: params.status,
+      data: params.data,
+      error: params.error,
+    });
+    saveState(next);
+    return { ...legacyShape(next), machine: next };
+  });
 
-    return {
-      setupComplete,
-      env: {
-        llmProvider: env.LLM_PROVIDER || null,
-        embeddingProvider: env.EMBEDDING_PROVIDER || null,
-        embeddingModel: env.EMBEDDING_MODEL || null,
-        embeddingDim: env.EMBEDDING_DIMENSIONS || null,
-        hasDatabaseUrl: Boolean(env.SIGIL_DATABASE_URL),
-        hasDiscreteDb: Boolean(env.SIGIL_DB_HOST),
-      },
-      steps: {
-        database:   { done: dbReady, configured: dbConfigured, pgvector: dbPgvector, migrationsRan },
-        llm:        { done: llmConfigured, provider: env.LLM_PROVIDER || null },
-        embedding:  { done: embConfigured, provider: env.EMBEDDING_PROVIDER || null },
-      },
-    };
+  // Re-run setup (Settings → re-onboard): reset to a fresh machine.
+  registry.register('onboardingReset', async () => {
+    const fresh = saveState(defaultState());
+    writeEnvKeys({ SIGIL_SETUP_COMPLETE: null });
+    return { ...legacyShape(fresh), machine: fresh };
   });
 
   registry.register('listLlmProviders',       async () => ({ providers: LLM_PROVIDERS }));
@@ -307,14 +175,31 @@ export function registerOnboarding(registry) {
     }
   });
 
-  registry.register('markOnboardingComplete', async () => {
+  registry.register('markOnboardingComplete', async (params = {}) => {
     writeEnvKeys({ SIGIL_SETUP_COMPLETE: 'true' });
+    // Dual-write: mark the FINISH step DONE in the machine so the new GUI and
+    // the legacy env flag agree. reconcile() also honors the env flag, but
+    // persisting here keeps the file authoritative immediately.
+    try {
+      const reconciled = await reconcile(loadState());
+      saveState(advance(reconciled, { step: 'FINISH', status: 'DONE' }));
+    } catch { /* never block completion on a state write */ }
+    // Optional: install the always-up OS service as part of finishing. Best-
+    // effort — onboarding still completes if the platform is unsupported.
+    let serviceInstalled = false;
+    if (params.installService) {
+      try {
+        const { installServiceUnit } = await import('../../supervisor/index.js');
+        await installServiceUnit();
+        serviceInstalled = true;
+      } catch { /* surfaced to the GUI as serviceInstalled:false */ }
+    }
     // Schedule a soft restart so the daemon re-evaluates env and rebuilds
     // its DB pool against the freshly-saved SIGIL_DATABASE_URL. The CLI
     // / GUI auto-respawn on the next call. (Onboarding finishes regardless
     // — the next dashboard load will pick up the fresh daemon.)
     setTimeout(() => process.exit(0), 250);
-    return { ok: true, restarting: true };
+    return { ok: true, restarting: true, serviceInstalled };
   });
 
   // Explicit daemon recycle — used by the GUI for "Apply changes" buttons.
@@ -324,15 +209,31 @@ export function registerOnboarding(registry) {
   });
 
   // Test the active LLM provider end-to-end.
+  //
+  // We deliberately do NOT route LLM errors through diagnoseError() — that
+  // classifier's regexes (e.g. /model .* not found/) target embedding and DB
+  // failures and will silently relabel an LLM "unknown model" error as an
+  // embedding-model error. Surface the raw provider message so the user can
+  // see what the CLI / API actually said.
   registry.register('testLlm', async () => {
+    // Force a fresh provider detection so the test reflects the env keys
+    // we just wrote, not what the daemon detected at startup.
     try {
+      const { resetDetection, detectProvider } = await import('../../lib/llm/registry.js');
+      const { readEnvRaw } = await import('../../lib/env-file.js');
+      const env = readEnvRaw();
+      for (const k of ['LLM_PROVIDER', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+        'OPENROUTER_API_KEY', 'LLM_OPENROUTER_MODEL', 'LLM_OPENAI_MODEL',
+        'LLM_OLLAMA_HOST', 'LLM_OLLAMA_MODEL', 'LLM_CLI_MODEL']) {
+        if (env[k]) process.env[k] = env[k];
+      }
+      resetDetection();
+      const provider = await detectProvider();
       const { prompt } = await import('../../lib/llm.js');
       const out = await prompt('Reply with the single word: ok', { caller: 'onboarding-test' });
-      return { ok: true, response: out.slice(0, 200) };
+      return { ok: true, response: String(out).slice(0, 200), provider };
     } catch (err) {
-      const { diagnoseError } = await import('../../db/setup.js');
-      const d = diagnoseError(err);
-      return { ok: false, error: d.humanMessage, kind: d.kind, fixHint: d.fixHint };
+      return { ok: false, error: err.message, kind: 'llm' };
     }
   });
 

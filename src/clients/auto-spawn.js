@@ -1,17 +1,14 @@
 import { spawn } from 'node:child_process';
 import { existsSync, openSync, closeSync, mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
 
 import {
   SIGIL_DAEMON_LOG,
   SIGIL_DAEMON_SOCK,
   SIGIL_HOME,
-  PKG_ROOT,
 } from '../lib/paths.js';
 import { detectRunningDaemon } from '../daemon/lifecycle.js';
+import { resolveDaemonScript } from '../supervisor/entry-path.js';
 import { openSocketClient } from './socket-client.js';
 
 const READY_TIMEOUT_MS = 5_000;
@@ -87,23 +84,6 @@ async function spawnDaemon() {
   // Close our copies of the fds — the child has them now.
   try { closeSync(out); } catch { /* ignore */ }
   try { closeSync(err); } catch { /* ignore */ }
-}
-
-function resolveDaemonScript() {
-  // In dev: src/daemon/index.js exists relative to PKG_ROOT.
-  // In bundled dist: dist/daemon.js (or similar) — we don't bundle yet,
-  // so just use the source path. build.js will need to know about this
-  // entry point when we wire bundling.
-  const candidates = [
-    join(PKG_ROOT, 'dist', 'daemon.js'),
-    join(PKG_ROOT, 'src', 'daemon', 'index.js'),
-    // Last resort: relative to this file (works when auto-spawn.js is itself bundled)
-    join(dirname(fileURLToPath(import.meta.url)), '..', 'daemon', 'index.js'),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  throw new Error('cannot locate daemon entry point (looked in dist/ and src/daemon/)');
 }
 
 async function waitForReady() {
