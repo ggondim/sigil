@@ -1,9 +1,13 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import remarkGfm from 'remark-gfm';
 
 export default defineConfig({
   site: 'https://anmol-srv.github.io',
   base: '/sigil',
+  markdown: {
+    remarkPlugins: [remarkGfm],
+  },
   integrations: [
     starlight({
       title: 'Sigil',
