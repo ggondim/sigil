@@ -1,3 +1,10 @@
+// Must be FIRST import: hydrates process.env from ~/.sigil/.env before any
+// downstream module (config.js / db/cortex.js) reads it. The daemon is
+// spawned by launchd / systemd / `sigil service` with a near-empty
+// environment, so without this the Postgres URL is missing and the pool
+// silently falls back to localhost:5432 → all memory ops fail.
+import './preload-env.js';
+
 import { createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 
