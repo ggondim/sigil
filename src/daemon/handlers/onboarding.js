@@ -86,6 +86,10 @@ export function registerOnboarding(registry) {
         const existing = readEnvRaw();
         if (existing[f.name]) continue;
       }
+      // Never write an undefined value — writeEnvKeys treats null/undefined as
+      // a key deletion, which would silently clear an existing value (e.g. a
+      // blank field wiping a previously-set key). Only persist real input.
+      if (params[f.name] === undefined || params[f.name] === '') continue;
       patch[f.name] = params[f.name];
     }
     writeEnvKeys(patch);
@@ -240,7 +244,11 @@ export function registerOnboarding(registry) {
   registry.register('testEmbedding', async () => {
     try {
       const { embed } = await import('../../ingestion/embedder.js');
-      const v = await embed('Sigil onboarding test');
+      // cache:false — the embedding step runs BEFORE the database step, so the
+      // Postgres-backed embedding cache isn't reachable yet. Test the provider
+      // directly; otherwise a DB-unreachable error masquerades as an embedder
+      // failure ("Postgres is not reachable" with no DB configured).
+      const v = await embed('Sigil onboarding test', { cache: false });
       if (!Array.isArray(v) || v.length === 0) {
         return { ok: false, error: 'The embedder returned an empty vector.', kind: 'other' };
       }

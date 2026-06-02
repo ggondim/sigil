@@ -46,15 +46,38 @@ export async function startDaemon({ foreground = false } = {}) {
   const log = makeLogger();
   log(`starting (pid ${process.pid}, node ${process.version})`);
 
-  await writePidFile();
-
   const registry = createRegistry();
   setRegistry(registry);
   registerAll(registry, { startedAt: STARTED_AT });
 
-  const socket = await startSocketServer({ registry, log });
-
   const { default: config } = await import('../config.js');
+
+  // Claim the HTTP/GUI port FIRST — before the pidfile or the Unix socket.
+  // The TCP port is the one resource that can't be silently taken over (bind
+  // is exclusive), unlike the socket file which startSocketServer would
+  // force-replace. If another daemon already owns the port we exit here with
+  // ZERO side effects (no clobbered pidfile, no stolen socket), so we can
+  // never produce the split-brain where socket RPC hits us but the GUI hits a
+  // different daemon holding a mismatched auth token. detectRunningDaemon's
+  // /healthz probe normally catches this earlier; this is the race-proof lock.
+  let http = null;
+  if (config.http.enabled) {
+    try {
+      http = await startHttpServer({ registry, log, config });
+    } catch (err) {
+      if (err.code === 'EADDRINUSE') {
+        log(`http port ${config.http.port} already in use — another daemon is serving; exiting`);
+        process.stderr.write(`[sigild] already running (port ${config.http.port} in use)\n`);
+        clearRegistry();
+        process.exit(0);
+      }
+      log(`http server failed to start: ${err.message}`);
+    }
+  }
+
+  await writePidFile();
+
+  const socket = await startSocketServer({ registry, log });
 
   // Eager DB health probe. A memory daemon that can't reach Postgres must say
   // so LOUDLY — the old behaviour let every hook silently return empty memory,
@@ -70,14 +93,6 @@ export async function startDaemon({ foreground = false } = {}) {
       if (started.started) log('started local sigil-postgres container');
     } catch { /* docker absent / unrelated DB — ignore */ }
     probeDbHealth(log);
-  }
-  let http = null;
-  if (config.http.enabled) {
-    try {
-      http = await startHttpServer({ registry, log, config });
-    } catch (err) {
-      log(`http server failed to start: ${err.message}`);
-    }
   }
 
   // Iroh: warm up the endpoint when network is enabled so the NodeID

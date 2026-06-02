@@ -2,7 +2,7 @@ import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { SIGIL_DAEMON_PID, SIGIL_DAEMON_SOCK, SIGIL_HOME } from '../lib/paths.js';
+import { SIGIL_DAEMON_PID, SIGIL_DAEMON_SOCK, SIGIL_HEARTBEAT, SIGIL_HOME } from '../lib/paths.js';
 
 /**
  * Check whether a PID is alive. `process.kill(pid, 0)` is the POSIX trick:
@@ -44,14 +44,64 @@ export async function removeSocketFile() {
   try { await unlink(SIGIL_DAEMON_SOCK); } catch { /* missing is fine */ }
 }
 
+/** Best-effort read of the heartbeat pid (the most accurate "who's serving"). */
+async function readHeartbeatPid() {
+  try {
+    const hb = JSON.parse(await readFile(SIGIL_HEARTBEAT, 'utf8'));
+    return Number.isFinite(hb?.pid) ? hb.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe GET /healthz on the configured HTTP port. A 200 means a daemon is
+ * already serving the GUI — authoritative even when the pidfile is stale or
+ * was written by a different process (e.g. a `node src/daemon` dev run). The
+ * HTTP port is the one resource that can't be silently stolen (TCP bind is
+ * exclusive), so it's the most reliable "is a daemon already up?" signal.
+ */
+async function isHttpDaemonServing() {
+  try {
+    const { default: config } = await import('../config.js');
+    if (!config.http.enabled) return false;
+    const { host, port } = config.http;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 500);
+    try {
+      const res = await fetch(`http://${host}:${port}/healthz`, { signal: ctrl.signal });
+      return res.ok;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false; // nothing listening / refused / timed out
+  }
+}
+
 /**
  * Returns the live daemon PID if one is running, otherwise null and cleans
  * up any stale pid/socket files. Call this before starting a new daemon.
+ *
+ * Checks two independent signals so we never start a second daemon that
+ * steals the Unix socket but can't bind the HTTP port (the split-brain that
+ * leaves the GUI talking to a daemon with a stale auth token):
+ *   1. the pidfile names a live process, OR
+ *   2. something answers /healthz on the configured HTTP port.
  */
 export async function detectRunningDaemon() {
   const pid = await readPidFile();
   if (pid && isPidAlive(pid)) return pid;
-  // Stale state — clean up so a fresh start succeeds.
+
+  // Pidfile didn't name a live process — but a daemon started outside this
+  // pidfile may still be serving. Probe the port before declaring the slot
+  // free; if it answers, leave the socket/pidfile untouched (they're the
+  // incumbent's) and report the real pid from the heartbeat when we can.
+  if (await isHttpDaemonServing()) {
+    return (await readHeartbeatPid()) ?? 'unknown';
+  }
+
+  // Genuinely stale — clean up so a fresh start succeeds.
   if (pid) await removePidFile();
   if (existsSync(SIGIL_DAEMON_SOCK)) await removeSocketFile();
   return null;

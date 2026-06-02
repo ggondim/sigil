@@ -9,7 +9,11 @@ async function embed(text, opts = {}) {
   return result;
 }
 
-async function embedBatch(texts, { inputType = 'document' } = {}) {
+// `cache: false` bypasses the Postgres-backed embedding cache and calls the
+// provider directly. Used by the onboarding embed test, which runs BEFORE the
+// database step — the cache lookup would otherwise fail with a misleading
+// "Postgres is not reachable" error that has nothing to do with the embedder.
+async function embedBatch(texts, { inputType = 'document', cache = true } = {}) {
   if (!texts.length) return [];
 
   const provider = await detectEmbeddingProvider();
@@ -20,6 +24,7 @@ async function embedBatch(texts, { inputType = 'document' } = {}) {
   // inputType is part of the cache key because Voyage produces different
   // embeddings for `document` vs `query` even on identical text.
   const providerConfig = { ...config.embedding, inputType };
+  if (!cache) return batchFn(texts, providerConfig);
   return embedBatchCached(texts, provider, model, batchFn, providerConfig, { inputType });
 }
 

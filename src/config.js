@@ -72,6 +72,11 @@ const config = {
 
     // Claude CLI (dev — uses your Claude Code subscription)
     get cliModel() { return process.env.LLM_CLI_MODEL || 'haiku'; },
+    // Explicit path to the `claude` binary. Optional — when unset the
+    // provider auto-resolves it (see providers/claude-cli.js). Needed when
+    // the daemon runs under launchd/systemd with a stripped PATH that can't
+    // see ~/.local/bin or the nvm bin dir where `claude` lives.
+    get cliPath() { return process.env.LLM_CLI_PATH || ''; },
 
     // Anthropic
     get apiKey() { return process.env.ANTHROPIC_API_KEY || ''; },

@@ -58,7 +58,7 @@ async function copyToClipboard(text) {
 // ════════════════════════════════════════════════════════════════════
 // ONBOARDING WIZARD
 // ════════════════════════════════════════════════════════════════════
-const wizardState = { step: 'connectors', llmProvider: null, embProvider: null, llmProviders: [], embProviders: [], connectorsLoaded: false, dbInit: false, connectedCount: 0 };
+const wizardState = { step: 'connectors', llmProvider: null, embProvider: null, llmProviders: [], embProviders: [], envKeys: null, connectorsLoaded: false, dbInit: false, connectedCount: 0 };
 
 const STEP_ORDER = ['connectors', 'llm', 'embedding', 'database', 'finish'];
 
@@ -347,8 +347,59 @@ $('#ob-llm-save')?.addEventListener('click', async () => {
 });
 
 // ── Embedding step ──────────────────────────────────────────────────
+
+// Snapshot which keys currently exist in ~/.sigil/.env. Secrets come back
+// masked but carry `hasValue`, which is all we need to decide whether a
+// "shared with LLM" field can be hidden. Returns a Set of present key names.
+async function snapshotEnvKeys() {
+  try {
+    const { entries } = await rpc('readEnv');
+    return new Set(
+      Object.entries(entries || {})
+        .filter(([, v]) => (v.masked ? v.hasValue : Boolean(v.value)))
+        .map(([k]) => k),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+// Decide which provider fields to render. A field marked `sharedWith:'llm'`
+// is only safe to hide when the LLM step actually wrote that key — claude-cli,
+// anthropic, and ollama LLM providers set no OpenAI/OpenRouter key, so an
+// embedder that "reuses your LLM key" must still prompt for it. Otherwise the
+// embed test 401s with a confusing "rejected the API key" message.
+function partitionProviderFields(provider, envKeys) {
+  const has = (k) => Boolean(envKeys && envKeys.has(k));
+  const show = (provider.fields || []).filter((f) => !f.sharedWith || !has(f.name));
+  const reusesShared = (provider.fields || []).some((f) => f.sharedWith === 'llm' && has(f.name));
+  return { show, reusesShared };
+}
+
+// Render provider field inputs. `attr` is the data-attribute the save handler
+// scans for (data-emb-field in the wizard, data-cfg-field in Settings).
+function renderProviderFields(provider, envKeys, attr) {
+  const { show, reusesShared } = partitionProviderFields(provider, envKeys);
+  const reuseNote = reusesShared
+    ? '<p class="muted text-sm">Reuses the API key from your LLM step.</p>'
+    : '';
+  if (!show.length) {
+    return reuseNote || '<p class="muted text-sm">No configuration needed.</p>';
+  }
+  return reuseNote + show.map((f) => {
+    const note = f.sharedWith === 'llm'
+      ? ' <span class="muted text-xs">(your LLM provider didn\'t set one — paste it here)</span>'
+      : (f.optional ? ' <span class="muted text-xs">(optional)</span>' : '');
+    return `<label class="field"><span class="label">${escape(f.label)}${note}</span>`
+      + `<input type="${escape(f.type)}" ${attr}="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off"></label>`;
+  }).join('');
+}
+
 async function loadEmbeddingProviders() {
   try {
+    // Snapshot env first so a "shared with LLM" field is only hidden when the
+    // LLM step actually wrote that key (see partitionProviderFields).
+    wizardState.envKeys = await snapshotEnvKeys();
     const { providers } = await rpc('listEmbeddingProviders');
     wizardState.embProviders = providers;
     $('#ob-emb-cards').innerHTML = providers.map((p) => `
@@ -369,20 +420,7 @@ function selectEmbProvider(id) {
   $$('#ob-emb-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.embId === id));
   const p = wizardState.embProviders.find((x) => x.id === id);
   if (!p) return;
-  const visibleFields = p.fields.filter((f) => !f.sharedWith);
-  if (!visibleFields.length) {
-    const sharedNote = p.fields.find((f) => f.sharedWith === 'llm')
-      ? '<p class="muted text-sm">Reuses the API key from your LLM step.</p>'
-      : '<p class="muted text-sm">No configuration needed.</p>';
-    $('#ob-emb-fields').innerHTML = sharedNote;
-  } else {
-    $('#ob-emb-fields').innerHTML = visibleFields.map((f) => `
-      <label class="field">
-        <span class="label">${escape(f.label)}</span>
-        <input type="${f.type}" data-emb-field="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off">
-      </label>
-    `).join('');
-  }
+  $('#ob-emb-fields').innerHTML = renderProviderFields(p, wizardState.envKeys, 'data-emb-field');
 }
 $('#ob-emb-cards')?.addEventListener('click', (e) => {
   const card = e.target.closest('[data-emb-id]');
@@ -720,7 +758,7 @@ async function onSettingsClientAction(id, action) {
 // Reuses the wizard's provider catalogs + the shared applyEmbeddingProvider
 // gate. "Apply" persists config and restarts the daemon so the new pool /
 // embedder take effect; the 5s health poll recovers from the restart gap.
-const cfgSwitch = { kind: null, providerId: null, providers: [] };
+const cfgSwitch = { kind: null, providerId: null, providers: [], envKeys: null };
 
 async function openSwitcher(kind) {
   cfgSwitch.kind = kind;
@@ -731,6 +769,9 @@ async function openSwitcher(kind) {
   const res = $('#cfg-switch-result'); res.style.display = 'none'; res.textContent = '';
   $('#cfg-switch').style.display = '';
   try {
+    // Snapshot env so a "shared with LLM" embedder field is only hidden when
+    // the key actually exists (see partitionProviderFields).
+    cfgSwitch.envKeys = await snapshotEnvKeys();
     const { providers } = await rpc(kind === 'llm' ? 'listLlmProviders' : 'listEmbeddingProviders');
     cfgSwitch.providers = providers;
     // Keep the wizard's catalog in sync so applyEmbeddingProvider can label.
@@ -751,12 +792,7 @@ function selectSwitchProvider(id) {
   $$('#cfg-switch-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.cfgId === id));
   const p = cfgSwitch.providers.find((x) => x.id === id);
   if (!p) return;
-  const visible = (p.fields || []).filter((f) => !f.sharedWith);
-  $('#cfg-switch-fields').innerHTML = visible.length
-    ? visible.map((f) => `
-        <label class="field"><span class="label">${escape(f.label)}</span>
-        <input type="${f.type}" data-cfg-field="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off"></label>`).join('')
-    : '<p class="muted text-sm">No additional configuration needed.</p>';
+  $('#cfg-switch-fields').innerHTML = renderProviderFields(p, cfgSwitch.envKeys, 'data-cfg-field');
   $('#cfg-switch-conflict').innerHTML = '';
 }
 

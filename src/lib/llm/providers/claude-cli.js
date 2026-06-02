@@ -1,7 +1,39 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import config from '../../../config.js';
 import { estimateTokens } from '../log.js';
+
+/**
+ * Resolve the `claude` binary to an absolute path.
+ *
+ * The daemon is usually spawned by launchd/systemd with a stripped PATH
+ * (/usr/bin:/bin:/usr/sbin:/sbin), so a bare `spawn('claude')` fails with
+ * ENOENT even though `claude` is on the user's interactive PATH. We probe
+ * the places it actually installs — most reliably the same bin dir as the
+ * node running us (nvm/volta/global-npm put `claude` next to `node`) — and
+ * fall back to the bare name so a PATH that *does* contain it still works.
+ */
+let resolvedClaudePath = null;
+function resolveClaudeBin() {
+  if (resolvedClaudePath) return resolvedClaudePath;
+  if (config.llm.cliPath) return (resolvedClaudePath = config.llm.cliPath);
+  const home = homedir();
+  const candidates = [
+    join(dirname(process.execPath), 'claude'), // next to the node that runs us (nvm/volta/npm)
+    join(home, '.local', 'bin', 'claude'),
+    join(home, '.claude', 'local', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return (resolvedClaudePath = p);
+  }
+  return (resolvedClaudePath = 'claude'); // last resort: trust PATH
+}
 
 const CLI_MODEL_MAP = {
   'claude-haiku-4-5-20251001': 'haiku',
@@ -17,8 +49,10 @@ const PERMISSIVE_SCHEMA = JSON.stringify({
 function spawnClaude(args, input) {
   const timeout = config.llm.cliTimeout || 120_000;
 
+  const bin = resolveClaudeBin();
+
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
       reject(new Error(`claude CLI timed out after ${timeout}ms`));
@@ -31,6 +65,17 @@ function spawnClaude(args, input) {
     proc.stderr.on('data', (d) => { stderr += d; });
     proc.on('error', (err) => {
       clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        // Almost always a stripped-PATH daemon that can't see where `claude`
+        // is installed. Point the user at the fix instead of a bare ENOENT.
+        reject(new Error(
+          `Failed to spawn claude CLI: '${bin}' not found. The Sigil daemon `
+          + `runs with a minimal PATH and can't see your \`claude\` install. `
+          + `Set LLM_CLI_PATH to its absolute path (find it with \`which claude\`) `
+          + `and restart the daemon — or pick an API-key provider (openrouter/openai/anthropic).`,
+        ));
+        return;
+      }
       reject(new Error(`Failed to spawn claude CLI: ${err.message}`));
     });
     proc.on('close', (code) => {
