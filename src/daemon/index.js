@@ -1,9 +1,7 @@
-// Must be FIRST import: hydrates process.env from ~/.sigil/.env before any
-// downstream module (config.js / db/cortex.js) reads it. The daemon is
-// spawned by launchd / systemd / `sigil service` with a near-empty
-// environment, so without this the Postgres URL is missing and the pool
-// silently falls back to localhost:5432 → all memory ops fail.
-import './preload-env.js';
+// config.json is the source of truth (replaces the old dotenv preload). On a
+// legacy install, loadConfig() — called first thing in startDaemon — imports
+// ~/.sigil/.env into config.json once, then renames .env so it's skipped.
+import { loadConfig } from '../setup/config-store.js';
 
 import { createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
@@ -45,6 +43,10 @@ export async function startDaemon({ foreground = false } = {}) {
   // to tail. If launched detached, the parent already redirected fds.
   const log = makeLogger();
   log(`starting (pid ${process.pid}, node ${process.version})`);
+
+  // Load config.json + migrate any legacy ~/.sigil/.env into it, before
+  // anything reads configuration.
+  loadConfig();
 
   const registry = createRegistry();
   setRegistry(registry);

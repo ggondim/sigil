@@ -12,3 +12,12 @@ export function buildLocalConnection(config) {
     password: config.db.password,
   };
 }
+
+/**
+ * Build a pg connection from discrete fields (with sigil defaults). Used by
+ * setup steps that have host/port/db/user/password directly rather than a
+ * `config`-shaped object.
+ */
+export function buildLocalConnectionFromFields({ host = 'localhost', port = 5432, database = 'sigil', user = 'sigil_app', password = '' } = {}) {
+  return { host, port: Number(port) || 5432, database, user, password };
+}

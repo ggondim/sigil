@@ -1,0 +1,312 @@
+/**
+ * Config store — the device-local source of truth that replaces ~/.sigil/.env.
+ *
+ * Design (decisions from the onboarding redesign):
+ *   - ONE versioned JSON file at ~/.sigil/config.json, chmod 600.
+ *   - The file is SPARSE: it holds only values that were explicitly set.
+ *     Defaults live in code (defaults() below) and are merged in at READ time,
+ *     so defaults always track the code instead of freezing into the file —
+ *     the exact failure mode that made stale .env files break upgrades.
+ *   - schemaVersion + ordered migrations run on load; unknown keys are dropped.
+ *   - Single writer with atomic write (tmp + rename). The in-memory cache is
+ *     updated on every patch so the daemon sees fresh values without a restart.
+ *
+ * This is device-local only. Shared memory data lives in Postgres; the DB
+ * connection itself can't live in the DB (chicken-and-egg), so it lives here.
+ */
+
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+import { SIGIL_CONFIG_PATH, SIGIL_ENV_PATH } from '../lib/paths.js';
+import { EMBEDDING_DIM } from '../lib/constants.js';
+
+export const CONFIG_SCHEMA_VERSION = 1;
+
+const DB_MODES = ['local', 'docker', 'url'];
+const STEP_STATUSES = ['pending', 'active', 'done', 'error'];
+
+/**
+ * Code-owned defaults. The on-disk file overlays a SPARSE subset of this; never
+ * write the whole tree out. Embedding dimension is intentionally absent — it's
+ * a build-time constant (EMBEDDING_DIM), not config.
+ */
+function defaults() {
+  return {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+    device: { id: null },
+    database: {
+      mode: null,            // 'local' | 'docker' | 'url'
+      url: null,
+      host: 'localhost',
+      port: 5432,
+      name: 'sigil',
+      user: 'sigil_app',
+      password: null,
+    },
+    llm: { provider: null, model: null, apiKey: null, host: null },
+    embedding: { provider: null, model: null, apiKey: null, host: null },
+    identity: { name: null },
+    setup: { complete: false, steps: {} },
+  };
+}
+
+// Ordered migrations keyed by the version they upgrade *to*. Each receives the
+// raw parsed file and returns the upgraded shape. None yet (v1 is the floor).
+const MIGRATIONS = {
+  // 2: (raw) => ({ ...raw, schemaVersion: 2, /* ... */ }),
+};
+
+// ── internal helpers ────────────────────────────────────────────────────────
+
+let cache = null; // merged (defaults ⊕ file) snapshot
+
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** Deep-merge `overlay` onto `base` (objects merge per-key; scalars/arrays replace). */
+function deepMerge(base, overlay) {
+  if (!isPlainObject(overlay)) return overlay;
+  const out = Array.isArray(base) ? [...base] : { ...base };
+  for (const [k, v] of Object.entries(overlay)) {
+    out[k] = isPlainObject(v) && isPlainObject(out[k]) ? deepMerge(out[k], v) : v;
+  }
+  return out;
+}
+
+/** Read the sparse on-disk object (no defaults). Returns {} if absent/corrupt. */
+function readRaw() {
+  if (!existsSync(SIGIL_CONFIG_PATH)) return {};
+  try {
+    return JSON.parse(readFileSync(SIGIL_CONFIG_PATH, 'utf8')) || {};
+  } catch {
+    // A corrupt config is a hard error class, but reads must not crash the
+    // daemon — treat as empty and let setup rewrite it.
+    return {};
+  }
+}
+
+function runMigrations(raw) {
+  let cur = raw;
+  let v = Number(cur.schemaVersion) || 1;
+  while (v < CONFIG_SCHEMA_VERSION) {
+    const next = v + 1;
+    const fn = MIGRATIONS[next];
+    cur = fn ? fn(cur) : { ...cur, schemaVersion: next };
+    v = next;
+  }
+  return cur;
+}
+
+/** Keep only keys that exist in defaults() — silently drop unknowns. */
+function pruneUnknown(sparse) {
+  const d = defaults();
+  const out = {};
+  for (const section of Object.keys(d)) {
+    if (!(section in sparse)) continue;
+    if (!isPlainObject(d[section])) { out[section] = sparse[section]; continue; }
+    const sub = {};
+    for (const key of Object.keys(d[section])) {
+      if (sparse[section] && key in sparse[section]) sub[key] = sparse[section][key];
+    }
+    // setup.steps is an open map (one key per step) — preserve it wholesale.
+    if (section === 'setup' && isPlainObject(sparse.setup?.steps)) sub.steps = sparse.setup.steps;
+    out[section] = sub;
+  }
+  return out;
+}
+
+function atomicWrite(sparse) {
+  mkdirSync(dirname(SIGIL_CONFIG_PATH), { recursive: true });
+  const tmp = `${SIGIL_CONFIG_PATH}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(sparse, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, SIGIL_CONFIG_PATH);
+  try { chmodSync(SIGIL_CONFIG_PATH, 0o600); } catch { /* best-effort on platforms w/o chmod */ }
+}
+
+// ── validation (on WRITE; reads stay tolerant) ───────────────────────────────
+
+function validateSection(section, values) {
+  const errors = {};
+  if (!isPlainObject(values)) throw new Error(`config patch for "${section}" must be an object`);
+
+  if (section === 'database') {
+    if ('mode' in values && values.mode !== null && !DB_MODES.includes(values.mode)) {
+      errors.mode = `must be one of ${DB_MODES.join(', ')}`;
+    }
+    if ('port' in values && values.port != null && !Number.isInteger(Number(values.port))) {
+      errors.port = 'must be an integer';
+    }
+    if ('url' in values && values.url != null && typeof values.url !== 'string') {
+      errors.url = 'must be a string';
+    }
+  }
+
+  if (Object.keys(errors).length) {
+    const err = new Error(`invalid config for "${section}": ${JSON.stringify(errors)}`);
+    err.code = 'invalid_config';
+    err.errors = errors;
+    throw err;
+  }
+}
+
+// ── legacy .env migration ────────────────────────────────────────────────────
+// Existing installs configured ~/.sigil/.env. Rather than strand them on a clean
+// break, import that file into config.json ONCE, then rename it so it's skipped
+// thereafter. A power user can later drop a fresh .env to update settings; it's
+// re-imported on the next boot. Only the onboarding-managed keys are mapped;
+// tuning flags (MEMORY_*, ports) remain plain env vars.
+
+function parseEnvFile(path) {
+  if (!existsSync(path)) return null;
+  const out = {};
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/i);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
+function envToPatches(e) {
+  const patches = {};
+
+  const db = {};
+  if (e.SIGIL_DATABASE_URL || e.DATABASE_URL) {
+    db.mode = 'url';
+    db.url = e.SIGIL_DATABASE_URL || e.DATABASE_URL;
+  } else if (e.SIGIL_DB_HOST || e.SIGIL_DB_NAME || e.SIGIL_DB_PASSWORD) {
+    db.mode = 'local';
+    if (e.SIGIL_DB_HOST) db.host = e.SIGIL_DB_HOST;
+    if (e.SIGIL_DB_PORT) db.port = Number(e.SIGIL_DB_PORT) || 5432;
+    if (e.SIGIL_DB_NAME) db.name = e.SIGIL_DB_NAME;
+    if (e.SIGIL_DB_USER) db.user = e.SIGIL_DB_USER;
+    if (e.SIGIL_DB_PASSWORD) db.password = e.SIGIL_DB_PASSWORD;
+  }
+  if (Object.keys(db).length) patches.database = db;
+
+  if (e.LLM_PROVIDER) {
+    const llm = { provider: e.LLM_PROVIDER };
+    const key = { anthropic: e.ANTHROPIC_API_KEY, openai: e.OPENAI_API_KEY, openrouter: e.OPENROUTER_API_KEY }[e.LLM_PROVIDER];
+    if (key) llm.apiKey = key;
+    const model = { openai: e.LLM_OPENAI_MODEL, openrouter: e.LLM_OPENROUTER_MODEL, ollama: e.LLM_OLLAMA_MODEL, 'claude-cli': e.LLM_CLI_MODEL }[e.LLM_PROVIDER];
+    if (model) llm.model = model;
+    if (e.LLM_PROVIDER === 'ollama' && (e.LLM_OLLAMA_HOST || e.OLLAMA_HOST)) llm.host = e.LLM_OLLAMA_HOST || e.OLLAMA_HOST;
+    patches.llm = llm;
+  }
+
+  if (e.EMBEDDING_PROVIDER) {
+    const emb = { provider: e.EMBEDDING_PROVIDER };
+    if (e.EMBEDDING_MODEL) emb.model = e.EMBEDDING_MODEL;
+    const key = { openai: e.OPENAI_API_KEY, voyage: e.VOYAGE_API_KEY, openrouter: e.OPENROUTER_API_KEY }[e.EMBEDDING_PROVIDER];
+    if (key) emb.apiKey = key;
+    if (e.EMBEDDING_PROVIDER === 'ollama' && e.OLLAMA_HOST) emb.host = e.OLLAMA_HOST;
+    patches.embedding = emb;
+  }
+
+  if (e.SIGIL_SETUP_COMPLETE === 'true') patches.setup = { complete: true };
+  return patches;
+}
+
+let migrationChecked = false;
+function migrateEnvIfPresent() {
+  if (migrationChecked) return;
+  migrationChecked = true;
+  try {
+    const e = parseEnvFile(SIGIL_ENV_PATH);
+    if (!e) return;
+    const patches = envToPatches(e);
+    // Import a section from .env ONLY if config.json hasn't configured it yet —
+    // never clobber values the new wizard already wrote (a leftover .env can be
+    // stale, e.g. an old DB password/url). All-or-nothing per section: a half-
+    // merged DB (e.g. local fields + a stale url) would be worse than either.
+    const existing = pruneUnknown(readRaw());
+    const alreadySet = {
+      database: Boolean(existing.database?.mode),
+      llm: Boolean(existing.llm?.provider),
+      embedding: Boolean(existing.embedding?.provider),
+      setup: Boolean(existing.setup?.complete),
+    };
+    for (const [section, values] of Object.entries(patches)) {
+      if (alreadySet[section]) continue; // configured already → leave it alone
+      try { patchConfig(section, values); } catch { /* skip a bad section, keep going */ }
+    }
+    // Processed once — rename so it's skipped from now on ("later we skip env").
+    try { renameSync(SIGIL_ENV_PATH, `${SIGIL_ENV_PATH}.migrated`); } catch { /* ignore */ }
+  } catch { /* best-effort; never block config load on migration */ }
+}
+
+// ── public API ───────────────────────────────────────────────────────────────
+
+/** Load (migrate legacy .env → read → migrate schema → prune → merge defaults). */
+export function loadConfig() {
+  migrateEnvIfPresent();
+  let raw = readRaw();
+  const migrated = runMigrations(raw);
+  // Persist a migration only if it actually changed the version on disk.
+  if (existsSync(SIGIL_CONFIG_PATH) && migrated.schemaVersion !== raw.schemaVersion) {
+    atomicWrite(pruneUnknown(migrated));
+  }
+  cache = deepMerge(defaults(), pruneUnknown(migrated));
+  return cache;
+}
+
+/** The current merged snapshot (loads on first access). */
+export function getConfig() {
+  return cache || loadConfig();
+}
+
+/**
+ * Merge `values` into one section, validate, persist atomically, refresh cache.
+ * Only the provided keys are written (the file stays sparse). Returns the new
+ * merged snapshot.
+ */
+export function patchConfig(section, values) {
+  if (!(section in defaults())) throw new Error(`unknown config section: ${section}`);
+  validateSection(section, values);
+  const sparse = pruneUnknown(readRaw());
+  sparse.schemaVersion = CONFIG_SCHEMA_VERSION;
+  sparse[section] = { ...(sparse[section] || {}), ...values };
+  atomicWrite(sparse);
+  cache = deepMerge(defaults(), sparse);
+  return cache;
+}
+
+/** Return the device id, generating + persisting one on first call. */
+export function ensureDeviceId() {
+  const cur = getConfig();
+  if (cur.device?.id) return cur.device.id;
+  const id = randomUUID();
+  patchConfig('device', { id });
+  return id;
+}
+
+/** Record a setup step's status (pending|active|done|error). */
+export function setStepStatus(step, status) {
+  if (!STEP_STATUSES.includes(status)) throw new Error(`invalid step status: ${status}`);
+  const sparse = pruneUnknown(readRaw());
+  const steps = { ...(sparse.setup?.steps || {}), [step]: status };
+  return patchConfig('setup', { ...(sparse.setup || {}), steps });
+}
+
+export function markSetupComplete(complete = true) {
+  return patchConfig('setup', { complete: Boolean(complete) });
+}
+
+export function isSetupComplete() {
+  return Boolean(getConfig().setup?.complete);
+}
+
+/** Wipe config back to a fresh, unconfigured state (clean-break re-onboard). */
+export function resetConfig() {
+  try { if (existsSync(SIGIL_CONFIG_PATH)) unlinkSync(SIGIL_CONFIG_PATH); } catch { /* ignore */ }
+  cache = null;
+  return getConfig();
+}
+
+/** The build-time embedding dimension, surfaced here for convenience. */
+export { EMBEDDING_DIM };

@@ -23,17 +23,15 @@ import { registerRefreshContext } from './refresh-context.js';
 import { registerTestDbConnection } from './test-db-connection.js';
 import { registerRunMigrations } from './run-migrations.js';
 import { registerEnsurePgvector } from './ensure-pgvector.js';
-import { registerOnboarding } from './onboarding.js';
 import { registerConnectors } from './connectors.js';
-import { registerDbProvision } from './db-provision.js';
 import { registerSupervisor } from './supervisor.js';
-import { registerEnv } from './env.js';
 import { registerNodeInfo } from './node-info.js';
 import { registerPair } from './pair.js';
 import { registerMode } from './mode.js';
 import { registerManifest } from './manifest.js';
 import { registerDevice } from './device.js';
 import { registerTrace } from './trace.js';
+import { registerSetup } from './setup.js';
 
 export function registerAll(registry, { startedAt }) {
   registerPing(registry, { startedAt });
@@ -53,15 +51,13 @@ export function registerAll(registry, { startedAt }) {
   registerTestDbConnection(registry);
   registerRunMigrations(registry);
   registerEnsurePgvector(registry);
-  registerOnboarding(registry);
   registerConnectors(registry);
-  registerDbProvision(registry);
   registerSupervisor(registry);
-  registerEnv(registry);
   registerNodeInfo(registry);
   registerPair(registry);
   registerMode(registry);
   registerManifest(registry);
   registerDevice(registry);
   registerTrace(registry);
+  registerSetup(registry);
 }

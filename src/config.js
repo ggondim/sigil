@@ -1,4 +1,20 @@
+import { getConfig } from './setup/config-store.js';
+import { EMBEDDING_DIM } from './lib/constants.js';
+
 const env = (key, fallback) => process.env[key] ?? fallback;
+
+// Device-local config (config.json). Precedence everywhere below is
+// `process.env  ||  config-store  ||  hard default` — so an explicit env var
+// still wins (dev / tests / CI), but with no env set the saved config.json
+// drives, instead of a stale ~/.sigil/.env. Tuning flags (MEMORY_*, ports, …)
+// stay env-only; only onboarding-managed sections read the store.
+const store = () => getConfig();
+// The setup steps store ONE apiKey/model per chosen provider; expose it only
+// through the matching provider's getter so detection + the provider module
+// line up.
+const llmKey = (provider) => (store().llm.provider === provider ? store().llm.apiKey || '' : '');
+const llmModel = (provider) => (store().llm.provider === provider ? store().llm.model || '' : '');
+const embKey = (provider) => (store().embedding.provider === provider ? store().embedding.apiKey || '' : '');
 
 const dbType = env('SIGIL_DB_TYPE', 'postgres');
 if (dbType !== 'postgres') {
@@ -23,12 +39,12 @@ const config = {
     // Connection URL takes precedence when set. Recognized providers
     // (Neon, Supabase, RDS, Render, Railway, CockroachDB) get sensible
     // SSL defaults automatically; override with ?sslmode=... in the URL.
-    get url() { return env('SIGIL_DATABASE_URL', env('DATABASE_URL', '')) || null; },
-    get host() { return env('SIGIL_DB_HOST', 'localhost'); },
-    get port() { return Number(env('SIGIL_DB_PORT', 5432)); },
-    get database() { return env('SIGIL_DB_NAME', 'sigil'); },
-    get user() { return env('SIGIL_DB_USER', 'sigil_app'); },
-    get password() { return env('SIGIL_DB_PASSWORD', ''); },
+    get url() { return (process.env.SIGIL_DATABASE_URL || process.env.DATABASE_URL) || store().database.url || null; },
+    get host() { return process.env.SIGIL_DB_HOST || store().database.host || 'localhost'; },
+    get port() { return Number(process.env.SIGIL_DB_PORT || store().database.port || 5432); },
+    get database() { return process.env.SIGIL_DB_NAME || store().database.name || 'sigil'; },
+    get user() { return process.env.SIGIL_DB_USER || store().database.user || 'sigil_app'; },
+    get password() { return process.env.SIGIL_DB_PASSWORD || store().database.password || ''; },
   },
 
   // Env-derived getters (not frozen values): `sigil init` writes a fresh
@@ -40,16 +56,18 @@ const config = {
   // reads these live via `{...config.embedding}`, so truncation dimensions and
   // keys reflect what init just wrote.
   embedding: {
-    get provider() { return process.env.EMBEDDING_PROVIDER || ''; },
-    get model() { return process.env.EMBEDDING_MODEL || 'nomic-embed-text'; },
-    get dimensions() { return Number(process.env.EMBEDDING_DIMENSIONS) || 768; },
-    get ollamaHost() { return process.env.OLLAMA_HOST || 'http://localhost:11434'; },
-    get openaiApiKey() { return process.env.OPENAI_API_KEY || ''; },
-    get voyageApiKey() { return process.env.VOYAGE_API_KEY || ''; },
+    get provider() { return process.env.EMBEDDING_PROVIDER || store().embedding.provider || ''; },
+    get model() { return process.env.EMBEDDING_MODEL || store().embedding.model || 'nomic-embed-text'; },
+    // Fixed, non-configurable: the DB schema and every provider are pinned to
+    // this so they can never drift (see src/lib/constants.js).
+    get dimensions() { return EMBEDDING_DIM; },
+    get ollamaHost() { return process.env.OLLAMA_HOST || (store().embedding.provider === 'ollama' ? store().embedding.host : '') || 'http://localhost:11434'; },
+    get openaiApiKey() { return process.env.OPENAI_API_KEY || embKey('openai'); },
+    get voyageApiKey() { return process.env.VOYAGE_API_KEY || embKey('voyage'); },
     // OpenRouter as an embedding gateway. Models are namespaced (e.g.
     // "openai/text-embedding-3-large", "voyageai/voyage-3-large").
     // Reuses the chat-side referer/title for app attribution.
-    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || embKey('openrouter'); },
     openrouterBaseUrl: process.env.EMBEDDING_OPENROUTER_BASE_URL || process.env.LLM_OPENROUTER_BASE_URL || '',
     openrouterReferer: process.env.EMBEDDING_OPENROUTER_REFERER || process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil',
     openrouterTitle: process.env.EMBEDDING_OPENROUTER_TITLE || process.env.LLM_OPENROUTER_TITLE || 'Sigil',
@@ -60,18 +78,18 @@ const config = {
   // values would freeze at boot-time env and `testLlm` would test the old
   // provider instead of the one the user just picked.
   llm: {
-    get provider() { return process.env.LLM_PROVIDER || ''; },
+    get provider() { return process.env.LLM_PROVIDER || store().llm.provider || ''; },
 
     // OpenAI
-    get openaiApiKey() { return process.env.OPENAI_API_KEY || ''; },
-    get openaiModel() { return process.env.LLM_OPENAI_MODEL || 'gpt-4o-mini'; },
+    get openaiApiKey() { return process.env.OPENAI_API_KEY || llmKey('openai'); },
+    get openaiModel() { return process.env.LLM_OPENAI_MODEL || llmModel('openai') || 'gpt-4o-mini'; },
 
     // Ollama
-    get ollamaHost() { return process.env.LLM_OLLAMA_HOST || process.env.OLLAMA_HOST || 'http://localhost:11434'; },
-    get ollamaModel() { return process.env.LLM_OLLAMA_MODEL || 'qwen2.5:7b'; },
+    get ollamaHost() { return process.env.LLM_OLLAMA_HOST || process.env.OLLAMA_HOST || (store().llm.provider === 'ollama' ? store().llm.host : '') || 'http://localhost:11434'; },
+    get ollamaModel() { return process.env.LLM_OLLAMA_MODEL || llmModel('ollama') || 'qwen2.5:7b'; },
 
     // Claude CLI (dev — uses your Claude Code subscription)
-    get cliModel() { return process.env.LLM_CLI_MODEL || 'haiku'; },
+    get cliModel() { return process.env.LLM_CLI_MODEL || llmModel('claude-cli') || 'haiku'; },
     // Explicit path to the `claude` binary. Optional — when unset the
     // provider auto-resolves it (see providers/claude-cli.js). Needed when
     // the daemon runs under launchd/systemd with a stripped PATH that can't
@@ -79,7 +97,7 @@ const config = {
     get cliPath() { return process.env.LLM_CLI_PATH || ''; },
 
     // Anthropic
-    get apiKey() { return process.env.ANTHROPIC_API_KEY || ''; },
+    get apiKey() { return process.env.ANTHROPIC_API_KEY || llmKey('anthropic'); },
 
     // OpenRouter — OpenAI-compatible gateway; one key, namespaced models
     // like "anthropic/claude-sonnet-latest", "openai/gpt-mini-latest", etc.
@@ -88,8 +106,8 @@ const config = {
     // JSON output, ~500ms typical latency. Beats Claude Haiku 2× on cost
     // and 5× on context while matching reasoning + JSON reliability for
     // Sigil's call types (extraction, AUDM, classifier, router, synthesis).
-    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || ''; },
-    get openrouterModel() { return process.env.LLM_OPENROUTER_MODEL || 'google/gemini-flash-latest'; },
+    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || llmKey('openrouter'); },
+    get openrouterModel() { return process.env.LLM_OPENROUTER_MODEL || llmModel('openrouter') || 'google/gemini-flash-latest'; },
     get openrouterBaseUrl() { return process.env.LLM_OPENROUTER_BASE_URL || ''; },
     get openrouterReferer() { return process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil'; },
     get openrouterTitle() { return process.env.LLM_OPENROUTER_TITLE || 'Sigil'; },

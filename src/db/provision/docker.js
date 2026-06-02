@@ -12,15 +12,37 @@
  * persist the superuser password and makes container REUSE safe: we can always
  * reset the app password without knowing the original superuser secret.
  *
- * Everything here is best-effort and throws plain Errors with context; the RPC
- * handler (daemon/handlers/db-provision.js) maps failures to AppError codes.
+ * Everything here is best-effort and throws plain Errors with context; the
+ * setup docker service (setup/db/docker.js) maps failures to clean StepErrors.
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import net from 'node:net';
+import { existsSync } from 'node:fs';
 
 import { probeUrlConnection } from '../setup.js';
-import { readEnvRaw } from '../../lib/env-file.js';
+
+/**
+ * Resolve the `docker` binary to an absolute path. The daemon runs under
+ * launchd/systemd with a stripped PATH (/usr/bin:/bin:…) and can't see Docker
+ * Desktop's bin dir, so a bare `spawn('docker')` fails with ENOENT even when
+ * Docker is installed and running. Probe the usual install locations and fall
+ * back to the bare name so a PATH that DOES contain it still works.
+ */
+let dockerBin = null;
+function resolveDockerBin() {
+  if (dockerBin) return dockerBin;
+  const candidates = [
+    '/usr/local/bin/docker',
+    '/opt/homebrew/bin/docker',
+    '/Applications/Docker.app/Contents/Resources/bin/docker',
+    `${process.env.HOME || ''}/.docker/bin/docker`,
+    '/usr/bin/docker',
+  ];
+  for (const p of candidates) {
+    if (p && existsSync(p)) return (dockerBin = p);
+  }
+  return (dockerBin = 'docker');
+}
 
 export const CONTAINER = 'sigil-postgres';
 export const VOLUME = 'sigil-pgdata';
@@ -48,44 +70,63 @@ function run(cmd, args, { timeout = 15000, input } = {}) {
   });
 }
 
-let dockerCache = null;
-/** Is Docker installed and its daemon responding? Cached for the process. */
-export async function detectDocker({ refresh = false } = {}) {
-  if (dockerCache && !refresh) return dockerCache;
-  const r = await run('docker', ['version', '--format', '{{.Server.Version}}'], { timeout: 8000 });
-  dockerCache = (r.code === 0 && !r.spawnError)
-    ? { available: true, version: r.out || 'unknown', reason: null }
-    : { available: false, version: null, reason: r.spawnError ? 'docker not found on PATH' : (r.err || 'docker daemon not responding') };
-  return dockerCache;
+/**
+ * Probe Docker. Distinguishes three states so the UI can react:
+ *   - not installed          → { installed:false, running:false, available:false }
+ *   - installed, daemon down  → { installed:true,  running:false, available:false }
+ *   - ready                   → { installed:true,  running:true,  available:true }
+ *
+ * NOT cached: Docker Desktop is frequently started/stopped, and a stale cached
+ * "available" left provisioning to fail later with a raw socket error. The
+ * probes are fast (a down daemon fails immediately), so re-probing is cheap.
+ */
+export async function detectDocker() {
+  const bin = resolveDockerBin();
+  // Client present? `--version` is client-only — works even with the daemon down.
+  const cli = await run(bin, ['--version'], { timeout: 5000 });
+  if (cli.code !== 0 || cli.spawnError) {
+    return { available: false, installed: false, running: false, version: null, reason: 'Docker is not installed.' };
+  }
+  // Daemon reachable?
+  const srv = await run(bin, ['version', '--format', '{{.Server.Version}}'], { timeout: 8000 });
+  if (srv.code === 0 && srv.out) {
+    return { available: true, installed: true, running: true, version: srv.out, reason: null };
+  }
+  return { available: false, installed: true, running: false, version: null, reason: 'Docker is installed but not running.' };
+}
+
+/**
+ * Start the Docker engine and wait until it accepts connections. macOS:
+ * `open -a Docker` (Docker Desktop); Linux: `systemctl start docker` (best
+ * effort — may need privileges). Throws if it doesn't come up in time.
+ */
+export async function startDockerEngine({ timeoutMs = 90000 } = {}) {
+  if (process.platform === 'darwin') {
+    await run('open', ['-a', 'Docker'], { timeout: 10000 });
+  } else if (process.platform === 'linux') {
+    await run('systemctl', ['start', 'docker'], { timeout: 15000 });
+  } else {
+    throw new Error('Automatic Docker start is not supported on this platform.');
+  }
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    if ((await detectDocker()).running) return;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error('Docker did not become ready in time. Start Docker Desktop and retry.');
 }
 
 async function containerState() {
-  const r = await run('docker', ['inspect', '-f', '{{.State.Running}}', CONTAINER], { timeout: 8000 });
+  const r = await run(resolveDockerBin(),['inspect', '-f', '{{.State.Running}}', CONTAINER], { timeout: 8000 });
   if (r.code !== 0) return { exists: false, running: false };
   return { exists: true, running: r.out === 'true' };
 }
 
 async function containerPort() {
-  const r = await run('docker', ['port', CONTAINER, '5432/tcp'], { timeout: 8000 });
+  const r = await run(resolveDockerBin(),['port', CONTAINER, '5432/tcp'], { timeout: 8000 });
   if (r.code !== 0) return null;
   const m = r.out.match(/:(\d+)\s*$/m);
   return m ? Number(m[1]) : null;
-}
-
-function portFree(port) {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.once('error', () => resolve(false));
-    s.once('listening', () => s.close(() => resolve(true)));
-    s.listen(port, '127.0.0.1');
-  });
-}
-
-async function pickPort(start = 5432) {
-  for (let p = start; p < start + 25; p++) {
-    if (await portFree(p)) return p;
-  }
-  return start;
 }
 
 function genPassword() {
@@ -96,7 +137,7 @@ function genPassword() {
 /** Run SQL inside the container as the postgres superuser (peer auth). */
 async function psql(db, sql) {
   const r = await run(
-    'docker',
+    resolveDockerBin(),
     ['exec', '-i', CONTAINER, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', db],
     { input: sql, timeout: 20000 },
   );
@@ -108,7 +149,7 @@ async function waitForReady({ deadlineMs = 30000 } = {}) {
   const t0 = Date.now();
   let lastErr = 'timed out';
   while (Date.now() - t0 < deadlineMs) {
-    const r = await run('docker', ['exec', CONTAINER, 'pg_isready', '-U', 'postgres'], { timeout: 5000 });
+    const r = await run(resolveDockerBin(),['exec', CONTAINER, 'pg_isready', '-U', 'postgres'], { timeout: 5000 });
     if (r.code === 0) return;
     lastErr = r.err || r.out || lastErr;
     await new Promise((res) => setTimeout(res, 700));
@@ -123,7 +164,7 @@ async function waitForReady({ deadlineMs = 30000 } = {}) {
  *
  * @returns {Promise<{ url, port, container, image, reused, pgvector }>}
  */
-export async function provisionLocalPostgres({ env = readEnvRaw() } = {}) {
+export async function provisionLocalPostgres() {
   const docker = await detectDocker();
   if (!docker.available) {
     const e = new Error(docker.reason || 'Docker is not available');
@@ -137,27 +178,32 @@ export async function provisionLocalPostgres({ env = readEnvRaw() } = {}) {
 
   if (state.exists) {
     if (!state.running) {
-      const started = await run('docker', ['start', CONTAINER], { timeout: 15000 });
+      const started = await run(resolveDockerBin(),['start', CONTAINER], { timeout: 15000 });
       if (started.code !== 0) throw new Error(`failed to start existing ${CONTAINER}: ${started.err}`);
     }
     port = (await containerPort()) || 5432;
   } else {
-    port = await pickPort(5432);
     const superPw = genPassword();
-    const created = await run('docker', [
+    // Let Docker pick a free host port on the loopback interface (`-p
+    // 127.0.0.1::5432`) instead of guessing one. Guessing with a host-side
+    // bind check misses ports already published by OTHER containers (e.g. a
+    // sibling project on 5432), which made `docker run` fail with "port is
+    // already allocated". We read the assigned port back via `docker port`.
+    const created = await run(resolveDockerBin(),[
       'run', '-d',
       '--name', CONTAINER,
       '--restart', 'unless-stopped',
       '-e', `POSTGRES_PASSWORD=${superPw}`,
       '-e', `POSTGRES_DB=${DB_NAME}`,
       '-v', `${VOLUME}:/var/lib/postgresql/data`,
-      '-p', `${port}:5432`,
+      '-p', '127.0.0.1::5432',
       IMAGE,
     ], { timeout: 60000 });
     if (created.code !== 0) {
       // Most common real-world failure: image needs pulling, or name clash.
       throw new Error(`docker run failed: ${created.err || created.out}`);
     }
+    port = (await containerPort()) || 5432;
   }
 
   await waitForReady();
@@ -196,16 +242,17 @@ export async function provisionLocalPostgres({ env = readEnvRaw() } = {}) {
  * exists-but-stopped, start it. Best-effort, never throws.
  * @returns {Promise<{ started: boolean, reason?: string }>}
  */
-export async function ensureLocalPostgresRunning(env = readEnvRaw()) {
+export async function ensureLocalPostgresRunning() {
   try {
-    const url = env.SIGIL_DATABASE_URL || '';
+    const { default: config } = await import('../../config.js');
+    const url = config.db.url || '';
     if (!/@localhost:|@127\.0\.0\.1:/.test(url)) return { started: false, reason: 'not a local url' };
     const docker = await detectDocker();
     if (!docker.available) return { started: false, reason: 'docker unavailable' };
     const state = await containerState();
     if (!state.exists) return { started: false, reason: 'no sigil-postgres container' };
     if (state.running) return { started: false, reason: 'already running' };
-    const r = await run('docker', ['start', CONTAINER], { timeout: 15000 });
+    const r = await run(resolveDockerBin(),['start', CONTAINER], { timeout: 15000 });
     return r.code === 0 ? { started: true } : { started: false, reason: r.err };
   } catch (e) {
     return { started: false, reason: e.message };
@@ -213,10 +260,10 @@ export async function ensureLocalPostgresRunning(env = readEnvRaw()) {
 }
 
 export async function stopLocalPostgres() {
-  return run('docker', ['stop', CONTAINER], { timeout: 20000 });
+  return run(resolveDockerBin(),['stop', CONTAINER], { timeout: 20000 });
 }
 
 export async function removeLocalPostgres({ deleteVolume = false } = {}) {
-  await run('docker', ['rm', '-f', CONTAINER], { timeout: 20000 });
-  if (deleteVolume) await run('docker', ['volume', 'rm', VOLUME], { timeout: 15000 });
+  await run(resolveDockerBin(),['rm', '-f', CONTAINER], { timeout: 20000 });
+  if (deleteVolume) await run(resolveDockerBin(),['volume', 'rm', VOLUME], { timeout: 15000 });
 }

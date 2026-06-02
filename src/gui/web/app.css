@@ -945,3 +945,61 @@ footer .footer-inner {
 .db-flow-row .step-label { font-size: var(--t-base); color: var(--fg-2); }
 .db-flow-row.done .step-label, .db-flow-row.active .step-label { color: var(--fg-1); }
 .db-flow-row .step-detail { font-family: var(--font-mono); font-size: var(--t-sm); color: var(--fg-3); }
+
+/* ── Native setup (setup.js) — stepped progress, no terminal logs ─────────── */
+#setup .setup-detect { margin: var(--s-3) 0 var(--s-4); }
+#setup .provider-card.disabled { opacity: .5; pointer-events: none; }
+.setup-progress { margin-top: var(--s-4); }
+.setup-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.setup-progress-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width .35s ease;
+}
+.setup-progress-label {
+  margin-top: var(--s-2);
+  font-size: .85rem;
+  color: var(--fg-3);
+}
+
+/* ── Setup: searchable model combobox (replaces the janky native datalist) ── */
+.field.combo { position: relative; }
+.combo-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin: 4px 0 0;
+  padding: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--bg-surface-2, var(--surface-2));
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.combo-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.combo-list li:hover { background: var(--accent); color: var(--accent-fg); }
+.combo-list li:hover .combo-name { color: var(--accent-fg); }
+.combo-id { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85rem; }
+.combo-name { color: var(--fg-3); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.combo-empty { cursor: default; color: var(--fg-3); }

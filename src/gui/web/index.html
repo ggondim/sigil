@@ -15,202 +15,22 @@
   <div id="toasts" class="toast-stack" aria-live="polite"></div>
 
   <!-- ════════════════════════════════════════════════════════════════════
-       ONBOARDING WIZARD (shown until SETUP_COMPLETE)
+       NATIVE SETUP (config-store driven; replaces the legacy wizard above)
+       Stepped progress bar — no terminal logs. See src/gui/web/setup.js.
        ════════════════════════════════════════════════════════════════════ -->
-  <div class="onboarding" id="onboarding" hidden>
+  <div class="onboarding" id="setup" hidden>
     <aside class="onboarding-sidebar">
       <div class="brand">
         <img class="brand-mark" src="/static/design/sigil-mark.svg" alt="Sigil" width="20" height="20">
         <div class="brand-name">Sigil</div>
         <div class="brand-badge">setup</div>
       </div>
-
-      <ol class="onboarding-steps" id="ob-steps">
-        <li class="onboarding-step active" data-ob-step="connectors">
-          <div class="num">1</div>
-          <div>
-            <div class="label">Connectors</div>
-            <div class="desc">Editors &amp; tools</div>
-          </div>
-        </li>
-        <li class="onboarding-step future" data-ob-step="llm">
-          <div class="num">2</div>
-          <div>
-            <div class="label">Provider</div>
-            <div class="desc">Fact extraction + reasoning</div>
-          </div>
-        </li>
-        <li class="onboarding-step future" data-ob-step="embedding">
-          <div class="num">3</div>
-          <div>
-            <div class="label">Embeddings</div>
-            <div class="desc">Semantic search</div>
-          </div>
-        </li>
-        <li class="onboarding-step future" data-ob-step="database">
-          <div class="num">4</div>
-          <div>
-            <div class="label">Database</div>
-            <div class="desc">Where memory lives</div>
-          </div>
-        </li>
-        <li class="onboarding-step future" data-ob-step="finish">
-          <div class="num">5</div>
-          <div>
-            <div class="label">All set</div>
-            <div class="desc">Open the dashboard</div>
-          </div>
-        </li>
-      </ol>
-
+      <ol class="onboarding-steps" id="setup-rail"></ol>
       <div class="spacer"></div>
       <p class="text-xs muted">Running locally on this machine. No telemetry; no cloud account.</p>
     </aside>
-
     <main class="onboarding-content">
-      <!-- ── Step 1: Connectors ──────────────────────────────────────── -->
-      <section class="wizard-step active" data-step="connectors">
-        <h1>Connect your tools.</h1>
-        <p class="lede">Sigil installs memory hooks into the AI coding tools you already use — one shared brain across Claude Code, Cursor, Codex, Kiro, and any MCP client. Click to connect; you can change this any time.</p>
-
-        <div class="connector-grid" id="ob-connectors"><div class="muted">detecting installed tools…</div></div>
-
-        <div class="wizard-actions">
-          <div class="spacer"></div>
-          <button class="btn ghost" data-ob-next="llm" id="ob-connectors-skip">Skip for now</button>
-          <button class="btn primary large" data-ob-next="llm">Continue</button>
-        </div>
-      </section>
-
-      <!-- ── Step 4: Database (linear guided flow) ───────────────────── -->
-      <section class="wizard-step" data-step="database">
-        <h1>Set up your database.</h1>
-        <p class="lede">Sigil stores every fact, document, and embedding in Postgres with pgvector. Let Sigil create a local one for you, or point it at a database you control.</p>
-
-        <div class="provider-card-grid" id="db-mode-cards">
-          <label class="provider-card" data-db-mode="docker" id="ob-db-mode-docker" hidden>
-            <input type="radio" name="db-mode" value="docker" hidden>
-            <span class="name">Local (automatic) <span class="badge info" style="margin-left:8px;">RECOMMENDED</span></span>
-            <span class="hint">Sigil runs a pgvector Postgres in Docker for you. Zero config.</span>
-          </label>
-          <label class="provider-card" data-db-mode="url">
-            <input type="radio" name="db-mode" value="url" hidden checked>
-            <span class="name">Connection URL</span>
-            <span class="hint">Neon, Supabase, RDS, Render, Railway, CockroachDB.</span>
-          </label>
-          <label class="provider-card" data-db-mode="fields">
-            <input type="radio" name="db-mode" value="fields" hidden>
-            <span class="name">Local Postgres install</span>
-            <span class="hint">Existing host + port + user + password.</span>
-          </label>
-        </div>
-
-        <p class="muted text-sm" id="ob-db-docker-note" style="margin-top: var(--s-2);" hidden></p>
-
-        <div id="ob-db-url" style="margin-top: var(--s-5);">
-          <label class="field">
-            <span class="label">Postgres connection URL</span>
-            <input type="text" id="ob-db-url-input" placeholder="postgres://user:pass@host.neon.tech/db?sslmode=require" autocomplete="off">
-            <span class="help">Paste from Neon dashboard / Supabase settings / RDS endpoint.</span>
-          </label>
-        </div>
-
-        <div id="ob-db-fields" style="display:none; margin-top: var(--s-5);">
-          <div class="row-2col">
-            <label class="field"><span class="label">Host</span><input type="text" id="ob-db-host" value="localhost" autocomplete="off"></label>
-            <label class="field"><span class="label">Port</span><input type="number" id="ob-db-port" value="5432"></label>
-          </div>
-          <div class="row-2col">
-            <label class="field"><span class="label">Database</span><input type="text" id="ob-db-db" value="sigil" autocomplete="off"></label>
-            <label class="field"><span class="label">User</span><input type="text" id="ob-db-user" value="sigil_app" autocomplete="off"></label>
-          </div>
-          <label class="field"><span class="label">Password</span><input type="password" id="ob-db-pass" autocomplete="off"></label>
-        </div>
-
-        <div class="flex-row" style="margin-top: var(--s-4);">
-          <button class="btn primary" id="ob-db-setup">Set up database</button>
-        </div>
-
-        <!-- Linear flow rows (filled by JS) — replaces the old toggling buttons -->
-        <div class="db-flow" id="ob-db-flow" hidden></div>
-
-        <div class="wizard-actions">
-          <button class="btn ghost" data-ob-back="embedding">Back</button>
-          <div class="spacer"></div>
-          <button class="btn primary" data-ob-next="finish" id="ob-db-next" disabled>Continue</button>
-        </div>
-      </section>
-
-      <!-- ── Step 3: LLM provider ────────────────────────────────────── -->
-      <section class="wizard-step" data-step="llm">
-        <h1>Pick an LLM provider.</h1>
-        <p class="lede">Sigil uses an LLM to extract facts from your conversations, decide whether new memory contradicts old, and synthesize search results.</p>
-
-        <div class="provider-card-grid" id="ob-llm-cards"><div class="muted">loading providers…</div></div>
-
-        <div id="ob-llm-fields" style="margin-top: var(--s-5);"></div>
-
-        <div class="flex-row" style="margin-top: var(--s-3);">
-          <button class="btn primary" id="ob-llm-save">Save and test</button>
-        </div>
-        <pre id="ob-llm-result" class="result" hidden></pre>
-
-        <div class="wizard-actions">
-          <button class="btn ghost" data-ob-back="connectors">Back</button>
-          <div class="spacer"></div>
-          <button class="btn primary" data-ob-next="embedding" id="ob-llm-next" disabled>Continue</button>
-        </div>
-      </section>
-
-      <!-- ── Step 4: Embeddings ──────────────────────────────────────── -->
-      <section class="wizard-step" data-step="embedding">
-        <h1>Pick an embedding provider.</h1>
-        <p class="lede">Vector embeddings power semantic search across your memory. The model choice fixes the vector shape — changing it later requires re-embedding every fact.</p>
-
-        <div class="provider-card-grid" id="ob-emb-cards"><div class="muted">loading providers…</div></div>
-        <div id="ob-emb-fields" style="margin-top: var(--s-5);"></div>
-
-        <div class="flex-row" style="margin-top: var(--s-3);">
-          <button class="btn primary" id="ob-emb-save">Save and test</button>
-        </div>
-        <pre id="ob-emb-result" class="result" hidden></pre>
-
-        <div class="wizard-actions">
-          <button class="btn ghost" data-ob-back="llm">Back</button>
-          <div class="spacer"></div>
-          <button class="btn primary" data-ob-next="database" id="ob-emb-next" disabled>Continue</button>
-        </div>
-      </section>
-
-      <!-- ── Step 5: Finish ──────────────────────────────────────────── -->
-      <section class="wizard-step" data-step="finish">
-        <h1>You're set up.</h1>
-        <p class="lede">Sigil's daemon is running on this machine. Open the dashboard to add memories, browse the knowledge base, and (later) connect more devices.</p>
-
-        <div class="kv" style="margin-bottom: var(--s-5);">
-          <div class="row"><div class="k">Daemon</div><div class="v" id="ob-finish-daemon">—</div></div>
-          <div class="row"><div class="k">Database</div><div class="v" id="ob-finish-db">—</div></div>
-          <div class="row"><div class="k">LLM</div><div class="v" id="ob-finish-llm">—</div></div>
-          <div class="row"><div class="k">Embeddings</div><div class="v" id="ob-finish-emb">—</div></div>
-        </div>
-
-        <h2>Next steps</h2>
-        <ul class="kv">
-          <div class="row"><div class="k">CLI</div><div class="v" style="font-family: var(--font-ui);"><code>sigil remember "..."</code>, <code>sigil search "..."</code>, <code>sigil status</code></div></div>
-          <div class="row"><div class="k">Claude Code</div><div class="v" style="font-family: var(--font-ui);">Run <code>sigil register</code> on the command line to add Sigil as an MCP server.</div></div>
-          <div class="row"><div class="k">Other devices</div><div class="v" style="font-family: var(--font-ui);">From the Devices tab in the dashboard, create a pairing code and run <code>sigil join …</code> on the joining device.</div></div>
-        </ul>
-
-        <label class="field" style="flex-direction:row; align-items:center; gap: var(--s-2); margin-top: var(--s-5);">
-          <input type="checkbox" id="ob-always-up" checked>
-          <span class="label" style="text-transform:none; letter-spacing:0;">Keep Sigil always running — start on login, auto-restart on crash or reboot (recommended)</span>
-        </label>
-
-        <div class="wizard-actions">
-          <div class="spacer"></div>
-          <button class="btn primary large" id="ob-complete">Open the dashboard →</button>
-        </div>
-      </section>
+      <section class="wizard-step active" id="setup-main"></section>
     </main>
   </div>
 

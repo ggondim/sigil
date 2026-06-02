@@ -10,7 +10,7 @@
  * `connection` field. Pool config and post-processing are applied by
  * the caller (cortex.js).
  */
-import { buildLocalConnection } from './local-postgres.js';
+import { buildLocalConnection, buildLocalConnectionFromFields } from './local-postgres.js';
 import { buildUrlConnection, classifyProvider } from './url.js';
 
 export function selectDriver(config) {
@@ -29,4 +29,4 @@ export function selectDriver(config) {
   };
 }
 
-export { buildLocalConnection, buildUrlConnection, classifyProvider };
+export { buildLocalConnection, buildLocalConnectionFromFields, buildUrlConnection, classifyProvider };

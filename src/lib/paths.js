@@ -36,6 +36,10 @@ export const MIGRATIONS_DIR = join(PKG_ROOT, 'src', 'db', 'migrations');
 const HOME = homedir();
 export const SIGIL_HOME = join(HOME, '.sigil');
 export const SIGIL_ENV_PATH = join(SIGIL_HOME, '.env');
+// Device-local config — the single versioned source of truth that replaces
+// ~/.sigil/.env (see src/setup/config-store.js). Schema-versioned + validated
+// so it can't go stale across upgrades.
+export const SIGIL_CONFIG_PATH = join(SIGIL_HOME, 'config.json');
 export const SIGIL_DB_PATH = join(SIGIL_HOME, 'db');
 export const SIGIL_MD_PATH = join(SIGIL_HOME, 'CLAUDE.md');
 export const SIGIL_SCHEMAS_DIR = join(SIGIL_HOME, 'schemas');
@@ -50,9 +54,6 @@ export const SIGIL_DAEMON_SOCK = join(SIGIL_HOME, 'sock');
 export const SIGIL_DAEMON_PID  = join(SIGIL_HOME, 'sigild.pid');
 export const SIGIL_DAEMON_LOG  = join(SIGIL_HOME, 'sigild.log');
 export const SIGIL_HEARTBEAT   = join(SIGIL_HOME, 'heartbeat.json');
-
-// Onboarding — explicit persisted wizard state (see src/onboarding/state.js)
-export const SIGIL_ONBOARDING_STATE = join(SIGIL_HOME, 'onboarding-state.json');
 
 // GUI
 export const SIGIL_GUI_TOKEN     = join(SIGIL_HOME, 'gui.token');

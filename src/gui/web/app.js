@@ -1,16 +1,10 @@
 // Sigil GUI — vanilla JS. Onboarding wizard + dashboard.
 import { toast } from './toast.js';
-import { connectorCard, dbFlowRow, setFlowRow } from './components.js';
+import { connectorCard } from './components.js';
+import { initSetup } from './setup.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => root.querySelectorAll(sel);
-
-// Onboarding machine step (SCREAMING_SNAKE) → wizard section id.
-const MACHINE_TO_STEP = { CONNECTORS: 'connectors', PROVIDER: 'llm', EMBEDDING: 'embedding', DATABASE: 'database', FINISH: 'finish' };
-async function persistStep(step, status, data = {}) {
-  try { await rpc('onboardingAdvance', { step, status, data }); }
-  catch (err) { /* non-fatal: state persistence is best-effort */ void err; }
-}
 
 // ── RPC ──────────────────────────────────────────────────────────────
 async function rpc(method, params = {}) {
@@ -54,531 +48,6 @@ async function copyToClipboard(text) {
     finally { document.body.removeChild(ta); }
   }
 }
-
-// ════════════════════════════════════════════════════════════════════
-// ONBOARDING WIZARD
-// ════════════════════════════════════════════════════════════════════
-const wizardState = { step: 'connectors', llmProvider: null, embProvider: null, llmProviders: [], embProviders: [], envKeys: null, connectorsLoaded: false, dbInit: false, connectedCount: 0 };
-
-const STEP_ORDER = ['connectors', 'llm', 'embedding', 'database', 'finish'];
-
-function setOnbStep(stepId) {
-  wizardState.step = stepId;
-  const idx = STEP_ORDER.indexOf(stepId);
-  $$('.onboarding-step').forEach((el) => {
-    const i = STEP_ORDER.indexOf(el.dataset.obStep);
-    el.classList.remove('active', 'done', 'future');
-    if (i < idx) el.classList.add('done');
-    else if (i === idx) el.classList.add('active');
-    else el.classList.add('future');
-  });
-  $$('.wizard-step').forEach((el) => el.classList.toggle('active', el.dataset.step === stepId));
-  // Lazy-fetch per-step data when first entering a step.
-  if (stepId === 'connectors' && !wizardState.connectorsLoaded) loadConnectors();
-  if (stepId === 'llm' && !wizardState.llmProviders.length) loadLlmProviders();
-  if (stepId === 'embedding' && !wizardState.embProviders.length) loadEmbeddingProviders();
-  if (stepId === 'database' && !wizardState.dbInit) initDbStep();
-  if (stepId === 'finish') renderFinish();
-  document.querySelector('.onboarding-content')?.scrollTo(0, 0);
-}
-
-async function loadOnboardingState() {
-  try {
-    const state = await rpc('onboardingState');
-    if (state.setupComplete) {
-      $('#onboarding').hidden = true;
-      return;
-    }
-    $('#onboarding').hidden = false;
-    if (state.steps.database.done) $('#ob-db-next').disabled = false;
-    if (state.steps.llm.done) $('#ob-llm-next').disabled = false;
-    if (state.steps.embedding.done) $('#ob-emb-next').disabled = false;
-    // Resume at the machine's current step (refresh mid-wizard → same place).
-    const resume = MACHINE_TO_STEP[state.machine?.currentStep];
-    if (resume && resume !== 'connectors') setOnbStep(resume);
-    else setOnbStep('connectors');
-  } catch {
-    // Could not reach daemon — show the first step anyway.
-    $('#onboarding').hidden = false;
-  }
-}
-
-// ── Connectors step ──────────────────────────────────────────────────
-async function loadConnectors() {
-  wizardState.connectorsLoaded = true;
-  const host = $('#ob-connectors');
-  try {
-    const { connectors } = await rpc('listConnectors');
-    wizardState.connectedCount = connectors.filter((c) => c.status === 'connected').length;
-    renderConnectors(connectors);
-  } catch (err) {
-    host.innerHTML = `<div class="muted">could not load connectors: ${escape(err.message)}</div>`;
-  }
-}
-
-function renderConnectors(connectors) {
-  const host = $('#ob-connectors');
-  host.innerHTML = '';
-  connectors.forEach((c) => host.appendChild(connectorCard(c, onConnectorAction)));
-}
-
-async function onConnectorAction(id, action) {
-  const host = $('#ob-connectors');
-  const card = host.querySelector(`[data-id="${id}"]`);
-  if (action === 'disconnect') {
-    try {
-      await rpc('disconnectConnector', { id });
-      toast({ variant: 'success', message: `${id} disconnected` });
-    } catch (err) { toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code }); }
-    return loadConnectors();
-  }
-  // connect / retry → optimistic "connecting" card, then refresh.
-  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onConnectorAction));
-  try {
-    await rpc('connectConnector', { id });
-    toast({ variant: 'success', message: `${id} connected` });
-  } catch (err) {
-    toast({ variant: 'error', message: err.message || `could not connect ${id}`, hint: err.hint, code: err.code });
-  }
-  return loadConnectors();
-}
-
-// ── DB step (linear guided flow) ─────────────────────────────────────
-function dbMode() {
-  return $('input[name="db-mode"]:checked')?.value || 'url';
-}
-
-$('#db-mode-cards')?.addEventListener('click', (e) => {
-  const card = e.target.closest('[data-db-mode]');
-  if (!card || card.hidden) return;
-  $$('#db-mode-cards .provider-card').forEach((c) => c.classList.remove('selected'));
-  card.classList.add('selected');
-  card.querySelector('input').checked = true;
-  const mode = card.dataset.dbMode;
-  $('#ob-db-url').style.display    = mode === 'url'    ? '' : 'none';
-  $('#ob-db-fields').style.display = mode === 'fields' ? '' : 'none';
-  $('#ob-db-setup').textContent = mode === 'docker' ? 'Create local database' : 'Set up database';
-});
-
-// Probe Docker once; if present, surface the recommended "Local (automatic)"
-// mode and select it by default. Otherwise leave URL selected.
-async function initDbStep() {
-  wizardState.dbInit = true;
-  try {
-    const d = await rpc('dbDockerAvailable');
-    const note = $('#ob-db-docker-note');
-    if (d.available) {
-      const dockerCard = $('#ob-db-mode-docker');
-      dockerCard.hidden = false;
-      dockerCard.click();
-    } else if (note) {
-      note.hidden = false;
-      note.textContent = `Docker not detected (${d.reason || 'unavailable'}) — use a connection URL or local Postgres.`;
-    }
-  } catch { /* leave URL mode as the default */ }
-}
-
-function obDbParams() {
-  if (dbMode() === 'url') return { url: $('#ob-db-url-input').value.trim() };
-  return {
-    host: $('#ob-db-host').value.trim(),
-    port: Number($('#ob-db-port').value),
-    database: $('#ob-db-db').value.trim(),
-    user: $('#ob-db-user').value.trim(),
-    password: $('#ob-db-pass').value,
-  };
-}
-
-function dbFlowInit(rows) {
-  const flow = $('#ob-db-flow');
-  flow.hidden = false;
-  flow.innerHTML = '';
-  rows.forEach(([id, label]) => flow.appendChild(dbFlowRow(id, label)));
-  return flow;
-}
-
-$('#ob-db-setup')?.addEventListener('click', async () => {
-  const btn = $('#ob-db-setup');
-  btn.disabled = true;
-  $('#ob-db-next').disabled = true;
-  const mode = dbMode();
-  try {
-    if (mode === 'docker') {
-      await runDockerFlow();
-    } else {
-      await runUrlFlow();
-    }
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-async function runDockerFlow() {
-  const flow = dbFlowInit([['provision', 'Create pgvector container'], ['migrate', 'Run migrations']]);
-  setFlowRow(flow, 'provision', { phase: 'active', detail: 'pulling image + starting…' });
-  try {
-    const r = await rpc('dbProvisionDocker');
-    setFlowRow(flow, 'provision', { phase: 'done', detail: `${r.container} :${r.port}${r.reused ? ' (reused)' : ''}` });
-    setFlowRow(flow, 'migrate', { phase: 'done', detail: `${r.migrationsRan} migrations · pgvector ✓` });
-    await onDbReady({ pgvector: true, migrationsRan: r.migrationsRan, mode: 'docker' });
-  } catch (err) {
-    setFlowRow(flow, 'provision', { phase: 'error', detail: err.code || 'failed' });
-    toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
-  }
-}
-
-async function runUrlFlow() {
-  const params = obDbParams();
-  const flow = dbFlowInit([['test', 'Test connection'], ['pgvector', 'Enable pgvector'], ['migrate', 'Run migrations']]);
-  // 1. test
-  setFlowRow(flow, 'test', { phase: 'active', detail: 'connecting…' });
-  let test;
-  try {
-    test = await rpc('testDbConnection', params);
-  } catch (err) {
-    setFlowRow(flow, 'test', { phase: 'error', detail: err.code || 'failed' });
-    return toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
-  }
-  if (!test.ok) {
-    setFlowRow(flow, 'test', { phase: 'error', detail: test.code || test.stage || 'failed' });
-    return toast({ variant: 'error', message: test.error || 'connection failed', hint: test.fixHint, code: test.kind });
-  }
-  setFlowRow(flow, 'test', { phase: 'done', detail: `${test.provider} · ${test.connectMs}ms` });
-  // 2. pgvector
-  if (!test.pgvector) {
-    setFlowRow(flow, 'pgvector', { phase: 'active', detail: 'installing…' });
-    try {
-      const pg = await rpc('ensurePgvector', params);
-      if (!pg.ok || !pg.installed) throw Object.assign(new Error(pg.error || 'could not enable pgvector'), { hint: pg.fixHint });
-      setFlowRow(flow, 'pgvector', { phase: 'done', detail: pg.version ? `v${pg.version}` : 'enabled' });
-    } catch (err) {
-      setFlowRow(flow, 'pgvector', { phase: 'error', detail: err.code || 'failed' });
-      return toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
-    }
-  } else {
-    setFlowRow(flow, 'pgvector', { phase: 'done', detail: 'already enabled' });
-  }
-  // 3. persist + migrate
-  setFlowRow(flow, 'migrate', { phase: 'active', detail: 'writing env + migrating…' });
-  try {
-    if (params.url) {
-      await rpc('writeEnv', { patch: { SIGIL_DATABASE_URL: params.url, SIGIL_DB_HOST: null, SIGIL_DB_PORT: null, SIGIL_DB_NAME: null, SIGIL_DB_USER: null, SIGIL_DB_PASSWORD: null } });
-    } else {
-      await rpc('writeEnv', { patch: { SIGIL_DB_HOST: params.host, SIGIL_DB_PORT: String(params.port), SIGIL_DB_NAME: params.database, SIGIL_DB_USER: params.user, SIGIL_DB_PASSWORD: params.password, SIGIL_DATABASE_URL: null } });
-    }
-    const m = await rpc('runMigrations', params);
-    setFlowRow(flow, 'migrate', { phase: 'done', detail: `batch ${m.batchNo} · ${m.ran.length} applied` });
-    await onDbReady({ pgvector: true, migrationsRan: m.ran.length, mode: dbMode() });
-  } catch (err) {
-    setFlowRow(flow, 'migrate', { phase: 'error', detail: err.code || 'failed' });
-    toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code });
-  }
-}
-
-async function onDbReady(data) {
-  $('#ob-db-next').disabled = false;
-  toast({ variant: 'success', message: 'Database ready.' });
-  await persistStep('DATABASE', 'DONE', data);
-}
-
-// ── LLM provider step ───────────────────────────────────────────────
-async function loadLlmProviders() {
-  try {
-    const { providers } = await rpc('listLlmProviders');
-    wizardState.llmProviders = providers;
-    $('#ob-llm-cards').innerHTML = providers.map((p) => `
-      <label class="provider-card" data-llm-id="${escape(p.id)}">
-        <span class="check"></span>
-        <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}</span>
-        <span class="hint">${escape(p.hint)}</span>
-      </label>
-    `).join('');
-    // Auto-select recommended
-    const recommended = providers.find((p) => p.recommended);
-    if (recommended) selectLlmProvider(recommended.id);
-  } catch (err) {
-    $('#ob-llm-cards').innerHTML = `<div class="muted">failed: ${escape(err.message)}</div>`;
-  }
-}
-function selectLlmProvider(id) {
-  wizardState.llmProvider = id;
-  $$('#ob-llm-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.llmId === id));
-  const p = wizardState.llmProviders.find((x) => x.id === id);
-  if (!p) return;
-  if (!p.fields.length) {
-    $('#ob-llm-fields').innerHTML = `<p class="muted text-sm">No additional configuration needed — Sigil will use your local Claude Code subscription.</p>`;
-  } else {
-    $('#ob-llm-fields').innerHTML = p.fields.map((f) => `
-      <label class="field">
-        <span class="label">${escape(f.label)}${f.optional ? ' <span class="muted text-xs">(optional)</span>' : ''}</span>
-        <input type="${f.type}" data-llm-field="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off">
-      </label>
-    `).join('');
-  }
-}
-$('#ob-llm-cards')?.addEventListener('click', (e) => {
-  const card = e.target.closest('[data-llm-id]');
-  if (card) selectLlmProvider(card.dataset.llmId);
-});
-$('#ob-llm-save')?.addEventListener('click', async () => {
-  if (!wizardState.llmProvider) return;
-  const fields = {};
-  $$('#ob-llm-fields [data-llm-field]').forEach((i) => { if (i.value) fields[i.dataset.llmField] = i.value; });
-  const out = $('#ob-llm-result');
-  out.hidden = false; out.className = 'result'; out.textContent = 'saving…';
-  try {
-    await rpc('configureLlm', { id: wizardState.llmProvider, ...fields });
-    out.textContent = 'env written. Testing live LLM call…';
-    const test = await rpc('testLlm', {});
-    if (test.ok) {
-      out.classList.add('ok');
-      out.textContent += `\n✓ provider responded: "${test.response}"`;
-      $('#ob-llm-next').disabled = false;
-      await persistStep('PROVIDER', 'DONE', { llmProvider: wizardState.llmProvider });
-    } else {
-      out.classList.add('err');
-      out.textContent += `\n✗ test failed: ${test.error}`;
-      toast({ variant: 'error', message: test.error || 'LLM test failed', hint: test.fixHint, code: test.kind });
-    }
-  } catch (err) {
-    out.classList.add('err');
-    out.textContent = `✗ ${err.message}`;
-  }
-});
-
-// ── Embedding step ──────────────────────────────────────────────────
-
-// Snapshot which keys currently exist in ~/.sigil/.env. Secrets come back
-// masked but carry `hasValue`, which is all we need to decide whether a
-// "shared with LLM" field can be hidden. Returns a Set of present key names.
-async function snapshotEnvKeys() {
-  try {
-    const { entries } = await rpc('readEnv');
-    return new Set(
-      Object.entries(entries || {})
-        .filter(([, v]) => (v.masked ? v.hasValue : Boolean(v.value)))
-        .map(([k]) => k),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-// Decide which provider fields to render. A field marked `sharedWith:'llm'`
-// is only safe to hide when the LLM step actually wrote that key — claude-cli,
-// anthropic, and ollama LLM providers set no OpenAI/OpenRouter key, so an
-// embedder that "reuses your LLM key" must still prompt for it. Otherwise the
-// embed test 401s with a confusing "rejected the API key" message.
-function partitionProviderFields(provider, envKeys) {
-  const has = (k) => Boolean(envKeys && envKeys.has(k));
-  const show = (provider.fields || []).filter((f) => !f.sharedWith || !has(f.name));
-  const reusesShared = (provider.fields || []).some((f) => f.sharedWith === 'llm' && has(f.name));
-  return { show, reusesShared };
-}
-
-// Render provider field inputs. `attr` is the data-attribute the save handler
-// scans for (data-emb-field in the wizard, data-cfg-field in Settings).
-function renderProviderFields(provider, envKeys, attr) {
-  const { show, reusesShared } = partitionProviderFields(provider, envKeys);
-  const reuseNote = reusesShared
-    ? '<p class="muted text-sm">Reuses the API key from your LLM step.</p>'
-    : '';
-  if (!show.length) {
-    return reuseNote || '<p class="muted text-sm">No configuration needed.</p>';
-  }
-  return reuseNote + show.map((f) => {
-    const note = f.sharedWith === 'llm'
-      ? ' <span class="muted text-xs">(your LLM provider didn\'t set one — paste it here)</span>'
-      : (f.optional ? ' <span class="muted text-xs">(optional)</span>' : '');
-    return `<label class="field"><span class="label">${escape(f.label)}${note}</span>`
-      + `<input type="${escape(f.type)}" ${attr}="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off"></label>`;
-  }).join('');
-}
-
-async function loadEmbeddingProviders() {
-  try {
-    // Snapshot env first so a "shared with LLM" field is only hidden when the
-    // LLM step actually wrote that key (see partitionProviderFields).
-    wizardState.envKeys = await snapshotEnvKeys();
-    const { providers } = await rpc('listEmbeddingProviders');
-    wizardState.embProviders = providers;
-    $('#ob-emb-cards').innerHTML = providers.map((p) => `
-      <label class="provider-card" data-emb-id="${escape(p.id)}">
-        <span class="check"></span>
-        <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}</span>
-        <span class="hint">${escape(p.hint)}</span>
-      </label>
-    `).join('');
-    const r = providers.find((p) => p.recommended);
-    if (r) selectEmbProvider(r.id);
-  } catch (err) {
-    $('#ob-emb-cards').innerHTML = `<div class="muted">failed: ${escape(err.message)}</div>`;
-  }
-}
-function selectEmbProvider(id) {
-  wizardState.embProvider = id;
-  $$('#ob-emb-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.embId === id));
-  const p = wizardState.embProviders.find((x) => x.id === id);
-  if (!p) return;
-  $('#ob-emb-fields').innerHTML = renderProviderFields(p, wizardState.envKeys, 'data-emb-field');
-}
-$('#ob-emb-cards')?.addEventListener('click', (e) => {
-  const card = e.target.closest('[data-emb-id]');
-  if (card) selectEmbProvider(card.dataset.embId);
-});
-// Shared embedding apply+gate, used by both the wizard and Settings.
-// 1. Check dim-compat against the target DB BEFORE writing config.
-// 2. If a conflict (DB has data at a different dim) → render Wipe/Cancel,
-//    do NOT write config. Caller stays put until the user resolves it.
-// 3. Otherwise configure + live-test, surfacing honest errors.
-// Returns true on success (embedder healthy), false otherwise.
-async function applyEmbeddingProvider({ providerId, fields, out, conflictHost, onSuccess }) {
-  const prov = (wizardState.embProviders || []).find((p) => p.id === providerId);
-  out.hidden = false; out.className = 'result';
-  out.textContent = 'checking compatibility with your database…';
-
-  // Dim-conflict gate (skip silently if the DB isn't reachable yet — the
-  // embedder test below will surface that honestly).
-  try {
-    const compat = await rpc('inspectEmbeddingCompat', { id: providerId });
-    if (compat.ok && compat.conflict) {
-      renderConflictCard({
-        host: conflictHost, compat, providerId, fields,
-        out, onResolved: () => applyEmbeddingProvider({ providerId, fields, out, conflictHost, onSuccess }),
-      });
-      return false;
-    }
-  } catch { /* DB unreachable — let the embed test report the real cause */ }
-
-  out.textContent = 'saving…';
-  try {
-    await rpc('configureEmbedding', { id: providerId, ...fields });
-    out.textContent = 'env written. Testing embed call…';
-    const test = await rpc('testEmbedding', {});
-    if (test.ok) {
-      out.classList.add('ok');
-      out.textContent = `✓ embedder healthy — returned ${test.dim}-dim vector (${escape(prov?.label || providerId)})`;
-      if (onSuccess) onSuccess(test);
-      return true;
-    }
-    out.classList.add('err');
-    out.textContent = `✗ ${test.error || 'embed test failed'}`;
-    if (test.fixHint) out.textContent += `\n  → ${test.fixHint}`;
-    return false;
-  } catch (err) {
-    out.classList.add('err');
-    out.textContent = `✗ ${err.message}`;
-    return false;
-  }
-}
-
-// Render the dimension-conflict resolution card: Wipe (destructive, confirmed)
-// or Cancel. Never auto-destroys. `host` (the conflict container element) gets
-// the card; `onResolved` re-runs the apply after a successful wipe.
-function renderConflictCard({ host, compat, out, onResolved }) {
-  const target = host || out.parentElement;
-  const rows = Object.entries(compat.rowsAtRisk || {})
-    .map(([t, n]) => `${n.toLocaleString()} ${t}`).join(', ');
-  const card = document.createElement('div');
-  card.className = 'result err conflict-card';
-  card.innerHTML = `
-    <strong>Embedding size mismatch.</strong>
-    Your database stores <b>${compat.currentDim}-dim</b> vectors, but this provider produces
-    <b>${compat.targetDim}-dim</b>. They can't coexist — every save would fail.
-    <div class="muted" style="margin:6px 0;">At risk: ${escape(rows)} (${compat.totalAtRisk.toLocaleString()} rows).</div>
-    <div class="flex-row" style="margin-top:8px;">
-      <button type="button" class="btn danger" data-conflict-wipe>Wipe data & switch to ${compat.targetDim}-dim</button>
-      <button type="button" class="btn" data-conflict-cancel>Cancel</button>
-    </div>
-    <div class="muted text-sm" style="margin-top:6px;">Wipe deletes all ${compat.totalAtRisk.toLocaleString()} stored vectors. Pods/structure are kept; re-ingest to repopulate.</div>
-  `;
-  out.hidden = true;
-  // Remove any prior card before adding a fresh one.
-  target.querySelectorAll('.conflict-card').forEach((c) => c.remove());
-  target.appendChild(card);
-
-  card.querySelector('[data-conflict-cancel]').addEventListener('click', () => {
-    card.remove();
-    out.hidden = false; out.className = 'result';
-    out.textContent = 'Cancelled — no changes made. Pick a provider matching your data, or wipe to switch.';
-  });
-  card.querySelector('[data-conflict-wipe]').addEventListener('click', async (e) => {
-    const btn = e.target;
-    btn.disabled = true; btn.textContent = 'Wiping…';
-    try {
-      const r = await rpc('wipeEmbeddingData', { confirm: true });
-      if (!r.ok) { btn.textContent = `Wipe failed: ${r.error}`; btn.disabled = false; return; }
-      card.remove();
-      // Re-migrate the now-empty schema to the new dim happens on next
-      // migration/restart; re-run the apply which will now find no conflict.
-      if (onResolved) await onResolved();
-    } catch (err) {
-      btn.textContent = `Wipe failed: ${err.message}`; btn.disabled = false;
-    }
-  });
-}
-
-$('#ob-emb-save')?.addEventListener('click', async () => {
-  if (!wizardState.embProvider) return;
-  const fields = {};
-  $$('#ob-emb-fields [data-emb-field]').forEach((i) => { if (i.value) fields[i.dataset.embField] = i.value; });
-  const ok = await applyEmbeddingProvider({
-    providerId: wizardState.embProvider,
-    fields,
-    out: $('#ob-emb-result'),
-    conflictHost: $('#ob-emb-fields')?.parentElement,
-    onSuccess: () => {
-      $('#ob-emb-next').disabled = false;
-      persistStep('EMBEDDING', 'DONE', { provider: wizardState.embProvider });
-    },
-  });
-  if (!ok) $('#ob-emb-next').disabled = true;
-});
-
-// ── Finish step ─────────────────────────────────────────────────────
-async function renderFinish() {
-  try {
-    const [ping, state] = await Promise.all([rpc('ping'), rpc('onboardingState')]);
-    $('#ob-finish-daemon').textContent = `pid ${ping.pid} · up ${formatUptime(ping.uptimeMs)}`;
-    $('#ob-finish-db').textContent = state.steps.database.done
-      ? `${state.steps.database.migrationsRan} migrations · pgvector ${state.steps.database.pgvector ? '✓' : '✗'}`
-      : 'not configured';
-    $('#ob-finish-llm').textContent = state.env.llmProvider || 'not configured';
-    $('#ob-finish-emb').textContent = state.env.embeddingProvider
-      ? `${state.env.embeddingProvider} · ${state.env.embeddingModel} · ${state.env.embeddingDim}d`
-      : 'not configured';
-  } catch { /* ignore */ }
-}
-$('#ob-complete')?.addEventListener('click', async () => {
-  const installService = $('#ob-always-up')?.checked === true;
-  try {
-    const r = await rpc('markOnboardingComplete', { installService });
-    if (installService && r && r.serviceInstalled === false) {
-      toast({ variant: 'info', message: 'Could not install the always-up service on this platform.', hint: 'Sigil still auto-starts on first use; retry with `sigil service install`.' });
-    }
-  } catch { /* daemon restarts on complete — expected to drop */ }
-  $('#onboarding').hidden = true;
-  // Daemon is handing off (restart / service). Give it a moment, then refresh.
-  setTimeout(() => refreshHealth(), 1500);
-});
-
-// ── Navigation between wizard steps ──────────────────────────────────
-document.addEventListener('click', (e) => {
-  const n = e.target.closest('[data-ob-next]');
-  if (n) {
-    e.preventDefault();
-    // Persist the step we're leaving (connectors is skippable — DONE if any
-    // tool connected, else SKIPPED). Provider/Embedding/Database persist on
-    // their own success handlers.
-    if (wizardState.step === 'connectors') {
-      persistStep('CONNECTORS', wizardState.connectedCount > 0 ? 'DONE' : 'SKIPPED', {});
-    }
-    setOnbStep(n.dataset.obNext);
-    return;
-  }
-  const b = e.target.closest('[data-ob-back]');
-  if (b) { e.preventDefault(); setOnbStep(b.dataset.obBack); return; }
-});
 
 // ════════════════════════════════════════════════════════════════════
 // DASHBOARD (unchanged behavior)
@@ -686,31 +155,37 @@ async function refreshMethods() {
 }
 
 async function refreshEnv() {
-  // Config summary (current providers) + raw env table.
+  // Config summary from the config store (config.json), secrets masked.
   try {
-    const state = await rpc('onboardingState', {});
-    const e = state.env || {};
-    const dbDesc = e.hasDatabaseUrl ? 'connection URL'
-      : e.hasDiscreteDb ? 'local Postgres (host/port)'
+    const c = await rpc('setup.config', {});
+    const db = c.database || {};
+    const dbDesc = db.mode === 'url' ? `connection URL (${db.urlHost || '—'})`
+      : db.mode === 'docker' ? `Docker container (localhost:${db.port})`
+      : db.mode === 'local' ? `local Postgres (${db.host}:${db.port})`
       : 'not configured';
-    $('#cfg-db').textContent = `${dbDesc}${state.steps?.database?.done ? ' · ready' : ''}`;
-    $('#cfg-llm').textContent = e.llmProvider || 'not configured';
-    $('#cfg-emb').textContent = e.embeddingProvider
-      ? `${e.embeddingProvider} · ${e.embeddingModel} · ${e.embeddingDim}d`
+    $('#cfg-db').textContent = `${dbDesc}${c.setup?.steps?.database === 'done' ? ' · ready' : ''}`;
+    $('#cfg-llm').textContent = c.llm?.provider ? `${c.llm.provider}${c.llm.model ? ` · ${c.llm.model}` : ''}` : 'not configured';
+    $('#cfg-emb').textContent = c.embedding?.provider
+      ? `${c.embedding.provider} · ${c.embedding.model} · ${c.embedding.dim}d`
       : 'not configured';
-  } catch { /* summary best-effort */ }
-
-  try {
-    const data = await rpc('readEnv', {});
     const tbody = $('#env-table tbody');
-    const rows = Object.entries(data.entries).sort(([a], [b]) => a.localeCompare(b));
-    if (!rows.length) { tbody.innerHTML = '<tr><td colspan="2" class="empty">no entries</td></tr>'; return; }
-    tbody.innerHTML = rows.map(([k, v]) => v.masked
-      ? `<tr><td class="mono">${escape(k)}</td><td>${v.hasValue ? '<span class="badge ok">configured</span>' : '<span class="badge">empty</span>'}</td></tr>`
-      : `<tr><td class="mono">${escape(k)}</td><td class="mono">${escape(v.value)}</td></tr>`
-    ).join('');
+    if (tbody) {
+      const rows = [
+        ['Database', dbDesc],
+        ['LLM provider', c.llm?.provider || '—'],
+        ['LLM model', c.llm?.model || '—'],
+        ['LLM key', c.llm?.hasKey ? 'configured' : '—'],
+        ['Embedding provider', c.embedding?.provider || '—'],
+        ['Embedding model', c.embedding?.model || '—'],
+        ['Embedding dim', String(c.embedding?.dim || '—')],
+        ['Embedding key', c.embedding?.hasKey ? 'configured' : '—'],
+        ['Name', c.identity?.name || '—'],
+      ];
+      tbody.innerHTML = rows.map(([k, v]) => `<tr><td class="mono">${escape(k)}</td><td>${escape(v)}</td></tr>`).join('');
+    }
   } catch (err) {
-    $('#env-table tbody').innerHTML = `<tr><td colspan="2" class="empty">${escape(err.message)}</td></tr>`;
+    const tbody = $('#env-table tbody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="2" class="empty">${escape(err.message)}</td></tr>`;
   }
 }
 
@@ -755,13 +230,14 @@ async function onSettingsClientAction(id, action) {
 }
 
 // ── Settings: live provider switcher (LLM + embedding) ───────────────
-// Reuses the wizard's provider catalogs + the shared applyEmbeddingProvider
-// gate. "Apply" persists config and restarts the daemon so the new pool /
-// embedder take effect; the 5s health poll recovers from the restart gap.
-const cfgSwitch = { kind: null, providerId: null, providers: [], envKeys: null };
+// Drives the same setup service the first-run wizard uses (setup.detect +
+// setup.run). "Apply" persists config + live-tests, then restarts the daemon
+// so the new provider takes effect; the 5s health poll recovers from the gap.
+const cfgSwitch = { kind: null, step: null, providerId: null, providers: [] };
 
 async function openSwitcher(kind) {
   cfgSwitch.kind = kind;
+  cfgSwitch.step = kind === 'llm' ? 'llm' : 'embedding';
   cfgSwitch.providerId = null;
   $('#cfg-switch-title').textContent = kind === 'llm' ? 'Change LLM provider' : 'Change embedding provider';
   $('#cfg-switch-conflict').innerHTML = '';
@@ -769,14 +245,9 @@ async function openSwitcher(kind) {
   const res = $('#cfg-switch-result'); res.style.display = 'none'; res.textContent = '';
   $('#cfg-switch').style.display = '';
   try {
-    // Snapshot env so a "shared with LLM" embedder field is only hidden when
-    // the key actually exists (see partitionProviderFields).
-    cfgSwitch.envKeys = await snapshotEnvKeys();
-    const { providers } = await rpc(kind === 'llm' ? 'listLlmProviders' : 'listEmbeddingProviders');
-    cfgSwitch.providers = providers;
-    // Keep the wizard's catalog in sync so applyEmbeddingProvider can label.
-    if (kind === 'embedding') wizardState.embProviders = providers;
-    $('#cfg-switch-cards').innerHTML = providers.map((p) => `
+    const { providers } = await rpc('setup.detect', { step: cfgSwitch.step });
+    cfgSwitch.providers = providers || [];
+    $('#cfg-switch-cards').innerHTML = cfgSwitch.providers.map((p) => `
       <label class="provider-card" data-cfg-id="${escape(p.id)}">
         <span class="check"></span>
         <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}</span>
@@ -787,12 +258,26 @@ async function openSwitcher(kind) {
   }
 }
 
+// Fields to collect for the chosen provider (llm: from the catalog; embedding:
+// synthesized — a key unless it can reuse the LLM key, + an Ollama host).
+function cfgSwitchFields(p) {
+  if (cfgSwitch.step === 'llm') return p.fields || [];
+  const f = [];
+  if (p.keyed && !p.sharedKeyAvailable) f.push({ name: 'apiKey', label: `${p.label} API key`, type: 'password', placeholder: 'paste key' });
+  if (p.id === 'ollama') f.push({ name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' });
+  return f;
+}
+
 function selectSwitchProvider(id) {
   cfgSwitch.providerId = id;
   $$('#cfg-switch-cards .provider-card').forEach((c) => c.classList.toggle('selected', c.dataset.cfgId === id));
   const p = cfgSwitch.providers.find((x) => x.id === id);
   if (!p) return;
-  $('#cfg-switch-fields').innerHTML = renderProviderFields(p, cfgSwitch.envKeys, 'data-cfg-field');
+  const fields = cfgSwitchFields(p);
+  $('#cfg-switch-fields').innerHTML = fields.length
+    ? fields.map((f) => `<label class="field"><span class="label">${escape(f.label)}</span>
+        <input type="${escape(f.type)}" data-cfg-field="${escape(f.name)}" placeholder="${escape(f.placeholder || '')}" autocomplete="off"></label>`).join('')
+    : '<p class="muted text-sm">No additional configuration needed.</p>';
   $('#cfg-switch-conflict').innerHTML = '';
 }
 
@@ -806,35 +291,25 @@ $('#cfg-switch-cards')?.addEventListener('click', (e) => {
 
 $('#cfg-switch-apply')?.addEventListener('click', async () => {
   if (!cfgSwitch.providerId) return;
-  const fields = {};
-  $$('#cfg-switch-fields [data-cfg-field]').forEach((i) => { if (i.value) fields[i.dataset.cfgField] = i.value; });
+  const input = { provider: cfgSwitch.providerId };
+  $$('#cfg-switch-fields [data-cfg-field]').forEach((i) => { if (i.value) input[i.dataset.cfgField] = i.value; });
   const out = $('#cfg-switch-result');
-
-  if (cfgSwitch.kind === 'embedding') {
-    // Route through the shared dim-conflict gate. On success, restart.
-    const ok = await applyEmbeddingProvider({
-      providerId: cfgSwitch.providerId,
-      fields,
-      out,
-      conflictHost: $('#cfg-switch-conflict'),
-      onSuccess: () => restartAndClose(out),
-    });
-    if (!ok) return;
-  } else {
-    out.style.display = 'block'; out.className = 'result'; out.textContent = 'saving…';
-    try {
-      await rpc('configureLlm', { id: cfgSwitch.providerId, ...fields });
-      const test = await rpc('testLlm', {});
-      if (!test.ok) {
-        out.classList.add('err');
-        out.textContent = `✗ ${test.error || 'LLM test failed'}${test.fixHint ? '\n  → ' + test.fixHint : ''}`;
-        return;
-      }
-      out.classList.add('ok'); out.textContent = `✓ LLM responded: "${test.response}"`;
-      restartAndClose(out);
-    } catch (err) {
-      out.classList.add('err'); out.textContent = `✗ ${err.message}`;
+  out.style.display = 'block'; out.className = 'result'; out.textContent = 'saving…';
+  try {
+    const res = await rpc('setup.run', { step: cfgSwitch.step, input });
+    if (!res.ok) {
+      out.classList.add('err');
+      const msg = res.error || (res.errors && Object.values(res.errors)[0]) || 'failed';
+      out.textContent = `✗ ${msg}${res.hint ? `\n  → ${res.hint}` : ''}`;
+      return;
     }
+    out.classList.add('ok');
+    out.textContent = cfgSwitch.step === 'llm'
+      ? `✓ LLM responded: "${res.result?.response || 'ok'}"`
+      : `✓ embedder healthy — ${res.result?.dim}-dim`;
+    restartAndClose(out);
+  } catch (err) {
+    out.classList.add('err'); out.textContent = `✗ ${err.message}`;
   }
 });
 
@@ -1302,5 +777,6 @@ $('#dev-create')?.addEventListener('click', async () => {
 // ════════════════════════════════════════════════════════════════════
 const initial = (window.location.hash || '#health').slice(1);
 setRoute(validRoutes.includes(initial) ? initial : 'health');
-loadOnboardingState();
+// Native config-store-driven setup (replaces the legacy onboardingState wizard).
+initSetup();
 setInterval(refreshHealth, 5000);
