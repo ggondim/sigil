@@ -20,14 +20,15 @@
  * later requires no orchestration changes.
  */
 import bus from '../daemon/events.js';
-import { getConfig, setStepStatus, markSetupComplete, isSetupComplete, resetConfig, EMBEDDING_DIM } from './config-store.js';
+import { getConfig, setStepStatus, markSetupComplete, resetConfig, EMBEDDING_DIM } from './config-store.js';
 import databaseStep from './steps/database.js';
 import llmStep from './steps/llm.js';
 import embeddingStep from './steps/embedding.js';
+import connectorsStep from './steps/connectors.js';
 import identityStep from './steps/identity.js';
 
-// Ordered: DB → LLM → Embeddings → Your name.
-const STEPS = [databaseStep, llmStep, embeddingStep, identityStep];
+// Ordered: DB → LLM → Embeddings → Coding agents → Your name.
+const STEPS = [databaseStep, llmStep, embeddingStep, connectorsStep, identityStep];
 
 // The full intended order for display, so the GUI can show upcoming steps even
 // before they're implemented. Steps not in STEPS are shown but not runnable.
@@ -35,6 +36,7 @@ const PLANNED = [
   { id: 'database', title: 'Database' },
   { id: 'llm', title: 'LLM provider' },
   { id: 'embedding', title: 'Embeddings' },
+  { id: 'connectors', title: 'Coding agents' },
   { id: 'identity', title: 'Your name' },
 ];
 
@@ -63,7 +65,11 @@ export function getSetupState() {
     status: cfg.setup?.steps?.[p.id] || 'pending',
   }));
   const next = steps.find((s) => s.implemented && s.status !== 'done')?.id || null;
-  return { complete: isSetupComplete(), steps, currentStep: next };
+  // Derive completion from the steps so adding a new step (e.g. connectors)
+  // automatically reopens setup until it's done — never trust a stale persisted
+  // flag. (markSetupComplete is still written for any external readers.)
+  const complete = steps.length > 0 && steps.every((s) => s.status === 'done');
+  return { complete, steps, currentStep: next };
 }
 
 /** Run a step's detection (drives the UI's choices). {} when it has none. */

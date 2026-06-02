@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { safeWrite } from '../safe-write.js';
+import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
 
 const KIRO_HOME = join(homedir(), '.kiro');
@@ -37,7 +38,7 @@ const meta = {
 };
 
 async function detect() {
-  return existsSync(KIRO_HOME);
+  return detectInstalled({ dirs: [KIRO_HOME], apps: ['Kiro'], bins: ['kiro'] });
 }
 
 function resolveServerPath() {

@@ -35,7 +35,7 @@ const PROVIDERS = [
   {
     id: 'ollama', label: 'Ollama', hint: 'Local + private; slower on small machines',
     fields: [
-      { name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' },
+      { name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434', optional: true },
       { name: 'model', label: 'Model', type: 'text', placeholder: 'qwen2.5:7b' },
     ],
   },

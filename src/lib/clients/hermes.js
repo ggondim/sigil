@@ -26,6 +26,8 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { detectInstalled } from './detect.js';
+
 const HERMES_HOME = join(homedir(), '.hermes');
 const HERMES_AGENT_DIR = join(HERMES_HOME, 'hermes-agent');
 const HERMES_MEMORY_PLUGINS_DIR = join(HERMES_AGENT_DIR, 'plugins', 'memory');
@@ -46,7 +48,7 @@ async function detect() {
   // surface. If that tree exists, Hermes is installed enough to install
   // into; we don't require the binary on PATH because Hermes manages its
   // own venv under ~/.hermes/node and ~/.hermes/bin.
-  return existsSync(HERMES_MEMORY_PLUGINS_DIR);
+  return detectInstalled({ dirs: [HERMES_MEMORY_PLUGINS_DIR, HERMES_HOME], bins: ['hermes'] });
 }
 
 // Targeted edit of the memory.provider line inside config.yaml.

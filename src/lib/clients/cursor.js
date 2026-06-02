@@ -26,6 +26,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { safeWrite } from '../safe-write.js';
+import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
 
 const CURSOR_HOME = join(homedir(), '.cursor');
@@ -44,7 +45,7 @@ const meta = {
 };
 
 async function detect() {
-  return existsSync(CURSOR_HOME);
+  return detectInstalled({ dirs: [CURSOR_HOME], apps: ['Cursor'], bins: ['cursor'] });
 }
 
 // Pick the MCP server file Cursor should spawn. dist/server.js if the

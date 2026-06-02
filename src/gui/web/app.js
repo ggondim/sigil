@@ -264,7 +264,7 @@ function cfgSwitchFields(p) {
   if (cfgSwitch.step === 'llm') return p.fields || [];
   const f = [];
   if (p.keyed && !p.sharedKeyAvailable) f.push({ name: 'apiKey', label: `${p.label} API key`, type: 'password', placeholder: 'paste key' });
-  if (p.id === 'ollama') f.push({ name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' });
+  if (p.id === 'ollama') f.push({ name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434', optional: true });
   return f;
 }
 

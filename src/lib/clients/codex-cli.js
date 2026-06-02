@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import TOML from '@iarna/toml';
 
 import { safeWrite } from '../safe-write.js';
+import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
 
 const CODEX_HOME = join(homedir(), '.codex');
@@ -46,7 +47,7 @@ const meta = {
 };
 
 async function detect() {
-  return existsSync(CODEX_HOME);
+  return detectInstalled({ dirs: [CODEX_HOME], bins: ['codex'] });
 }
 
 function resolveServerPath() {

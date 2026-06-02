@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 import { safeWrite } from '../safe-write.js';
+import { detectInstalled } from './detect.js';
 import { writeSharedInstructions, SHARED_INSTRUCTIONS_PATH } from './instructions.js';
 
 const CLAUDE_HOME = join(homedir(), '.claude');
@@ -35,7 +36,7 @@ const meta = {
 };
 
 async function detect() {
-  return existsSync(CLAUDE_HOME);
+  return detectInstalled({ dirs: [CLAUDE_HOME], bins: ['claude'] });
 }
 
 // Adds the single @~/.sigil/CLAUDE.md line to ~/.claude/CLAUDE.md.

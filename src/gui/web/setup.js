@@ -12,6 +12,7 @@
  */
 import { rpc } from './api.js';
 import { toast } from './toast.js';
+import { connectorCard } from './components.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -20,6 +21,7 @@ const STEP_DESC = {
   database: 'Where memory lives',
   llm: 'Fact extraction + reasoning',
   embedding: 'Semantic search',
+  connectors: 'Editors & tools that share this brain',
   identity: 'Personalize + smoke-test',
 };
 
@@ -140,6 +142,7 @@ async function enterStep(stepId) {
   if (stepId === 'database') return renderDatabaseStep();
   if (stepId === 'llm') return renderProviderStep('llm');
   if (stepId === 'embedding') return renderProviderStep('embedding');
+  if (stepId === 'connectors') return renderConnectorsStep();
   if (stepId === 'identity') return renderIdentityStep();
   renderComingSoon();
 }
@@ -250,7 +253,7 @@ function providerFields(stepId, p) {
   let note = '';
   if (p.keyed && !p.sharedKeyAvailable) fields.push({ name: 'apiKey', label: `${p.label} API key`, type: 'password', placeholder: 'paste key' });
   else if (p.keyed && p.sharedKeyAvailable) note = 'Reuses the API key from your LLM step.';
-  if (p.id === 'ollama') fields.push({ name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' });
+  if (p.id === 'ollama') fields.push({ name: 'host', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434', optional: true });
   return { fields, note };
 }
 
@@ -331,6 +334,47 @@ function buildModelCombo(input) {
 function runProviderStep(stepId) {
   if (busy || !selectedProvider) return;
   runStep(stepId, { provider: selectedProvider, ...collectFields() });
+}
+
+// ── Connectors step (multi-toggle list) ──────────────────────────────────────
+async function renderConnectorsStep() {
+  shell({
+    title: 'Connect your coding agents.',
+    lede: 'Sigil installs memory hooks into the AI tools you already use — one shared brain across Claude Code, Cursor, Codex, Kiro, and more. Connect any you want; you can change this any time in Settings.',
+    body: '<div class="connector-grid" id="setup-connectors"><div class="muted">detecting installed tools…</div></div>',
+  });
+  // Connectors are optional — Continue is always enabled.
+  $('#setup-run').disabled = false;
+  $('#setup-run').addEventListener('click', () => runStep('connectors', {}));
+  await loadSetupConnectors();
+}
+
+async function loadSetupConnectors() {
+  const host = $('#setup-connectors');
+  if (!host) return;
+  try {
+    const { connectors } = await rpc('listConnectors');
+    host.innerHTML = '';
+    if (!connectors.length) { host.innerHTML = '<div class="muted">no agents detected on this machine</div>'; return; }
+    connectors.forEach((c) => host.appendChild(connectorCard(c, onSetupConnectorAction)));
+  } catch (err) {
+    host.innerHTML = `<div class="muted">could not load agents: ${esc(err.message)}</div>`;
+  }
+}
+
+async function onSetupConnectorAction(id, action) {
+  const host = $('#setup-connectors');
+  const card = host?.querySelector(`[data-id="${id}"]`);
+  if (action === 'disconnect') {
+    try { await rpc('disconnectConnector', { id }); toast({ variant: 'success', message: `${id} disconnected` }); }
+    catch (err) { toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code }); }
+    return loadSetupConnectors();
+  }
+  // connect / retry
+  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onSetupConnectorAction));
+  try { await rpc('connectConnector', { id }); toast({ variant: 'success', message: `${id} connected` }); }
+  catch (err) { toast({ variant: 'error', message: err.message || `could not connect ${id}`, hint: err.hint, code: err.code }); }
+  return loadSetupConnectors();
 }
 
 // ── Identity step (form) ─────────────────────────────────────────────────────
