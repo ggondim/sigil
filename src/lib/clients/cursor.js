@@ -66,7 +66,19 @@ async function writeMcpEntry({ dryRun = false } = {}) {
   try {
     const raw = await fs.readFile(CURSOR_MCP_PATH, 'utf8');
     config = JSON.parse(raw);
-  } catch { /* file doesn't exist or invalid — start fresh */ }
+  } catch (err) {
+    // ENOENT is fine — a fresh mcp.json is the correct outcome. But a parse
+    // error means the file exists with content we can't understand; clobbering
+    // it would wipe every other MCP server the user configured. Mirror the
+    // uninstall() path and refuse to touch it.
+    if (err.code !== 'ENOENT') {
+      return {
+        action: 'skip',
+        path: CURSOR_MCP_PATH,
+        detail: `invalid JSON — not touched (${err.message})`,
+      };
+    }
+  }
 
   const existedBefore = existsSync(CURSOR_MCP_PATH);
   config.mcpServers = config.mcpServers || {};

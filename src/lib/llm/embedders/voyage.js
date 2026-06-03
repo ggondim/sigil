@@ -13,6 +13,7 @@
  */
 
 import { chunk } from '../../collection.js';
+import config from '../../../config.js';
 
 // Voyage's per-request limits. voyage-3 family allows up to 1000 inputs per
 // request, but practical batch size is bounded by total token count (120K-ish).
@@ -39,6 +40,7 @@ async function embedBatch(texts, { model, voyageApiKey, inputType = 'document', 
 
     const res = await fetch('https://api.voyageai.com/v1/embeddings', {
       method: 'POST',
+      signal: AbortSignal.timeout(config.llm.requestTimeout),
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${voyageApiKey}`,

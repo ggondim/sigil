@@ -27,6 +27,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PKG_ROOT } from '../paths.js';
 
+import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
 
 const HERMES_HOME = join(homedir(), '.hermes');
@@ -119,9 +120,9 @@ async function writeConfigProvider({ dryRun, value }) {
   if (!changed) {
     return { action: 'skip', detail: `memory.provider already '${value}'` };
   }
-  if (!dryRun) {
-    await fs.writeFile(HERMES_CONFIG_PATH, after, 'utf8');
-  }
+  // safeWrite drops a .sigil.bak before overwriting — the config.yaml is ~14KB
+  // of the user's own settings, so a backup is non-negotiable.
+  await safeWrite(HERMES_CONFIG_PATH, after, { dryRun });
   return { action: 'modify', detail: `memory.provider → '${value}'` };
 }
 
@@ -165,7 +166,7 @@ async function uninstall({ dryRun = false } = {}) {
     const currentProvider = memoryBlock.match(/^\s+provider:\s*['"]?([^'"\n]*)['"]?/m)?.[1];
     if (currentProvider === 'sigil') {
       const { content: after, changed } = setMemoryProviderInYaml(before, '');
-      if (changed && !dryRun) await fs.writeFile(HERMES_CONFIG_PATH, after, 'utf8');
+      if (changed) await safeWrite(HERMES_CONFIG_PATH, after, { dryRun });
       actions.push({ action: 'modify', path: HERMES_CONFIG_PATH, detail: "memory.provider → '' (sigil cleared)" });
     } else {
       actions.push({

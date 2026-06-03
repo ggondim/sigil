@@ -13,6 +13,7 @@ async function chat(input, { model, jsonMode = false } = {}) {
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
+    signal: AbortSignal.timeout(config.llm.requestTimeout),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.llm.openaiApiKey}`,

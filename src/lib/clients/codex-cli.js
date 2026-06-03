@@ -58,8 +58,10 @@ function resolveServerPath() {
 }
 
 // Read existing TOML if present, set mcp_servers.sigil, write back.
-// @iarna/toml preserves the keys we don't touch on round-trip; ordering of
-// untouched top-level tables is the only thing that may shift.
+// NOTE: @iarna/toml strips ALL comments on round-trip — only key/value data
+// survives. The keys we don't touch are preserved (values intact), but any
+// inline or standalone comments in the user's config.toml are lost. Ordering
+// of untouched top-level tables may also shift.
 async function writeMcpEntry({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
 
@@ -67,7 +69,19 @@ async function writeMcpEntry({ dryRun = false } = {}) {
   try {
     const raw = await fs.readFile(CODEX_CONFIG_PATH, 'utf8');
     config = TOML.parse(raw);
-  } catch { /* file doesn't exist or invalid — start fresh */ }
+  } catch (err) {
+    // ENOENT (no file yet) is the only safe "start fresh" case. A TOML parse
+    // error means the file has content we can't round-trip; overwriting it
+    // would destroy every other key the user configured. Refuse to touch it,
+    // matching the uninstall() path.
+    if (err.code !== 'ENOENT') {
+      return {
+        action: 'skip',
+        path: CODEX_CONFIG_PATH,
+        detail: `invalid TOML — not touched (${err.message})`,
+      };
+    }
+  }
 
   const existedBefore = existsSync(CODEX_CONFIG_PATH);
 

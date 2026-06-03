@@ -14,6 +14,9 @@ async function chat(input, { model, jsonMode = false } = {}) {
 
   const response = await fetch(url, {
     method: 'POST',
+    // Local generation can run long — give it the CLI generation budget, not
+    // the shorter network-request timeout, so we don't kill legitimate work.
+    signal: AbortSignal.timeout(config.llm.cliTimeout),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });

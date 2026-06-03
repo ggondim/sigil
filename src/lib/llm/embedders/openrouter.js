@@ -14,6 +14,8 @@
  * it, so it's safe to send unconditionally for the openai/* family.
  */
 
+import config from '../../../config.js';
+
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
 async function embedBatch(texts, {
@@ -48,6 +50,7 @@ async function embedBatch(texts, {
 
   const res = await fetch(`${baseUrl}/embeddings`, {
     method: 'POST',
+    signal: AbortSignal.timeout(config.llm.requestTimeout),
     headers,
     body: JSON.stringify(body),
   });

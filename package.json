@@ -28,6 +28,7 @@
     "dist/",
     "prompts/",
     "src/db/migrations/",
+    "src/db/drivers/",
     "src/gui/web/",
     "integrations/",
     "knexfile.js",

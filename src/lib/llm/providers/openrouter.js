@@ -46,6 +46,7 @@ async function chat(input, { model, jsonMode = false } = {}) {
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(config.llm.requestTimeout),
     headers,
     body: JSON.stringify(body),
   });

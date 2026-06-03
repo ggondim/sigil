@@ -1,3 +1,5 @@
+import config from '../../../config.js';
+
 async function embedBatch(texts, { model, openaiApiKey, dimensions } = {}) {
   // text-embedding-3-* support a `dimensions` parameter that truncates the output
   // via Matryoshka representation learning. Lets us match Sigil's vector(N) schema
@@ -10,6 +12,7 @@ async function embedBatch(texts, { model, openaiApiKey, dimensions } = {}) {
 
   const res = await fetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
+    signal: AbortSignal.timeout(config.llm.requestTimeout),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${openaiApiKey}`,

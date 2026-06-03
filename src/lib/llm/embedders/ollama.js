@@ -1,4 +1,5 @@
 import { chunk } from '../../collection.js';
+import config from '../../../config.js';
 
 const BATCH_SIZE = 50;
 
@@ -9,6 +10,8 @@ async function embedBatch(texts, { model, ollamaHost }) {
   for (const batch of batches) {
     const res = await fetch(`${ollamaHost}/api/embed`, {
       method: 'POST',
+      // Local embedding — use the longer CLI budget, not the network timeout.
+      signal: AbortSignal.timeout(config.llm.cliTimeout),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: batch }),
     });

@@ -119,6 +119,12 @@ const config = {
 
     get maxRetries() { return Number(process.env.LLM_MAX_RETRIES) || 3; },
     get cliTimeout() { return Number(process.env.LLM_CLI_TIMEOUT) || 120000; },
+    // HTTP request timeout for network LLM providers/embedders (OpenAI,
+    // OpenRouter, Voyage). Without it a hung connection blocks the daemon or a
+    // hook indefinitely. 60s leaves headroom for large JSON completions while
+    // still bounding a dead socket. Local Ollama generation uses cliTimeout
+    // (it can legitimately run longer); claude-cli uses cliTimeout too.
+    get requestTimeout() { return Number(process.env.LLM_REQUEST_TIMEOUT) || 60000; },
   },
 
   output: {

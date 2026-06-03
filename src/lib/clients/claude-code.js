@@ -208,17 +208,37 @@ async function verify() {
     return { installed: false, reason: '~/.claude/settings.json is not valid JSON' };
   }
   const hooks = settings.hooks || {};
+  const HOOK_FILES = ['user-prompt-submit.js', 'post-tool-use.js', 'stop.js', 'session-end.js'];
   const required = ['UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd'];
-  const missing = required.filter((event) => {
-    const entries = hooks[event] || [];
-    return !entries.some((h) => h.hooks?.some((inner) => typeof inner.command === 'string'
-      && (inner.command.includes('user-prompt-submit.js')
-       || inner.command.includes('post-tool-use.js')
-       || inner.command.includes('stop.js')
-       || inner.command.includes('session-end.js'))));
-  });
+
+  // Find the command string registered for an event, if any.
+  const findHookCommand = (event) => {
+    for (const h of hooks[event] || []) {
+      for (const inner of h.hooks || []) {
+        if (typeof inner.command === 'string'
+          && HOOK_FILES.some((fn) => inner.command.includes(fn))) {
+          return inner.command;
+        }
+      }
+    }
+    return null;
+  };
+
+  const missing = required.filter((event) => !findHookCommand(event));
   if (missing.length) {
     return { installed: false, reason: `hooks missing: ${missing.join(', ')}` };
+  }
+
+  // Registered isn't enough — the hook file must exist on disk. A moved or
+  // reinstalled repo leaves settings.json pointing at a stale path; without
+  // this check `sigil doctor` reports a false green while every hook silently
+  // fails with MODULE_NOT_FOUND.
+  for (const event of required) {
+    const cmd = findHookCommand(event);
+    const pathMatch = cmd.match(/(\/[^\s"']+\.js)/);
+    if (pathMatch && !existsSync(pathMatch[1])) {
+      return { installed: false, reason: `hook file missing on disk: ${pathMatch[1]} (run \`sigil init\`)` };
+    }
   }
 
   return { installed: true };
