@@ -227,7 +227,7 @@ export function diagnoseError(err) {
       kind: 'model-not-found',
       humanMessage: 'The embedding model name was not recognized by the provider.',
       fixHint: 'Use a valid embedding model for the provider (e.g. text-embedding-3-large for OpenAI, '
-        + 'nomic-embed-text for Ollama).',
+        + 'mxbai-embed-large for Ollama).',
     };
   }
   // Ollama unreachable: the local daemon isn't running. ONLY surfaced when the
@@ -236,7 +236,7 @@ export function diagnoseError(err) {
     return {
       kind: 'ollama-down',
       humanMessage: 'The local Ollama server is not reachable.',
-      fixHint: 'Start it with `ollama serve`, then `ollama pull nomic-embed-text`.',
+      fixHint: 'Start it with `ollama serve`, then `ollama pull mxbai-embed-large`.',
     };
   }
 

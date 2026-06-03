@@ -79,15 +79,17 @@ export const EMBEDDING_PROVIDERS = [
   },
   {
     id: 'ollama',
-    label: 'Ollama (nomic-embed-text)',
-    hint: '768-dim local embeddings. Free, no key. Lower retrieval quality than OpenAI.',
+    label: 'Ollama (mxbai-embed-large)',
+    hint: '1024-dim local embeddings. Free, no key. Lower retrieval quality than OpenAI.',
     fields: [
       { name: 'OLLAMA_HOST', label: 'Ollama host', type: 'text', placeholder: 'http://localhost:11434' },
     ],
     env: {
       EMBEDDING_PROVIDER: 'ollama',
-      EMBEDDING_MODEL: 'nomic-embed-text',
-      EMBEDDING_DIMENSIONS: '768',
+      // mxbai-embed-large emits 1024-dim — matches Sigil's fixed EMBEDDING_DIM.
+      // nomic-embed-text (768-dim) is no longer compatible since the 1024 upgrade.
+      EMBEDDING_MODEL: 'mxbai-embed-large',
+      EMBEDDING_DIMENSIONS: '1024',
     },
   },
   {

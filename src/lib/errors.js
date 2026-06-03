@@ -92,7 +92,7 @@ export const ERROR_CODES = {
   OLLAMA_DOWN: {
     message: 'The local Ollama server is not reachable.',
     statusCode: 503,
-    hint: 'Start it with `ollama serve`, then `ollama pull nomic-embed-text`.',
+    hint: 'Start it with `ollama serve`, then `ollama pull mxbai-embed-large`.',
   },
 
   // ── onboarding ────────────────────────────────────────────────────────────

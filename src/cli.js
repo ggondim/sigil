@@ -147,6 +147,7 @@ const commands = {
   ingest: runIngest,
   search: runSearch,
   context: runContext,
+  preamble: runPreamble,
   status: runStatus,
   facts: runFacts,
   forget: runForget,
@@ -370,7 +371,7 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
   // migration fires when EMBEDDING_DIMENSIONS >= 1024). Writing both here
   // BEFORE the migrate step lets the schema match the embedder.
   //
-  //   Ollama nomic-embed-text → 768d (matches default schema)
+  //   Ollama mxbai-embed-large → 1024d (matches the upgraded schema)
   //   OpenAI text-embedding-3-large → truncated to 1024d via the `dimensions`
   //   parameter (Matryoshka). Migration upgrades schema vector(768) → vector(1024).
   //
@@ -453,7 +454,7 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     if (!hasOllama) {
       note(
         'Ollama is not installed.\n' +
-        'Install from https://ollama.com then run: ollama pull nomic-embed-text\n' +
+        `Install from https://ollama.com then run: ollama pull ${embeddingModel}\n` +
         'Or re-run sigil init and choose OpenAI for embeddings.',
         'Ollama not found',
       );
@@ -465,7 +466,7 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
 
     if (dryRun) {
       planFile('check', `ollama server @ ${ollamaHost}`, 'start in background if not running');
-      planFile('pull', 'ollama:nomic-embed-text', '~270MB embedding model (if not already present)');
+      planFile('pull', `ollama:${embeddingModel}`, 'embedding model (if not already present)');
     } else {
       let serverUp = await isOllamaServerRunning(ollamaHost);
       let serveProc = null;
@@ -491,18 +492,18 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
       }
 
       // Server is up. Check for the model and pull in parallel with serve still running.
-      const hasModel = checkCommand('ollama list 2>/dev/null | grep nomic-embed-text');
+      const hasModel = checkCommand(`ollama list 2>/dev/null | grep ${embeddingModel}`);
       if (!hasModel) {
-        const pull = await confirm({ message: 'Pull nomic-embed-text embedding model now? (~270MB)' });
+        const pull = await confirm({ message: `Pull ${embeddingModel} embedding model now?` });
         if (isCancel(pull)) { cancel('Setup cancelled.'); process.exit(0); }
         if (pull) {
           const s = spinner();
-          s.start('Pulling nomic-embed-text...');
+          s.start(`Pulling ${embeddingModel}...`);
           try {
-            _execSync('ollama pull nomic-embed-text', { stdio: 'pipe' });
-            s.stop('nomic-embed-text ready');
+            _execSync(`ollama pull ${embeddingModel}`, { stdio: 'pipe' });
+            s.stop(`${embeddingModel} ready`);
           } catch {
-            s.stop('Pull failed — run: ollama pull nomic-embed-text manually');
+            s.stop(`Pull failed — run: ollama pull ${embeddingModel} manually`);
           }
         }
       }
@@ -2169,6 +2170,42 @@ Options:
   } finally {
     await client.close();
   }
+}
+
+// ─── Preamble ────────────────────────────────────────────────────────────────
+
+async function runPreamble(args) {
+  if (args.includes('--help')) {
+    console.log(`sigil preamble — Session-start sanity + fresh-facts pass
+
+Usage:
+  sigil preamble [options]
+
+Runs the same engine as the \`prime\` MCP tool: checks daemon/DB/setup health,
+then pulls fresh project-scoped facts. Prints a status block an agent (or a
+shell preamble) can branch on. Self-heals — auto-starts the daemon if down.
+
+Options:
+  --format=md      Markdown block: status + memory + how-to (default)
+  --format=lines   Just the KEY: value status lines (for bash preambles)
+  --format=json    Raw structured result
+  --transport=mcp  How-to footer for hook-less clients (Codex/Cursor)
+  --transport=hooks  How-to footer for Claude Code (default for CLI: cli)
+  --limit=<n>      Max fresh facts to load (default 12)
+
+Exit code is always 0 — a degraded result is reported in-band, never thrown.`);
+    process.exit(0);
+  }
+
+  const format = args.find((a) => a.startsWith('--format='))?.split('=')[1] || 'md';
+  const transport = args.find((a) => a.startsWith('--transport='))?.split('=')[1] || 'cli';
+  const limitArg = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
+  const limit = limitArg ? Number(limitArg) : 12;
+
+  const { buildPreamble } = await import('./preamble/run.js');
+  const { renderPreamble } = await import('./preamble/render.js');
+  const result = await buildPreamble({ cwd: process.cwd(), limit });
+  console.log(renderPreamble(result, { format, transport }));
 }
 
 // ─── Status ──────────────────────────────────────────────────────────────────

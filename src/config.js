@@ -57,7 +57,7 @@ const config = {
   // keys reflect what init just wrote.
   embedding: {
     get provider() { return process.env.EMBEDDING_PROVIDER || store().embedding.provider || ''; },
-    get model() { return process.env.EMBEDDING_MODEL || store().embedding.model || 'nomic-embed-text'; },
+    get model() { return process.env.EMBEDDING_MODEL || store().embedding.model || 'mxbai-embed-large'; },
     // Fixed, non-configurable: the DB schema and every provider are pinned to
     // this so they can never drift (see src/lib/constants.js).
     get dimensions() { return EMBEDDING_DIM; },
