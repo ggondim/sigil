@@ -79,7 +79,7 @@ async function main() {
     } catch (searchErr) {
       // A failed scoped search injects NOTHING (never the global brain). Log
       // for `sigil doctor`; the prompt proceeds without memory.
-      process.stderr.write(`[sigil:user-prompt-submit] scoped search failed: ${searchErr.message}\n`);
+      process.stderr.write(`[sigil:user-prompt-submit] scoped search failed: ${maskSecrets(searchErr.message)}\n`);
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy().catch(() => {});
       return respond();
@@ -115,7 +115,7 @@ async function main() {
     return respond(context);
   } catch (err) {
     // Never block Claude — fail silently, but log so sigil doctor can surface it
-    process.stderr.write(`[sigil:user-prompt-submit] ${err.message}\n`);
+    process.stderr.write(`[sigil:user-prompt-submit] ${maskSecrets(err.message)}\n`);
     await recordHookError('user-prompt-submit', err, raw);
     try {
       const cortexDb = (await import('../db/cortex.js')).default;

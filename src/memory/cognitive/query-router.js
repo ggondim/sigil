@@ -12,6 +12,22 @@ const cache = new TtlCache({ maxSize: 200, ttlMs: 10 * 60 * 1000 });
 
 const VALID_INTENTS = ['preference', 'factual', 'entity_lookup', 'exploratory', 'temporal'];
 
+// routeQuery runs inside the UserPromptSubmit hook, which Claude Code kills
+// after 10s (see settings.json). If the classifier LLM stalls we must lose to
+// that deadline gracefully and fall back to a `factual` route, not let the
+// whole hook get hard-killed (which drops memory injection entirely). 8s
+// leaves headroom for the rest of the hook to finish.
+const ROUTER_TIMEOUT_MS = 8000;
+
+function withDeadline(promise, ms) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`query-router timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 const INTENT_DEFAULTS = {
   preference: { categories: ['preference', 'opinion', 'personal'], expand: false, useGraph: false, limit: null },
   factual: { categories: [], expand: false, useGraph: false, limit: null },
@@ -38,7 +54,10 @@ Query: ${query}
 Respond with ONLY a JSON object: { "intent": "preference|factual|entity_lookup|exploratory|temporal", "categories": [...], "entities": [...], "expand": bool, "pointInTime": null or "YYYY-MM-DD", "reasoning": "..." }`;
 
   try {
-    const result = await promptJson(input, { model: config.llm.extractionModel, caller: 'query-router' });
+    const result = await withDeadline(
+      promptJson(input, { model: config.llm.extractionModel, caller: 'query-router' }),
+      ROUTER_TIMEOUT_MS,
+    );
 
     if (!result || !VALID_INTENTS.includes(result.intent)) {
       const fb = buildDecision('factual', {});

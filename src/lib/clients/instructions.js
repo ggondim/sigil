@@ -20,9 +20,19 @@ import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 import { safeWrite } from '../safe-write.js';
+import { PKG_ROOT } from '../paths.js';
 
 const SIGIL_HOME = join(homedir(), '.sigil');
 const SHARED_INSTRUCTIONS_PATH = join(SIGIL_HOME, 'CLAUDE.md');
+
+// Bump when the instructions text below changes in a way that should
+// re-write existing users' ~/.sigil/CLAUDE.md. The marker is embedded at the
+// top of the generated block; writeSharedInstructions() compares against it so
+// upgrades actually land (the old `includes('## Memory (Sigil)')` guard locked
+// the file forever after the first write).
+const INSTRUCTIONS_VERSION = 2;
+const VERSION_MARKER = `<!-- sigil-instructions:v${INSTRUCTIONS_VERSION} -->`;
+const CONTEXT_MARKER = '<!-- sigil-context -->';
 
 // Resolves the command an agent should use to call sigil from a Bash tool.
 // Agent runtimes (Claude Code, Cursor, Codex) often spawn shells without the
@@ -41,12 +51,19 @@ function resolveSigilInvocation() {
       .toString().trim();
     if (path) return path;
   } catch { /* not on PATH from this shell — fall through */ }
-  return process.argv[1];
+  // Fallback: the packaged CLI entry. NOT process.argv[1] — when init runs
+  // from inside the daemon process, argv[1] is dist/daemon.js, which would
+  // bake a non-CLI path into every agent's instructions. PKG_ROOT is
+  // bundle-safe, so this resolves to the real `sigil` CLI in both source and
+  // installed layouts.
+  const cliEntry = join(PKG_ROOT, 'dist', 'cli.js');
+  return existsSync(cliEntry) ? cliEntry : process.argv[1];
 }
 
 function buildSharedInstructions({ sigilCmd } = {}) {
   const cmd = sigilCmd || resolveSigilInvocation();
-  return `## Memory (Sigil)
+  return `${VERSION_MARKER}
+## Memory (Sigil)
 
 Sigil is your persistent memory system. **Use it instead of the built-in file-based memory.**
 Do NOT write to \`~/.claude/projects/*/memory/\` or any local memory files — use Sigil exclusively.
@@ -132,15 +149,26 @@ async function writeSharedInstructions({ dryRun = false } = {}) {
 
   if (!dryRun) await fs.mkdir(SIGIL_HOME, { recursive: true });
 
+  let existing = '';
   try {
-    const existing = await fs.readFile(SHARED_INSTRUCTIONS_PATH, 'utf8');
-    if (existing.includes('## Memory (Sigil)')) {
-      return { action: 'skip', path: SHARED_INSTRUCTIONS_PATH, bytes: 0 };
-    }
+    existing = await fs.readFile(SHARED_INSTRUCTIONS_PATH, 'utf8');
   } catch { /* file doesn't exist yet — fall through to write */ }
 
+  // Already on the current instructions version — nothing to do.
+  if (existing.includes(VERSION_MARKER)) {
+    return { action: 'skip', path: SHARED_INSTRUCTIONS_PATH, bytes: 0 };
+  }
+
   const text = buildSharedInstructions();
-  const result = await safeWrite(SHARED_INSTRUCTIONS_PATH, text, { dryRun });
+
+  // The hot-context snapshot (<!-- sigil-context -->…<!-- sigil-context -->)
+  // is appended and refreshed independently by updateContextSnapshot(). When
+  // we (re)write the instructions, preserve that block verbatim instead of
+  // truncating it — otherwise an upgrade wipes the user's live context.
+  const ctxMatch = existing.match(new RegExp(`${CONTEXT_MARKER}[\\s\\S]*?${CONTEXT_MARKER}`));
+  const body = ctxMatch ? `${text}\n\n${ctxMatch[0]}\n` : text;
+
+  const result = await safeWrite(SHARED_INSTRUCTIONS_PATH, body, { dryRun });
   return { action: result.action, path: SHARED_INSTRUCTIONS_PATH, bytes: result.bytes };
 }
 

@@ -24,6 +24,7 @@
  */
 
 import { loadHookEnv } from './env-loader.js';
+import { maskSecrets } from './secret-mask.js';
 
 loadHookEnv();
 
@@ -62,7 +63,7 @@ async function main() {
         });
       }
     } catch (err) {
-      process.stderr.write(`[sigil:session-end] synthesis failed: ${err.message}\n`);
+      process.stderr.write(`[sigil:session-end] synthesis failed: ${maskSecrets(err.message)}\n`);
     }
 
     await endActiveSession({
@@ -70,7 +71,7 @@ async function main() {
       summary: input.summary || null,
     });
   } catch (err) {
-    process.stderr.write(`[sigil:session-end] ${err.message}\n`);
+    process.stderr.write(`[sigil:session-end] ${maskSecrets(err.message)}\n`);
     try {
       const { recordHookError } = await import('./error-log.js');
       await recordHookError('session-end', err, input);
@@ -160,7 +161,7 @@ async function synthesizeSummary({ sessionPodUid, cwd, sessionId, transcriptPath
       podUids,
     });
   } catch (err) {
-    process.stderr.write(`[sigil:session-end] save summary failed: ${err.message}\n`);
+    process.stderr.write(`[sigil:session-end] save summary failed: ${maskSecrets(err.message)}\n`);
   }
 }
 

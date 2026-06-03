@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 import { loadHookEnv } from './env-loader.js';
+import { maskSecrets } from './secret-mask.js';
 import { SIGIL_STOP_CURSOR } from '../lib/paths.js';
 
 loadHookEnv();
@@ -68,13 +69,13 @@ async function main() {
       });
       podUids = dispatch.podUids;
     } catch (err) {
-      process.stderr.write(`[sigil:stop] pod dispatch failed: ${err.message}\n`);
+      process.stderr.write(`[sigil:stop] pod dispatch failed: ${maskSecrets(err.message)}\n`);
     }
 
     await saveFacts(facts, { podUids });
   } catch (err) {
     // Never block Claude — fail silently, but log so sigil doctor can surface it
-    process.stderr.write(`[sigil:stop] ${err.message}\n`);
+    process.stderr.write(`[sigil:stop] ${maskSecrets(err.message)}\n`);
     try {
       const { recordHookError } = await import('./error-log.js');
       await recordHookError('stop', err, input);
@@ -266,7 +267,7 @@ async function saveFacts(facts, { podUids = [] } = {}) {
         podUids,
       });
     } catch (err) {
-      process.stderr.write(`[sigil:stop] save failed: ${err.message}\n`);
+      process.stderr.write(`[sigil:stop] save failed: ${maskSecrets(err.message)}\n`);
     }
   }
 
