@@ -775,8 +775,23 @@ $('#dev-create')?.addEventListener('click', async () => {
 // ════════════════════════════════════════════════════════════════════
 // BOOT
 // ════════════════════════════════════════════════════════════════════
+// Branded landing splash: stays up while we check ~/.sigil (via setup.state)
+// and route to setup or the dashboard, then fades out. A minimum dwell keeps
+// it from flashing on a fast check.
+function dismissLanding() {
+  const el = $('#landing');
+  if (!el) return;
+  el.classList.add('fade-out');
+  setTimeout(() => { el.hidden = true; }, 550);
+}
+async function runLanding() {
+  const started = Date.now();
+  try { await initSetup(); } catch { /* initSetup handles its own errors */ }
+  const MIN_MS = 1100;
+  setTimeout(dismissLanding, Math.max(0, MIN_MS - (Date.now() - started)));
+}
+
 const initial = (window.location.hash || '#health').slice(1);
 setRoute(validRoutes.includes(initial) ? initial : 'health');
-// Native config-store-driven setup (replaces the legacy onboardingState wizard).
-initSetup();
+runLanding();
 setInterval(refreshHealth, 5000);

@@ -15,6 +15,19 @@
   <div id="toasts" class="toast-stack" aria-live="polite"></div>
 
   <!-- ════════════════════════════════════════════════════════════════════
+       LANDING — branded splash shown on launch while we check ~/.sigil for an
+       existing setup, then fades to reveal setup (first run) or the dashboard.
+       ════════════════════════════════════════════════════════════════════ -->
+  <div id="landing" class="landing">
+    <div class="landing-inner">
+      <img class="landing-mark" src="/static/design/sigil-mark.svg" alt="Sigil" width="72" height="72">
+      <div class="landing-name">Sigil</div>
+      <div class="landing-tagline">Local-first memory for your AI agents</div>
+      <div class="landing-spinner" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
        NATIVE SETUP (config-store driven; replaces the legacy wizard above)
        Stepped progress bar — no terminal logs. See src/gui/web/setup.js.
        ════════════════════════════════════════════════════════════════════ -->
