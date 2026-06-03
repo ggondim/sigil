@@ -16,6 +16,7 @@ docs-screenshots/
 output/
 .claude/
 *.tgz
+*.zip
 IMPROVEMENTS.md
 PLAN.md
 PROJECT.md

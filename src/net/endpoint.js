@@ -44,7 +44,18 @@ async function ensureRuntime() {
   await mkdir(SIGIL_IROH_DIR, { recursive: true });
   const secretKey = await getSecretKey();
 
-  nodePromise = import('@number0/iroh').then(async ({ Iroh }) => {
+  nodePromise = import('@number0/iroh').catch((err) => {
+    // iroh is an optional dependency (~64MB native NAPI) — solo mode (the
+    // default) never loads it. If networking is enabled but the package wasn't
+    // installed (e.g. no prebuilt binary for this platform), fail with a clear
+    // message instead of a raw MODULE_NOT_FOUND. Reset the cache so a retry
+    // after `npm i @number0/iroh` can succeed.
+    nodePromise = null;
+    if (err?.code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package '@number0\/iroh'/.test(err?.message || '')) {
+      throw new Error('Sigil networking requires the optional @number0/iroh package. Install it with `npm i -g @number0/iroh` (or run in solo mode).');
+    }
+    throw err;
+  }).then(async ({ Iroh }) => {
     // PR review #17: use the ALPN string directly as the key. We were
     // previously setting protocols[Buffer.from(alpn)] which coerces to
     // toString('utf8') — works today but only because the resulting

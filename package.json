@@ -1,6 +1,6 @@
 {
   "name": "@anmol-srv/sigil",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "type": "module",
   "description": "Local-first memory infrastructure for AI coding agents. One brain shared across Claude Code, Codex CLI, Cursor, Kiro, Continue, Cline, Windsurf, or any MCP client. Organized in pluggable pods, stored in your own Postgres. No cloud, no telemetry. Auto-captured from Claude Code via hooks; surfaced everywhere else as a 9-tool MCP server.",
   "bin": {
@@ -84,14 +84,14 @@
   "dependencies": {
     "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@number0/iroh": "^0.35.0",
     "dotenv": "^17.3.1",
     "knex": "^3.1.0",
     "pg": "^8.20.0",
     "ws": "^8.21.0"
   },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.30.0"
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@number0/iroh": "^0.35.0"
   },
   "devDependencies": {
     "@clack/prompts": "^1.2.0",
