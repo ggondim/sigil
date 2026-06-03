@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -32,7 +32,25 @@ function resolveClaudeBin() {
   for (const p of candidates) {
     if (existsSync(p)) return (resolvedClaudePath = p);
   }
-  return (resolvedClaudePath = 'claude'); // last resort: trust PATH
+  // Last resort before trusting a stripped PATH: ask the user's LOGIN shell
+  // where `claude` is. A login shell sources the profile (nvm, asdf, custom
+  // PATH), so this finds installs the fixed candidate list above misses —
+  // the common cause of "claude CLI not found" from a launchd/systemd daemon.
+  const viaShell = whichViaLoginShell('claude');
+  if (viaShell) return (resolvedClaudePath = viaShell);
+  return (resolvedClaudePath = 'claude'); // give up: trust PATH
+}
+
+/** Resolve a command via the user's login shell (sources their profile/PATH). */
+function whichViaLoginShell(cmd) {
+  const shell = process.env.SHELL || '/bin/sh';
+  try {
+    const r = spawnSync(shell, ['-lic', `command -v ${cmd}`], { encoding: 'utf8', timeout: 5000 });
+    const out = (r.stdout || '').trim().split('\n').pop().trim();
+    return out && existsSync(out) ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 const CLI_MODEL_MAP = {

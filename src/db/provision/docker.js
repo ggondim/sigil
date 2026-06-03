@@ -164,7 +164,7 @@ async function waitForReady({ deadlineMs = 30000 } = {}) {
  *
  * @returns {Promise<{ url, port, container, image, reused, pgvector }>}
  */
-export async function provisionLocalPostgres() {
+export async function provisionLocalPostgres({ onProgress } = {}) {
   const docker = await detectDocker();
   if (!docker.available) {
     const e = new Error(docker.reason || 'Docker is not available');
@@ -183,6 +183,18 @@ export async function provisionLocalPostgres() {
     }
     port = (await containerPort()) || 5432;
   } else {
+    // Pull the image FIRST, on its own generous timeout. `docker run` would
+    // otherwise pull inline under the run timeout and fail on a first run /
+    // slow network with "Unable to find image locally". Skip if already pulled.
+    const haveImage = await run(resolveDockerBin(), ['image', 'inspect', IMAGE], { timeout: 10000 });
+    if (haveImage.code !== 0) {
+      onProgress?.(`Pulling Postgres image (${IMAGE}) — first run, this can take a minute…`);
+      const pulled = await run(resolveDockerBin(), ['pull', IMAGE], { timeout: 600000 });
+      if (pulled.code !== 0) {
+        throw new Error(`failed to pull ${IMAGE}: ${(pulled.err || pulled.out || 'unknown').slice(0, 300)}`);
+      }
+    }
+    onProgress?.('Starting the container…');
     const superPw = genPassword();
     // Let Docker pick a free host port on the loopback interface (`-p
     // 127.0.0.1::5432`) instead of guessing one. Guessing with a host-side

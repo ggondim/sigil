@@ -40,7 +40,8 @@ export async function provisionDocker(input, emit = () => {}) {
     }
 
     emit({ pct: 25, label: 'Provisioning a dedicated Sigil Postgres container…' });
-    const prov = await provisionLocalPostgres(); // ready, pgvector-verified URL
+    // Surface image-pull progress (first run pulls ~400MB).
+    const prov = await provisionLocalPostgres({ onProgress: (label) => emit({ pct: 35, label }) });
 
     emit({ pct: 70, label: 'Running migrations…' });
     const m = await runMigrationsOn({ url: prov.url });
