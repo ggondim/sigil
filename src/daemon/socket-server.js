@@ -26,7 +26,17 @@ export async function startSocketServer({ registry, log }) {
   // crashed previous daemon will refuse bind() with EADDRINUSE.
   await removeSocketFile();
 
+  // Track live connections so shutdown can force-drain them. A persistent
+  // client (an idle MCP connection holding the socket open) would otherwise
+  // make server.close() hang forever — close() only fires its callback once
+  // every connection ends on its own. net.Server has no closeAllConnections()
+  // (that's http.Server only), so we keep the set ourselves.
+  const sockets = new Set();
+
   const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+
     let buffer = '';
     let closed = false;
     // PR review #16: per-connection Promise chain serializes handler
@@ -79,7 +89,14 @@ export async function startSocketServer({ registry, log }) {
   log(`socket listening at ${SIGIL_DAEMON_SOCK}`);
 
   return {
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => new Promise((resolve) => {
+      server.close(() => resolve());
+      // Stop accepting AND tear down any lingering connections so close()'s
+      // callback can actually fire. destroy() is graceful enough here — the
+      // per-connection chain already guards against writes after close.
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+    }),
   };
 }
 

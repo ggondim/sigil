@@ -44,6 +44,20 @@ export async function startDaemon({ foreground = false } = {}) {
   const log = makeLogger();
   log(`starting (pid ${process.pid}, node ${process.version})`);
 
+  // Global safety net. Node ≥15 turns an unhandled promise rejection into a
+  // fatal crash by default; a single stray rejection deep in a handler would
+  // take down the daemon that serves every agent. Log rejections and keep
+  // running. For a genuinely uncaught exception the process state is suspect —
+  // log it and exit non-zero so the supervisor (launchd KeepAlive) restarts a
+  // clean process instead of limping along corrupted.
+  process.on('unhandledRejection', (reason) => {
+    log(`unhandledRejection: ${reason?.stack || reason}`);
+  });
+  process.on('uncaughtException', (err) => {
+    log(`uncaughtException: ${err?.stack || err}`);
+    process.exit(1);
+  });
+
   // Load config.json + migrate any legacy ~/.sigil/.env into it, before
   // anything reads configuration.
   loadConfig();

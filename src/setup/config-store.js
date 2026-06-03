@@ -252,7 +252,26 @@ export function loadConfig() {
     atomicWrite(pruneUnknown(migrated));
   }
   cache = deepMerge(defaults(), pruneUnknown(migrated));
+  resetStaleActiveSteps();
   return cache;
+}
+
+// A step is marked 'active' before its apply() runs and 'done'/'error' after.
+// If the daemon is hard-killed (crash, reboot, SIGKILL) mid-step, that 'active'
+// status is frozen on disk — the GUI then shows a step spinning forever with no
+// way to retry. On every load, demote any leftover 'active' back to 'pending'
+// so the step is re-runnable. Safe because nothing is genuinely mid-apply at
+// load time (the process that owned it is gone).
+function resetStaleActiveSteps() {
+  const steps = cache?.setup?.steps;
+  if (!steps) return;
+  const stale = Object.entries(steps).filter(([, s]) => s === 'active').map(([k]) => k);
+  if (!stale.length) return;
+  const sparse = pruneUnknown(readRaw());
+  const next = { ...(sparse.setup?.steps || {}) };
+  for (const k of stale) next[k] = 'pending';
+  atomicWrite({ ...sparse, schemaVersion: CONFIG_SCHEMA_VERSION, setup: { ...(sparse.setup || {}), steps: next } });
+  cache = deepMerge(defaults(), pruneUnknown(readRaw()));
 }
 
 /** The current merged snapshot (loads on first access). */

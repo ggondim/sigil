@@ -40,6 +40,27 @@ const PLANNED = [
   { id: 'identity', title: 'Your name' },
 ];
 
+// Mask credentials in a step result before it crosses the bus / RPC boundary.
+// The DB step returns a Postgres connection url with the plaintext password;
+// the bus replays buffered events to GUI WebSocket clients, so the raw url must
+// never leave this function. Recurses so a nested url is caught too.
+function redactSecrets(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string' && /url|uri|dsn|conn/i.test(k)) {
+      // scheme://user:password@host → scheme://user:***@host
+      out[k] = v.replace(/(\w+:\/\/[^:@/\s]+):[^@/\s]+@/g, '$1:***@');
+    } else if (v && typeof v === 'object') {
+      out[k] = redactSecrets(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 function findStep(id) {
   const step = STEPS.find((s) => s.id === id);
   if (!step) {
@@ -98,14 +119,18 @@ export async function runStep(id, input = {}) {
   try {
     const result = await step.apply(input, emit);
     setStepStatus(id, 'done');
-    bus.emit('setup', { step: id, status: 'done', pct: 100, label: `${step.title} ready.`, result });
+    // The DB step returns a connection url with the plaintext password. The bus
+    // buffers and replays every event to GUI WebSocket subscribers, so emitting
+    // (or returning) the raw result would leak the password. Redact first.
+    const safeResult = redactSecrets(result);
+    bus.emit('setup', { step: id, status: 'done', pct: 100, label: `${step.title} ready.`, result: safeResult });
 
     // Mark the whole setup complete only when every PLANNED step is done.
     const state = getSetupState();
     const allDone = state.steps.every((s) => s.status === 'done');
     if (allDone && !state.complete) markSetupComplete(true);
 
-    return { ok: true, step: id, result, state: getSetupState() };
+    return { ok: true, step: id, result: safeResult, state: getSetupState() };
   } catch (err) {
     setStepStatus(id, 'error');
     bus.emit('setup', { step: id, status: 'error', pct: 0, label: err.message, hint: err.hint || null, kind: err.kind || 'other' });

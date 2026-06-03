@@ -14,12 +14,15 @@ export function registerSupervisor(registry) {
     return { ...status, db: getDbHealth?.() ?? null };
   });
 
-  // Install the unit, then hand off: this daemon exits so the OS service's
-  // KeepAlive/Restart brings up a fresh supervised instance that binds the
-  // socket. (The daemon must not SIGTERM itself mid-RPC.)
+  // Install the unit, then hand off: this daemon steps down so the OS
+  // service's KeepAlive/Restart brings up a fresh supervised instance that
+  // binds the socket. The 400ms delay lets this RPC's response flush to the
+  // GUI first; then we raise SIGTERM on ourselves so the real shutdown hooks
+  // run (drain socket + HTTP, destroy the pool, remove the pidfile) instead
+  // of a hard process.exit(0) that leaks all of that and races teardown.
   registry.register('serviceInstall', async () => {
     const res = await installServiceUnit();
-    setTimeout(() => process.exit(0), 400);
+    setTimeout(() => process.kill(process.pid, 'SIGTERM'), 400).unref?.();
     return { ok: true, handingOff: true, ...res };
   });
 

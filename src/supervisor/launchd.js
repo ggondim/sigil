@@ -44,6 +44,11 @@ function plistXml() {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Minimum seconds between respawns. With KeepAlive a daemon that crashes
+       on startup would otherwise be relaunched as fast as it dies, pinning a
+       CPU core and spamming the log. 10s is launchd's default; we set it
+       explicitly so the back-off is documented and survives plist edits. -->
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${xmlEscape(SIGIL_DAEMON_LOG)}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(SIGIL_DAEMON_LOG)}</string>

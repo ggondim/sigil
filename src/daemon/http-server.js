@@ -116,8 +116,15 @@ export async function startHttpServer({ registry, log, config }) {
   return {
     url,
     close: () => new Promise((resolve) => {
+      // Terminate live WebSocket clients first — wss.close() stops accepting
+      // upgrades but leaves open sockets dangling, which keeps the underlying
+      // http server's close() callback from ever firing.
+      for (const ws of wss.clients) ws.terminate();
       wss.close();
       server.close(() => resolve());
+      // Drain keep-alive HTTP connections (Node ≥18.2) so a browser tab
+      // holding the GUI open can't stall daemon shutdown.
+      server.closeAllConnections?.();
     }),
   };
 }

@@ -64,7 +64,14 @@ export async function provisionLocal(input, emit = () => {}) {
 export async function startLocalPostgres(input = {}) {
   const tries = [];
   if (process.platform === 'darwin') {
-    tries.push(['brew', ['services', 'start', input.brewFormula || 'postgresql']]);
+    // Homebrew dropped the unversioned `postgresql` formula in 2022 — it's now
+    // `postgresql@NN`. If the caller didn't pin one, try the current versions
+    // newest-first, then the bare name as a last resort for old installs. Each
+    // `brew services start` no-ops fast if that formula isn't installed.
+    const formulae = input.brewFormula
+      ? [input.brewFormula]
+      : ['postgresql@17', 'postgresql@16', 'postgresql@15', 'postgresql@14', 'postgresql'];
+    for (const f of formulae) tries.push(['brew', ['services', 'start', f]]);
   }
   if (input.dataDir) tries.push(['pg_ctl', ['-D', input.dataDir, 'start']]);
   if (process.platform === 'linux') tries.push(['systemctl', ['start', 'postgresql']]);
