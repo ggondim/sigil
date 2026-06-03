@@ -313,6 +313,33 @@ $('#cfg-switch-apply')?.addEventListener('click', async () => {
   }
 });
 
+// ── Settings: danger zone — factory reset ────────────────────────────
+$('#cfg-reset')?.addEventListener('click', () => {
+  const host = $('#reset-confirm');
+  if (!host) return;
+  const wipeMemory = $('#reset-wipe-memory')?.checked !== false;
+  host.innerHTML = `
+    <div class="result err conflict-card" style="margin:0;">
+      <strong>Reset Sigil?</strong>
+      <div class="muted" style="margin:6px 0;">Disconnects every agent${wipeMemory ? ', wipes all stored memory,' : ''} and clears your config. You'll go back to setup. (The database itself is kept — use <code>sigil reset</code> in a terminal for a full DB teardown.)</div>
+      <div class="flex-row" style="margin-top:8px;">
+        <button type="button" class="btn danger" data-reset-go>Yes, reset</button>
+        <button type="button" class="btn" data-reset-cancel>Cancel</button>
+      </div>
+    </div>`;
+  host.querySelector('[data-reset-cancel]').addEventListener('click', () => { host.innerHTML = ''; });
+  host.querySelector('[data-reset-go]').addEventListener('click', async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Resetting…';
+    try {
+      const r = await rpc('setup.factoryReset', { wipeMemory });
+      toast({ variant: 'success', message: `Reset complete — disconnected ${r.disconnected?.length || 0} agent(s)${wipeMemory ? `, wiped ${r.tablesWiped || 0} tables` : ''}.` });
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err) {
+      host.innerHTML = `<div class="result err" style="margin:0;">✗ ${escape(err.message)}</div>`;
+    }
+  });
+});
+
 async function restartAndClose(out) {
   out.textContent += '\nApplying — restarting daemon…';
   try { await rpc('restartDaemon', {}); } catch { /* expected: connection drops on exit */ }

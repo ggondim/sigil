@@ -136,3 +136,14 @@ export function resetSetup() {
   bus.emit('setup', { step: null, status: 'reset', pct: 0, label: 'Setup reset.' });
   return getSetupState();
 }
+
+/**
+ * In-app factory reset (GUI): disconnect all agents, optionally wipe stored
+ * memory, and wipe config. Returns a summary + the fresh setup state.
+ */
+export async function factoryResetSetup({ wipeMemory = true } = {}) {
+  const { factoryReset } = await import('./reset.js');
+  const result = await factoryReset({ wipeMemory });
+  bus.emit('setup', { step: null, status: 'reset', pct: 0, label: 'Sigil reset.' });
+  return { ...result, state: getSetupState() };
+}

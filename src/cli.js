@@ -2271,80 +2271,79 @@ Usage:
 
 async function runReset(args) {
   if (args.includes('--help')) {
-    console.log(`sigil reset — Wipe Sigil's setup and re-run init
+    console.log(`sigil reset — Clean rebuild: tear down Sigil's setup, config, and data
 
 Usage:
-  sigil reset           Show a confirmation prompt before wiping
-  sigil reset --yes     Skip the prompt (for scripting); same as --confirm
+  sigil reset            Confirm, then drop the database + wipe everything
+  sigil reset --yes      Skip the prompt (scripting)
+  sigil reset --keep-db  Wipe config + disconnect agents, but KEEP the database
 
-Wipes:
-  ~/.sigil/                      entire data directory (DB + config + CLAUDE.md)
-  ~/.claude/CLAUDE.md            removes the @~/.sigil/CLAUDE.md import line
+Tears down:
+  - the database         Docker container+volume removed; a local DB is DROPPED.
+                         External/managed (connection-URL) DBs are left intact.
+  - coding agents        Sigil hooks/config removed from Claude Code, Cursor, …
+  - ~/.sigil/            config.json + all local state
+  - ~/.claude/CLAUDE.md  the @~/.sigil/CLAUDE.md import line
 
-Then automatically runs 'sigil init' to walk you through fresh setup.
-Hooks in ~/.claude/settings.json are re-registered by init (idempotent).`);
+Re-run 'npx @anmol-srv/sigil' (or 'sigil') afterwards to set up fresh.`);
     process.exit(0);
   }
 
   const skipConfirm = args.includes('--confirm') || args.includes('--yes') || args.includes('-y');
+  const keepDb = args.includes('--keep-db');
   const home = homedir();
   const sigilDir = join(home, '.sigil');
-  const claudeMdPath = join(home, '.claude', 'CLAUDE.md');
 
   if (!skipConfirm) {
     const clack = await import('@clack/prompts');
-    clack.intro('Sigil — reset');
+    clack.intro('Sigil — reset (clean rebuild)');
     clack.note(
       [
         'This will:',
-        `  - delete ${sigilDir} (DB, config, CLAUDE.md, all stored facts)`,
-        `  - remove the @~/.sigil/CLAUDE.md import line from ${claudeMdPath}`,
-        '  - re-run sigil init from scratch (you will be re-prompted for provider + key)',
-        '',
-        'Hooks in ~/.claude/settings.json stay registered — init refreshes them.',
+        keepDb ? '  - KEEP the database (--keep-db)' : '  - drop the database (Docker container+volume / local DROP DATABASE; external left intact)',
+        '  - disconnect every coding agent (remove Sigil hooks/config)',
+        `  - delete ${sigilDir} (config + all local state)`,
+        '  - remove the @~/.sigil/CLAUDE.md import line',
       ].join('\n'),
       'About to reset',
     );
-
-    const proceed = await clack.confirm({
-      message: 'Wipe everything and re-init?',
-      initialValue: false,
-    });
-
+    const proceed = await clack.confirm({ message: keepDb ? 'Wipe config + disconnect agents?' : 'Drop the database and wipe everything?', initialValue: false });
     if (clack.isCancel(proceed) || proceed !== true) {
       clack.cancel('Reset cancelled. Nothing changed.');
       process.exit(0);
     }
   }
 
-  // Kill any running Sigil MCP servers before nuking their DB out from under them.
-  // Best effort — pkill returning non-zero (no matches) is fine.
-  try { _execSync('pkill -f "sigil/dist/server.js --mcp"', { stdio: 'pipe' }); } catch {}
-  try { _execSync('pkill -f ".sigil/db" ', { stdio: 'pipe' }); } catch {}
-
-  // Deliberately do NOT import db/cortex.js here. That module exports a
-  // singleton knex pool initialised at first import; touching it now caches
-  // a pool bound to the directory we're about to delete, and the later
-  // runInit() re-import returns that same dead instance from the module
-  // cache → "Unable to acquire a connection" on the very next migrate.
-  // Letting init be the first importer in this process gets a clean pool.
-
-  // Wipe ~/.sigil/ entirely.
-  const fs = await import('node:fs/promises');
-  if (existsSync(sigilDir)) {
-    await fs.rm(sigilDir, { recursive: true, force: true });
+  // 1. Drop the database while config still points at it (FORCE handles the
+  //    live daemon's connections). Skip with --keep-db.
+  if (!keepDb) {
+    try {
+      const { dropConfiguredDatabase } = await import('./setup/reset.js');
+      const r = await dropConfiguredDatabase();
+      console.log(`  database: ${r.detail}`);
+    } catch (err) { console.log(`  database: drop failed (${err.message}) — continuing`); }
+  } else {
+    console.log('  database: kept (--keep-db)');
   }
 
-  // Strip the @import line from ~/.claude/CLAUDE.md (init will re-add it at end).
+  // 2. Remove Sigil from every coding agent.
+  try {
+    const { disconnectAllClients } = await import('./setup/reset.js');
+    const removed = await disconnectAllClients();
+    console.log(`  agents: ${removed.length ? `disconnected ${removed.join(', ')}` : 'none connected'}`);
+  } catch (err) { console.log(`  agents: ${err.message}`); }
+
+  // 3. Stop the daemon (best effort) and wipe ~/.sigil.
+  try { _execSync('pkill -f "dist/daemon.js"', { stdio: 'pipe' }); } catch { /* none running */ }
+  try { _execSync('pkill -f "sigil/dist/server.js --mcp"', { stdio: 'pipe' }); } catch {}
+  const fs = await import('node:fs/promises');
+  if (existsSync(sigilDir)) await fs.rm(sigilDir, { recursive: true, force: true });
   await removeClaudeMdImport();
 
   console.log('');
-  console.log('Wipe complete. Starting init...');
+  console.log('  Reset complete. Run `npx @anmol-srv/sigil` (or `sigil`) to set up again.');
   console.log('');
-
-  // Hand off to the regular init flow. runInit handles its own success message
-  // and process.exit, so we return cleanly from here.
-  await runInit([]);
+  process.exit(0);
 }
 
 // Strip exactly the cortex/smara/sigil @import lines from ~/.claude/CLAUDE.md.

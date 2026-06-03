@@ -263,10 +263,10 @@
         <pre id="cfg-switch-result" class="result" style="display:none"></pre>
       </div>
 
-      <!-- Raw env (advanced, collapsed) -->
+      <!-- Config snapshot (advanced, collapsed) -->
       <details class="panel" style="padding: var(--s-5);">
-        <summary style="cursor:pointer;">Advanced — raw <code>~/.sigil/.env</code></summary>
-        <p class="muted text-sm">Secret keys (KEY / PASSWORD / TOKEN / SECRET) are masked.</p>
+        <summary style="cursor:pointer;">Advanced — configuration (<code>~/.sigil/config.json</code>)</summary>
+        <p class="muted text-sm">Secrets are shown as "configured", never the value.</p>
         <div class="table-wrap">
           <table id="env-table">
             <thead><tr><th>Key</th><th>Value</th></tr></thead>
@@ -274,6 +274,25 @@
           </table>
         </div>
       </details>
+
+      <!-- ── Danger zone ──────────────────────────────────────────── -->
+      <div class="section-head" style="margin-top: var(--s-6);">
+        <div class="title-block">
+          <h2>Danger zone</h2>
+          <p>Reset Sigil — disconnect every agent, optionally wipe stored memory, and start setup over.</p>
+        </div>
+      </div>
+      <div class="panel" style="padding: var(--s-5);">
+        <label class="field" style="flex-direction:row; align-items:center; gap: var(--s-2);">
+          <input type="checkbox" id="reset-wipe-memory" checked>
+          <span class="label" style="text-transform:none; letter-spacing:0;">Also wipe stored memory (all facts &amp; embeddings)</span>
+        </label>
+        <div id="reset-result" class="result" style="display:none; margin-top: var(--s-3);"></div>
+        <div class="flex-row" style="margin-top: var(--s-3);">
+          <div id="reset-confirm"></div>
+          <button type="button" class="btn danger" id="cfg-reset">Reset Sigil…</button>
+        </div>
+      </div>
     </section>
 
     <!-- ── RPC ──────────────────────────────────────────────────── -->
