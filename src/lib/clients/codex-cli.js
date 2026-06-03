@@ -22,6 +22,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PKG_ROOT } from '../paths.js';
 
 import TOML from '@iarna/toml';
 
@@ -35,7 +36,7 @@ const CODEX_AGENTS_PATH = join(CODEX_HOME, 'AGENTS.md');
 const SIGIL_ENV_PATH = join(homedir(), '.sigil', '.env');
 
 // Package root — same trick the other client modules use to find dist/ vs src/.
-const PKG_DIR = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 
 const BEGIN_MARKER = '<!-- BEGIN sigil -->';
 const END_MARKER = '<!-- END sigil -->';

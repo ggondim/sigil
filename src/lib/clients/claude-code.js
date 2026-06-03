@@ -14,20 +14,21 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
+import { PKG_ROOT } from '../paths.js';
 import { writeSharedInstructions, SHARED_INSTRUCTIONS_PATH } from './instructions.js';
 
 const CLAUDE_HOME = join(homedir(), '.claude');
 const CLAUDE_MD_PATH = join(CLAUDE_HOME, 'CLAUDE.md');
 const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, 'settings.json');
 
-// Resolve to the package root regardless of whether we're running from source
-// or from the bundled `dist/`. Same logic as cli.js's PKG_DIR computation.
-const PKG_DIR = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+// Package root — bundle-safe (walks up to package.json), so hook paths are
+// correct whether this module runs from source (src/lib/clients/) or bundled
+// into dist/daemon.js. A naive dirname-walk overshoots when bundled and wrote
+// broken hook commands like /Users/you/Drive/src/hooks/... → MODULE_NOT_FOUND.
+const PKG_DIR = PKG_ROOT;
 
 const meta = {
   id: 'claude-code',

@@ -25,6 +25,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PKG_ROOT } from '../paths.js';
 
 import { detectInstalled } from './detect.js';
 
@@ -34,7 +35,7 @@ const HERMES_MEMORY_PLUGINS_DIR = join(HERMES_AGENT_DIR, 'plugins', 'memory');
 const HERMES_SIGIL_PLUGIN_DIR = join(HERMES_MEMORY_PLUGINS_DIR, 'sigil');
 const HERMES_CONFIG_PATH = join(HERMES_HOME, 'config.yaml');
 
-const PKG_DIR = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 const PLUGIN_SOURCE_DIR = join(PKG_DIR, 'integrations', 'hermes', 'plugin');
 
 const meta = {

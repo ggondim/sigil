@@ -24,6 +24,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PKG_ROOT } from '../paths.js';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
@@ -36,7 +37,7 @@ const SIGIL_HOME = join(homedir(), '.sigil');
 const SIGIL_ENV_PATH = join(SIGIL_HOME, '.env');
 
 // Package root — same trick claude-code.js uses to find dist/ vs src/.
-const PKG_DIR = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 
 const meta = {
   id: 'cursor',

@@ -19,6 +19,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PKG_ROOT } from '../paths.js';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
@@ -29,7 +30,7 @@ const KIRO_MCP_PATH = join(KIRO_HOME, 'settings', 'mcp.json');
 const KIRO_STEERING_PATH = join(KIRO_HOME, 'steering', 'sigil.md');
 const SIGIL_ENV_PATH = join(homedir(), '.sigil', '.env');
 
-const PKG_DIR = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 
 const meta = {
   id: 'kiro',
