@@ -59,11 +59,6 @@ const CLI_MODEL_MAP = {
   'claude-opus-4-6': 'opus',
 };
 
-const PERMISSIVE_SCHEMA = JSON.stringify({
-  type: 'object',
-  additionalProperties: true,
-});
-
 function spawnClaude(args, input) {
   const timeout = config.llm.cliTimeout || 120_000;
 
@@ -106,12 +101,17 @@ function spawnClaude(args, input) {
   });
 }
 
+// eslint-disable-next-line no-unused-vars -- jsonMode kept for interface parity
 async function chat(input, { model, jsonMode = false } = {}) {
   const resolved = model || config.llm.cliModel || 'haiku';
   const cliModel = CLI_MODEL_MAP[resolved] || resolved;
+  // NOTE: we deliberately do NOT pass `--json-schema`. With a permissive schema
+  // the CLI coerces nested arrays/objects into JSON *strings* (e.g.
+  // {"facts":"[...]"}), which breaks every promptJson consumer (fact
+  // extraction, classifier routing, AUDM). Instead the prompt asks for JSON and
+  // the caller's parseJson() extracts it from the result text (claude returns a
+  // ```json fenced block, which parseJson handles).
   const args = ['-p', '--model', cliModel, '--output-format', 'json'];
-
-  if (jsonMode) args.push('--json-schema', PERMISSIVE_SCHEMA);
 
   const { stdout, stderr, code } = await spawnClaude(args, input);
 
@@ -136,10 +136,7 @@ async function chat(input, { model, jsonMode = false } = {}) {
     throw new Error(`claude CLI error: ${parsed.result || 'unknown error'}`);
   }
 
-  // When --json-schema is used, structured output is in a separate field
-  const text = jsonMode && parsed.structured_output
-    ? JSON.stringify(parsed.structured_output)
-    : (parsed.result || '').trim();
+  const text = (parsed.result || '').trim();
 
   const usage = parsed.usage || {};
 
