@@ -491,20 +491,35 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
         }
       }
 
-      // Server is up. Check for the model and pull in parallel with serve still running.
-      const hasModel = checkCommand(`ollama list 2>/dev/null | grep ${embeddingModel}`);
-      if (!hasModel) {
-        const pull = await confirm({ message: `Pull ${embeddingModel} embedding model now?` });
-        if (isCancel(pull)) { cancel('Setup cancelled.'); process.exit(0); }
-        if (pull) {
-          const s = spinner();
-          s.start(`Pulling ${embeddingModel}...`);
-          try {
-            _execSync(`ollama pull ${embeddingModel}`, { stdio: 'pipe' });
-            s.stop(`${embeddingModel} ready`);
-          } catch {
-            s.stop(`Pull failed — run: ollama pull ${embeddingModel} manually`);
-          }
+      // Server is up. Offer the compatible (1024-dim) embedding models, marking
+      // which are already pulled, and let the user choose. Selecting one that
+      // isn't installed pulls it. Only 1024-dim models are listed, so the choice
+      // can never break the dimension contract.
+      const { listCompatibleModels } = await import('./lib/llm/ollama-admin.js');
+      const compatible = await listCompatibleModels(ollamaHost);
+      const chosen = await select({
+        message: 'Ollama embedding model',
+        options: compatible.map((m) => ({
+          value: m.name,
+          label: `${m.name}${m.recommended ? ' (recommended)' : ''}`,
+          hint: m.installed ? 'installed' : `pull ${m.size}`,
+        })),
+        initialValue: compatible.find((m) => m.installed)?.name
+          || compatible.find((m) => m.recommended)?.name
+          || embeddingModel,
+      });
+      if (isCancel(chosen)) { cancel('Setup cancelled.'); process.exit(0); }
+      embeddingModel = chosen; // flows into the env write below
+
+      const isInstalled = compatible.find((m) => m.name === embeddingModel)?.installed;
+      if (!isInstalled) {
+        const s = spinner();
+        s.start(`Pulling ${embeddingModel}...`);
+        try {
+          _execSync(`ollama pull ${embeddingModel}`, { stdio: 'pipe' });
+          s.stop(`${embeddingModel} ready`);
+        } catch {
+          s.stop(`Pull failed — run: ollama pull ${embeddingModel} manually`);
         }
       }
 

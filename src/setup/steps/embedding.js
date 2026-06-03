@@ -10,18 +10,31 @@
 import { patchConfig, getConfig } from '../config-store.js';
 import { StepError } from '../errors.js';
 import { EMBEDDING_DIM } from '../../lib/constants.js';
+import {
+  listCompatibleModels, isReachable, pullModel,
+  RECOMMENDED_EMBED_MODEL, OLLAMA_EMBED_MODELS,
+} from '../../lib/llm/ollama-admin.js';
 
-// `model` is fixed per provider. `shared` means the key can be reused from the
-// LLM step when that step picked the same provider.
+// Cloud providers are PINNED to one model (their only 1024-dim option here).
+// Ollama is different: `model` is the DEFAULT, but the user may pick any
+// compatible 1024-dim model from detect().ollama.models, and apply() pulls it
+// if it isn't installed yet. `shared` means the key can be reused from the LLM
+// step when that step picked the same provider.
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', hint: 'text-embedding-3-large @ 1024 — best out-of-the-box quality', recommended: true, model: 'text-embedding-3-large', keyed: true, shared: true },
   { id: 'voyage', label: 'Voyage', hint: 'voyage-3 @ 1024', model: 'voyage-3', keyed: true, shared: false },
   { id: 'openrouter', label: 'OpenRouter', hint: 'Gateway; reuses your LLM key', model: 'openai/text-embedding-3-large', keyed: true, shared: true },
-  { id: 'ollama', label: 'Ollama (mxbai-embed-large)', hint: '1024-dim local embeddings, free', model: 'mxbai-embed-large', keyed: false, shared: false },
+  { id: 'ollama', label: 'Ollama (local)', hint: '1024-dim local embeddings, free — pick a model, auto-pulled if missing', model: RECOMMENDED_EMBED_MODEL, keyed: false, shared: false },
 ];
 
 export const id = 'embedding';
 export const title = 'Embeddings';
+
+// Resolve the Ollama host the embedder will actually use.
+function ollamaHost() {
+  const cfg = getConfig();
+  return process.env.OLLAMA_HOST || cfg.embedding?.host || 'http://localhost:11434';
+}
 
 export function listProviders() {
   // Tell the UI whether a shared key already exists so it can hide the field.
@@ -32,7 +45,19 @@ export function listProviders() {
   }));
 }
 
-export function detect() { return { providers: listProviders() }; }
+export async function detect() {
+  // Enrich the response with the Ollama model picker data so the GUI/CLI can
+  // render a dropdown: which compatible 1024-dim models exist and which are
+  // already pulled. Best-effort — a missing/stopped Ollama just reports
+  // reachable:false with the full candidate list (all installed:false).
+  const host = ollamaHost();
+  const reachable = await isReachable(host);
+  const models = await listCompatibleModels(host);
+  return {
+    providers: listProviders(),
+    ollama: { reachable, host, models, recommended: RECOMMENDED_EMBED_MODEL },
+  };
+}
 
 /** The key to use: explicit input, else the LLM step's key if same provider. */
 function resolveKey(p, input) {
@@ -56,13 +81,60 @@ export async function apply(input, emit = () => {}) {
   const p = PROVIDERS.find((x) => x.id === input.provider);
   if (!p) throw new StepError({ message: `Unknown embedding provider: ${input.provider}`, kind: 'other' });
 
+  // Resolve the model. Cloud providers are pinned. For Ollama the user may pick
+  // any compatible model; validate the choice against the curated 1024-dim list
+  // so a free-text mistake can't slip a wrong-dimension model through.
+  let model = p.model;
+  if (p.id === 'ollama' && input.model) {
+    const allowed = OLLAMA_EMBED_MODELS.map((m) => m.name);
+    if (!allowed.includes(input.model)) {
+      throw new StepError({
+        message: `"${input.model}" isn't a known 1024-dim Ollama embedding model.`,
+        hint: `Choose one of: ${allowed.join(', ')}.`,
+        kind: 'model-not-found',
+      });
+    }
+    model = input.model;
+  }
+
   emit({ pct: 20, label: 'Saving provider…' });
   patchConfig('embedding', {
     provider: p.id,
-    model: p.model, // pinned
+    model,
     apiKey: resolveKey(p, input),
     host: input.host || null,
   });
+
+  // Ollama: make sure the chosen model is actually present locally, pulling it
+  // (with streamed progress) if not. This is what closes the "GUI errored
+  // because the model wasn't pulled" gap — setup now provisions it.
+  if (p.id === 'ollama') {
+    const host = ollamaHost();
+    if (!(await isReachable(host))) {
+      throw new StepError({
+        message: 'The local Ollama server is not reachable.',
+        hint: 'Start it with `ollama serve`, then retry.',
+        kind: 'ollama-down',
+      });
+    }
+    const installed = (await listCompatibleModels(host)).find((m) => m.name === model)?.installed;
+    if (!installed) {
+      emit({ pct: 30, label: `Pulling ${model}…` });
+      try {
+        await pullModel(model, ({ status, percent }) => {
+          // Map the pull into the 30–50% band of this step's progress bar.
+          const pct = percent == null ? 35 : 30 + Math.round(percent * 0.2);
+          emit({ pct, label: `Pulling ${model}: ${status}${percent == null ? '' : ` ${percent}%`}` });
+        }, host);
+      } catch (err) {
+        throw new StepError({
+          message: `Failed to pull ${model} from Ollama: ${err.message}`,
+          hint: `Pull it manually with \`ollama pull ${model}\`, then retry.`,
+          kind: 'model-not-found',
+        });
+      }
+    }
+  }
 
   emit({ pct: 55, label: 'Testing embed call…' });
   try {
