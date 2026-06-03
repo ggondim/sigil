@@ -39,16 +39,54 @@ function logCall({ provider, model, caller, input, response, inputTokens, output
     .catch((err) => console.error('[llm-log] Write failed:', err.message));
 }
 
+// Extract an HTTP status from a provider error. Providers throw structured
+// `err.status` where available; otherwise their message is shaped like
+// "OpenAI error 401: ...", so fall back to that.
+function statusFromError(err) {
+  if (typeof err?.status === 'number') return err.status;
+  const m = /error\s+(\d{3})\b/i.exec(err?.message || '');
+  return m ? Number(m[1]) : null;
+}
+
+// Only retry errors that might succeed on a second attempt. A 401 (bad key),
+// 400 (malformed request), or 404 (wrong model) is deterministic — retrying
+// burns latency and money for the same failure. 408/429 and 5xx are transient;
+// a missing status (network reset, DNS, socket hangup) is worth a retry too.
+function isRetryable(err) {
+  const status = statusFromError(err);
+  if (status == null) return true;
+  if (status === 408 || status === 429) return true;
+  return status >= 500;
+}
+
 async function withRetry(fn, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      if (attempt === retries) throw err;
+      if (attempt === retries || !isRetryable(err)) throw err;
       const delay = Math.min(1000 * 2 ** (attempt - 1), 10000);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
 
-export { estimateTokens, calcCost, logCall, withRetry };
+// Retention: llm_log and trace_event grow unbounded (one row per LLM call /
+// trace event). Called from `sigil maintain` to cap their size. Returns the
+// number of rows deleted from each table.
+async function pruneLogs({ llmLogDays = 30, traceDays = 7 } = {}) {
+  const llmDeleted = await cortexDb('llm_log')
+    .where('createdAt', '<', cortexDb.raw(`NOW() - INTERVAL '${Number(llmLogDays)} days'`))
+    .del()
+    .catch(() => 0);
+  let traceDeleted = 0;
+  try {
+    // trace_event timestamps its rows with `ts`, not created_at.
+    traceDeleted = await cortexDb('trace_event')
+      .where('ts', '<', cortexDb.raw(`NOW() - INTERVAL '${Number(traceDays)} days'`))
+      .del();
+  } catch { /* trace_event may not exist on older schemas — ignore */ }
+  return { llmDeleted, traceDeleted };
+}
+
+export { estimateTokens, calcCost, logCall, withRetry, pruneLogs };

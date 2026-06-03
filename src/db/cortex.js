@@ -8,7 +8,20 @@ const driver = selectDriver(config);
 const cortexDb = knex({
   client: 'pg',
   connection: driver.connection,
-  pool: { min: 2, max: 10 },
+  pool: {
+    // min:0 — hooks are short-lived processes (open pool, do one query, exit).
+    // The old min:2 forced two eager connections on every hook invocation and
+    // kept them alive, wasting Postgres backends for a 10ms task.
+    min: 0,
+    max: 10,
+    // Don't hang forever when Postgres is down or saturated — fail fast so the
+    // caller (hook/daemon) surfaces a clear error instead of blocking. tarn's
+    // defaults are 30s; 10s is plenty for a local/cloud Postgres.
+    acquireTimeoutMillis: 10_000,
+    createTimeoutMillis: 10_000,
+    // Reap idle connections so a long-lived daemon doesn't pin backends.
+    idleTimeoutMillis: 30_000,
+  },
   postProcessResponse,
   wrapIdentifier,
 });

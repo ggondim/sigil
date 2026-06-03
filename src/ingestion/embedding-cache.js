@@ -57,18 +57,29 @@ async function recordHits(keys) {
     });
 }
 
+// Postgres caps a statement at 65535 bind params; at 4 params/row that's ~16k
+// rows. Chunk well under that so a huge re-ingest can't blow the limit.
+const STORE_CHUNK = 500;
+
 async function storeBatch(entries, provider, model) {
   if (!entries.length) return;
 
-  // Use raw SQL so we can insert pgvector strings
-  for (const { key, embedding } of entries) {
+  // One multi-row upsert per chunk instead of N serial round-trips. Raw SQL so
+  // we can bind pgvector string literals.
+  for (let start = 0; start < entries.length; start += STORE_CHUNK) {
+    const chunk = entries.slice(start, start + STORE_CHUNK);
+    const valuesSql = chunk.map(() => '(?, ?, ?, ?, 0, NOW(), NOW())').join(', ');
+    const params = [];
+    for (const { key, embedding } of chunk) {
+      params.push(key, provider, model, pgVector(embedding));
+    }
     await cortexDb.raw(`
       INSERT INTO embedding_cache (key, provider, model, embedding, hits, created_at, last_used_at)
-      VALUES (?, ?, ?, ?, 0, NOW(), NOW())
+      VALUES ${valuesSql}
       ON CONFLICT (key) DO UPDATE
         SET last_used_at = NOW(),
             hits = embedding_cache.hits + 1
-    `, [key, provider, model, pgVector(embedding)]);
+    `, params);
   }
 
   // Opportunistic eviction — cheap bulk delete of least-recently-used rows

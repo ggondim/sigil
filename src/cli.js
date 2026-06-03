@@ -210,8 +210,13 @@ if (command !== 'doctor' && command !== 'export' && command !== 'register') {
 try {
   await handler(rest);
 } catch (err) {
-  const msg = err.message || String(err);
-  const code = err.code || '';
+  // node:net throws an AggregateError when a host resolves to several
+  // addresses (IPv4 + IPv6) and every connect fails — its own .message/.code
+  // are empty, but the real ECONNREFUSED lives in err.errors[]. Flatten both
+  // so the friendly diagnostics below still match.
+  const causes = err instanceof AggregateError ? (err.errors || []) : [];
+  const msg = [err.message, ...causes.map((e) => e?.message)].filter(Boolean).join('; ') || String(err);
+  const code = err.code || causes.find((e) => e?.code)?.code || '';
 
   if (code === '3D000' || /database .* does not exist/i.test(msg)) {
     console.error('Error: the Sigil database does not exist yet on this Postgres server.');
@@ -928,9 +933,20 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
     return;
   }
 
+  // Sigil is Postgres-only since 0.10.0 — describe the real DB target, not the
+  // long-gone embedded store.
+  let dbSummary;
+  if (dbMode === 'url') {
+    let host = '(connection url)';
+    try { host = new URL(urlValue).host; } catch { /* keep placeholder */ }
+    dbSummary = `Postgres      ${host}  (via SIGIL_DATABASE_URL)`;
+  } else {
+    dbSummary = `Postgres      ${dbUser}@${dbHost}:${dbPort}/${dbName}`;
+  }
+
   note(
     [
-      `Memory store  ~/.sigil/db  (embedded, no server needed)`,
+      dbSummary,
       `Config        ${envPath}`,
       `Claude        ~/.claude/CLAUDE.md — Sigil is now your memory`,
       `Backups       any pre-existing files saved to <path>.sigil.bak`,
@@ -2219,11 +2235,14 @@ co-retrieval edges. Safe to run as a cron — fully idempotent.`);
   const { consolidateCoRetrievalEdges } = await import('./memory/lifecycle/hebbian.js').catch(() => ({}));
   const { consolidateEntityCoRetrievalEdges } = await import('./memory/lifecycle/entity-hebbian.js').catch(() => ({}));
 
+  const { pruneLogs } = await import('./lib/llm/log.js');
+
   const before = await getLifecycleStats();
   const promoted = await promoteFreshFacts();
   const closed = await closeEditingWindows();
   const factEdgesConsolidated = consolidateCoRetrievalEdges ? await consolidateCoRetrievalEdges() : 0;
   const entityEdgesConsolidated = consolidateEntityCoRetrievalEdges ? await consolidateEntityCoRetrievalEdges() : 0;
+  const pruned = await pruneLogs();
   const after = await getLifecycleStats();
 
   console.log('Memory maintenance:');
@@ -2232,6 +2251,7 @@ co-retrieval edges. Safe to run as a cron — fully idempotent.`);
   console.log(`  Closed editing windows (editing→stable): ${closed}`);
   if (factEdgesConsolidated) console.log(`  Fact co-retrieval edges consolidated: ${factEdgesConsolidated}`);
   if (entityEdgesConsolidated) console.log(`  Entity co-retrieval edges consolidated: ${entityEdgesConsolidated}`);
+  console.log(`  Pruned logs — llm_log: ${pruned.llmDeleted}, trace_event: ${pruned.traceDeleted}`);
 
   await cortexDb.destroy();
 }

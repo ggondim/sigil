@@ -218,32 +218,45 @@ async function markSuperseded(factId, supersededById) {
 async function supersedeStaleDocFacts(documentId, keptFactIds = []) {
   const kept = new Set((keptFactIds || []).filter((x) => x != null));
   const current = await listByDocument(documentId);
-  let superseded = 0;
-  let dissociated = 0;
+
+  // Partition first, then issue at most three bulk statements instead of N×2
+  // serial round-trips (markSuperseded + recordHistory per fact). On a large
+  // re-ingest this is the difference between hundreds of awaited queries and a
+  // handful.
+  const toSupersede = [];
+  const toDissociate = [];
   for (const f of current) {
     if (kept.has(f.id)) continue; // re-confirmed by this ingest — keep
     const docIds = Array.isArray(f.sourceDocumentIds) ? f.sourceDocumentIds : [];
-    if (docIds.length <= 1) {
-      // Sole provenance — the source that produced it no longer supports it.
-      await markSuperseded(f.id, null);
-      await recordHistory({
-        targetType: 'fact',
-        targetId: f.id,
-        event: 'SUPERSEDE',
-        oldContent: f.content,
-        newContent: null,
-        triggeredBy: `reingest:doc=${documentId}`,
-      });
-      superseded++;
-    } else {
-      // Other sources still attest it — keep the fact, drop only this doc.
-      await cortexDb('fact')
-        .where({ id: f.id })
-        .update({ sourceDocumentIds: cortexDb.raw('array_remove(source_document_ids, ?)', [documentId]) });
-      dissociated++;
-    }
+    if (docIds.length <= 1) toSupersede.push(f); // sole provenance → supersede
+    else toDissociate.push(f);                   // shared → drop this doc only
   }
-  return { superseded, dissociated };
+
+  if (toSupersede.length) {
+    const ids = toSupersede.map((f) => f.id);
+    // Bulk equivalent of markSuperseded(id, null) for each.
+    await cortexDb('fact')
+      .whereIn('id', ids)
+      .update({ status: 'superseded', supersededById: null, validUntil: cortexDb.fn.now() });
+    // Single multi-row history insert.
+    await cortexDb('history').insert(toSupersede.map((f) => ({
+      targetType: 'fact',
+      targetId: f.id,
+      event: 'SUPERSEDE',
+      oldContent: f.content,
+      newContent: null,
+      triggeredBy: `reingest:doc=${documentId}`,
+    })));
+  }
+
+  if (toDissociate.length) {
+    // Other sources still attest these — keep them active, drop only this doc.
+    await cortexDb('fact')
+      .whereIn('id', toDissociate.map((f) => f.id))
+      .update({ sourceDocumentIds: cortexDb.raw('array_remove(source_document_ids, ?)', [documentId]) });
+  }
+
+  return { superseded: toSupersede.length, dissociated: toDissociate.length };
 }
 
 async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHOLD, limit = 5 }) {
