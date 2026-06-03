@@ -7,8 +7,8 @@ import { incrementCounters } from './store.js';
 // Idempotent attach. The unique (pod_id, member_type, member_id)
 // constraint makes double-attaches no-ops; we still bump counters only on
 // the first attach by checking the row count.
-async function attach(podId, memberType, memberId, role = 'primary') {
-  const { rowCount } = await cortexDb.raw(
+async function attach(podId, memberType, memberId, role = 'primary', db = cortexDb) {
+  const { rowCount } = await db.raw(
     `INSERT INTO pod_membership (pod_id, member_type, member_id, role)
      VALUES (?, ?, ?, ?)
      ON CONFLICT (pod_id, member_type, member_id) DO NOTHING`,
@@ -16,16 +16,16 @@ async function attach(podId, memberType, memberId, role = 'primary') {
   );
 
   if (rowCount > 0) {
-    if (memberType === 'fact') await incrementCounters(podId, { facts: 1 });
-    else if (memberType === 'document') await incrementCounters(podId, { docs: 1 });
+    if (memberType === 'fact') await incrementCounters(podId, { facts: 1 }, db);
+    else if (memberType === 'document') await incrementCounters(podId, { docs: 1 }, db);
   }
 
   return { attached: rowCount > 0 };
 }
 
-const attachFact = (podId, factId, role) => attach(podId, 'fact', factId, role);
-const attachDocument = (podId, documentId, role) => attach(podId, 'document', documentId, role);
-const attachEntity = (podId, entityId, role) => attach(podId, 'entity', entityId, role);
+const attachFact = (podId, factId, role, db = cortexDb) => attach(podId, 'fact', factId, role, db);
+const attachDocument = (podId, documentId, role, db = cortexDb) => attach(podId, 'document', documentId, role, db);
+const attachEntity = (podId, entityId, role, db = cortexDb) => attach(podId, 'entity', entityId, role, db);
 
 // ── Detach ────────────────────────────────────────────────────────────
 

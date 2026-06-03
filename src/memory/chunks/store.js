@@ -1,9 +1,9 @@
 import cortexDb from '../../db/cortex.js';
 import { pgVector } from '../../lib/vectors.js';
 
-async function insertChunks(documentId, chunks, namespace) {
+async function insertChunks(documentId, chunks, namespace, db = cortexDb) {
   // Delete existing chunks for this document (re-ingestion)
-  await cortexDb('chunk').where({ documentId }).del();
+  await db('chunk').where({ documentId }).del();
 
   if (!chunks.length) return [];
 
@@ -14,15 +14,15 @@ async function insertChunks(documentId, chunks, namespace) {
     contextualPrefix: chunk.contextualPrefix || null,
     sectionHeading: chunk.sectionHeading || null,
     namespace,
-    embedding: pgVector(chunk.embedding),
+    embedding: pgVector(chunk.embedding, { assertDim: true }),
   }));
 
-  const inserted = await cortexDb('chunk')
+  const inserted = await db('chunk')
     .insert(rows)
     .returning('*');
 
   // Update tsvector search_vector (include contextual prefix for better keyword search)
-  await cortexDb.raw(`
+  await db.raw(`
     UPDATE chunk
     SET search_vector = to_tsvector('english', COALESCE(contextual_prefix, '') || ' ' || content)
     WHERE document_id = ?

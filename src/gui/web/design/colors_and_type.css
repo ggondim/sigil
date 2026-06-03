@@ -4,8 +4,8 @@
    restrained status color. Import this file to inherit all tokens.
    ============================================================ */
 
-/* ---- Webfonts ---------------------------------------------- */
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+/* Webfonts are loaded via <link> tags in index.html for parallel fetch.
+   @import here would block parsing until this file is fully loaded first. */
 
 :root {
   /* ========================================================

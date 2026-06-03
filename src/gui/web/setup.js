@@ -216,7 +216,7 @@ function confirmExternal(url) {
   return new Promise((resolve) => {
     const host = (() => { try { return new URL(url).host; } catch { return 'that server'; } })();
     const el = $('#setup-confirm');
-    el.innerHTML = `<div class="result conflict-card">
+    el.innerHTML = `<div class="result">
       <strong>Create database &amp; run migrations on ${esc(host)}?</strong>
       <div class="muted" style="margin:6px 0;">Sigil will create the database if missing, enable pgvector, and apply its schema.</div>
       <div class="flex-row" style="margin-top:8px;">
@@ -240,7 +240,7 @@ async function renderProviderStep(stepId) {
   $('#setup-run').addEventListener('click', () => runProviderStep(stepId));
   const det = await rpc('setup.detect', { step: stepId }, { quiet: true }).catch(() => ({ providers: [] }));
   providers = det.providers || [];
-  $('#setup-providers').innerHTML = providers.map((p) => card('prov', p.id, `${esc(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}`, p.hint)).join('');
+  $('#setup-providers').innerHTML = providers.map((p) => card('prov', p.id, `${esc(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:var(--s-2);">RECOMMENDED</span>' : ''}`, p.hint)).join('');
   $$all('#setup-providers [data-prov]').forEach((c) => c.addEventListener('click', () => selectProvider(stepId, c.dataset.prov)));
   const rec = providers.find((p) => p.recommended) || providers[0];
   if (rec) selectProvider(stepId, rec.id);

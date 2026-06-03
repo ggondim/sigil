@@ -109,6 +109,35 @@ export async function startDaemon({ foreground = false } = {}) {
       if (started.started) log('started local sigil-postgres container');
     } catch { /* docker absent / unrelated DB — ignore */ }
     probeDbHealth(log);
+
+    // Live provider probe — a valid-looking-but-dead LLM/embedder (revoked key,
+    // unreachable Ollama, wrong model) should be loud at boot, not silent until
+    // the first ingest. Non-blocking; result is cached for `status`.
+    (async () => {
+      try {
+        const { probeProviders } = await import('../lib/provider-probe.js');
+        const { setProviderHealth } = await import('./registry-holder.js');
+        const health = await probeProviders();
+        setProviderHealth(health);
+        if (health.embedding && !health.embedding.ok) log(`embedding provider DOWN: ${health.embedding.error}`);
+        if (health.llm && !health.llm.ok) log(`llm provider DOWN: ${health.llm.error}`);
+        if (health.embedding?.ok && health.llm?.ok) log('providers healthy (llm + embedding probed ok)');
+      } catch (err) {
+        log(`provider probe failed: ${err.message}`);
+      }
+    })();
+
+    // Replay any Stop-hook saves that failed during an outage (provider/DB
+    // down). Best-effort and non-blocking — the daemon stays up regardless.
+    (async () => {
+      try {
+        const { drainStopSpool } = await import('../hooks/stop-spool.js');
+        const r = await drainStopSpool();
+        if (r.drained) log(`stop-spool drained: ${r.drained} turns replayed (${r.replayed} facts, ${r.remaining} remaining)`);
+      } catch (err) {
+        log(`stop-spool drain failed: ${err.message}`);
+      }
+    })();
   }
 
   // Iroh: warm up the endpoint when network is enabled so the NodeID

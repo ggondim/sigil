@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { parse } from './parsers/index.js';
 import { chunkSections } from './chunker.js';
-import { embedBatch } from './embedder.js';
+import { embedBatchOrThrow } from './embedder.js';
 import { contextualizeChunks } from './contextualizer.js';
 import * as documentStore from '../memory/documents/store.js';
 import * as chunkStore from '../memory/chunks/store.js';
@@ -15,6 +15,7 @@ import { classifyInput } from '../memory/cognitive/input-classifier.js';
 import { linkDocumentEntities } from '../memory/entities/linker.js';
 import * as podStore from '../memory/pods/store.js';
 import * as podMembership from '../memory/pods/membership.js';
+import cortexDb from '../db/cortex.js';
 import { fromSourceMetadata as resolvePodsFromMetadata } from '../memory/pods/resolver.js';
 import { maskSecrets } from '../hooks/secret-mask.js';
 import config from '../config.js';
@@ -147,11 +148,30 @@ async function ingestDocument({
   // Thought fast-path: store facts directly, skip chunking/extraction
   if (classification?.route === 'thought' && classification.facts.length) {
     process.stderr.write(`[thought] Storing ${classification.facts.length} facts directly...` + "\n");
-    const thoughtResult = await storeDirectFacts(classification.facts, {
-      documentId: doc.id,
-      namespace: ns,
+
+    // Embed OUTSIDE the tx; then store facts + pod-attach + supersede atomically.
+    const thoughtEmbeddings = await embedBatchOrThrow(classification.facts.map((f) => f.content));
+    let thoughtResult = { counts: { total: 0, added: 0, skipped: 0, updated: 0, contradicted: 0 }, results: [] };
+    await cortexDb.transaction(async (trx) => {
+      thoughtResult = await storeFactsInBatches(classification.facts, {
+        documentId: doc.id, namespace: ns, embeddings: thoughtEmbeddings,
+        defaultConfidence: 'high', defaultImportance: 'vital', db: trx,
+      });
+      // Mirror the document's pod attachments down to its facts so a session
+      // pod query surfaces the actual fact rows, not just the document.
+      await attachFactsToPods(thoughtResult.results, podAttachments, trx);
+      // Re-ingest hygiene: retire facts from this doc's PRIOR content the new
+      // content no longer supports (no-op on first ingest).
+      await supersedeStaleDocFacts(
+        doc.id,
+        thoughtResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
+        trx,
+      );
     });
 
+    await documentStore.updateCounts(doc.id, { chunkCount: 0, factCount: thoughtResult.counts.added });
+
+    // Entities AFTER commit — additive graph enrichment, must not roll back facts.
     let entityResult = { entityCount: 0, relationCount: 0, factEntityLinks: 0, topics: [] };
     if (!skipEntities && thoughtResult.results.length) {
       entityResult = await linkDocumentEntities(
@@ -161,20 +181,6 @@ async function ingestDocument({
         entities,
       );
     }
-
-    await documentStore.updateCounts(doc.id, { chunkCount: 0, factCount: thoughtResult.counts.added });
-
-    // Mirror the document's pod attachments down to its facts so a session
-    // pod query surfaces the actual fact rows, not just the document.
-    await attachFactsToPods(thoughtResult.results, podAttachments);
-
-    // Re-ingest hygiene: retire facts from this doc's PRIOR content that the
-    // new content no longer supports (no-op on first ingest — the just-saved
-    // facts are excluded via keptFactIds).
-    await supersedeStaleDocFacts(
-      doc.id,
-      thoughtResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
-    );
 
     process.stderr.write(`Done. Route: thought, ${thoughtResult.counts.total} facts (${thoughtResult.counts.added} new)` + "\n");
     return {
@@ -207,45 +213,60 @@ async function ingestDocument({
       const prefix = c.contextualPrefix;
       return prefix ? `${prefix}\n${c.content}` : c.content;
     });
-    const embeddings = await embedBatch(texts);
+    const embeddings = await embedBatchOrThrow(texts);
 
     const chunksWithEmbeddings = chunks.map((chunk, i) => ({
       ...chunk,
       embedding: embeddings[i],
     }));
 
-    await chunkStore.insertChunks(doc.id, chunksWithEmbeddings, ns);
-
-    // Step 4: Extract facts per chunk — skipped in lazy mode (Ogham approach: store raw,
-    // let read-time synthesis compose answers from chunks instead).
+    // Step 4: Extract facts (LLM) + embed them — done OUTSIDE the transaction
+    // so a pooled DB connection isn't held across multi-second LLM/embed calls.
+    let rawFacts = [];
+    let factEmbeddings = [];
     if (!skipFacts && config.ingest.eagerExtract) {
       process.stderr.write('[4/6] Extracting facts...' + "\n");
-      factResult = await extractAndStoreFacts(chunks, {
-        documentId: doc.id,
-        namespace: ns,
-        promptPath: prompt,
-        categories: cats,
-      });
+      rawFacts = await extractFactsFromChunks(chunks, { promptPath: prompt, categories: cats });
+      process.stderr.write(`  ${rawFacts.length} facts extracted from ${chunks.length} chunks` + "\n");
+      if (rawFacts.length) factEmbeddings = await embedBatchOrThrow(rawFacts.map((f) => f.content));
     } else if (!config.ingest.eagerExtract) {
       process.stderr.write('[4/6] Skipping fact extraction (SIGIL_EAGER_EXTRACT=false)' + "\n");
     }
 
+    // ATOMIC write region: chunks + facts + pod-attach + supersede commit
+    // together or roll back together — no orphaned chunks-without-facts, no
+    // facts missing their pod attachment. findSimilar runs on `trx` so
+    // within-batch AUDM dedup sees facts inserted earlier in this ingest.
+    // (AUDM's decide-call is the one LLM still inside — fires only for
+    // ambiguous-similarity facts, so the connection hold is bounded.)
+    await cortexDb.transaction(async (trx) => {
+      await chunkStore.insertChunks(doc.id, chunksWithEmbeddings, ns, trx);
+      if (rawFacts.length) {
+        factResult = await storeFactsInBatches(rawFacts, {
+          documentId: doc.id, namespace: ns, embeddings: factEmbeddings, db: trx,
+        });
+      }
+      // Mirror the document's pod attachments down to its facts — inside the tx
+      // so a fact and its pod membership commit atomically (no invisible-to-
+      // scoped-search facts).
+      await attachFactsToPods(factResult.results, podAttachments, trx);
+      // Re-ingest hygiene: supersede facts from this doc's PRIOR content the
+      // new content no longer re-confirms (no-op on first ingest).
+      await supersedeStaleDocFacts(
+        doc.id,
+        factResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
+        trx,
+      );
+    });
+
+    // After commit — cosmetic counts; a failure here can't orphan data.
     await documentStore.updateCounts(doc.id, {
       chunkCount: chunks.length,
       factCount: factResult.counts.added + factResult.counts.updated + factResult.counts.contradicted,
     });
 
-    // Mirror the document's pod attachments down to its facts.
-    await attachFactsToPods(factResult.results, podAttachments);
-
-    // Re-ingest hygiene: supersede facts from this doc's PRIOR content that
-    // the new content no longer re-confirms (no-op on first ingest).
-    await supersedeStaleDocFacts(
-      doc.id,
-      factResult.results.map((r) => r.fact?.id ?? r.existing?.id).filter(Boolean),
-    );
-
-    // Step 5: Link entities
+    // Step 5: Link entities — graph enrichment, AFTER facts are durably
+    // committed. A linking failure must not roll back valid facts.
     if (!skipEntities && factResult.results.length) {
       process.stderr.write('[5/6] Linking entities...' + "\n");
       entityResult = await linkDocumentEntities({
@@ -257,7 +278,9 @@ async function ingestDocument({
     }
 
   } catch (err) {
-    // Reset content hash so re-ingest doesn't skip this document
+    // Reset content hash so re-ingest doesn't skip this document. The
+    // transaction already rolled back any partial chunk/fact writes, so there
+    // is no orphaned state to clean up — just allow a clean retry.
     console.error(`[pipeline] Failed after document upsert: ${err.message}`);
     await documentStore.resetHash(doc.id).catch(() => {});
     throw err;
@@ -290,7 +313,7 @@ function traceVerdicts(results) {
   }));
 }
 
-async function storeFactsInBatches(facts, { documentId, namespace, embeddings, defaultConfidence = 'medium', defaultImportance = 'supplementary' }) {
+async function storeFactsInBatches(facts, { documentId, namespace, embeddings, defaultConfidence = 'medium', defaultImportance = 'supplementary', db } = {}) {
   const counts = { total: facts.length, added: 0, skipped: 0, updated: 0, contradicted: 0 };
   const allResults = [];
 
@@ -308,7 +331,7 @@ async function storeFactsInBatches(facts, { documentId, namespace, embeddings, d
       sourceDocumentIds: documentId ? [documentId] : [],
       sourceSection: raw.sourceSection || raw.category,
       embedding: embeddings[a],
-    });
+    }, db);
     allResults.push(result);
 
     const action = result.action.toLowerCase();
@@ -321,22 +344,6 @@ async function storeFactsInBatches(facts, { documentId, namespace, embeddings, d
   return { counts, results: allResults };
 }
 
-async function storeDirectFacts(facts, { documentId, namespace }) {
-  const embeddings = await embedBatch(facts.map((f) => f.content));
-  return storeFactsInBatches(facts, { documentId, namespace, embeddings, defaultConfidence: 'high', defaultImportance: 'vital' });
-}
-
-async function extractAndStoreFacts(chunks, { documentId, namespace, promptPath, categories }) {
-  const rawFacts = await extractFactsFromChunks(chunks, { promptPath, categories });
-  process.stderr.write(`  ${rawFacts.length} facts extracted from ${chunks.length} chunks` + "\n");
-
-  if (!rawFacts.length) {
-    return { counts: { total: 0, added: 0, skipped: 0, updated: 0, contradicted: 0 }, results: [] };
-  }
-
-  const embeddings = await embedBatch(rawFacts.map((f) => f.content));
-  return storeFactsInBatches(rawFacts, { documentId, namespace, embeddings });
-}
 
 // Resolve the union of pod IDs this document should attach to. Two sources:
 //   - explicit `podUids` (hooks pass the active session pod)
@@ -373,7 +380,7 @@ async function resolvePodAttachments({ podUids, resolvePodsFrom, metadata, names
 // We treat SKIP as a re-mention worth recording in the pod too — the
 // fact is still part of "what was discussed in this session/workspace",
 // even if the storage layer collapsed it as a duplicate.
-async function attachFactsToPods(results, attachments) {
+async function attachFactsToPods(results, attachments, db) {
   if (!attachments.length || !results.length) return;
 
   for (const r of results) {
@@ -381,7 +388,7 @@ async function attachFactsToPods(results, attachments) {
     if (!factId) continue;
     const role = r?.action === 'SKIP' ? 'mention' : 'primary';
     for (const { podId } of attachments) {
-      await podMembership.attachFact(podId, factId, role);
+      await podMembership.attachFact(podId, factId, role, db);
     }
   }
 }

@@ -21,6 +21,8 @@ import { createHash } from 'node:crypto';
 
 import { loadHookEnv } from './env-loader.js';
 import { maskSecrets } from './secret-mask.js';
+import { classifyTurn, saveFacts } from './stop-classify.js';
+import { appendSpool } from './stop-spool.js';
 import { SIGIL_STOP_CURSOR } from '../lib/paths.js';
 
 loadHookEnv();
@@ -45,9 +47,20 @@ async function main() {
   const messageHash = sha256(userMessage);
   if (alreadyProcessed(messageHash)) return respond();
 
-  // Config gate — bail before the LLM classifier call if config is known-broken
+  // Config gate — bail before the LLM classifier call if config is known-broken.
+  // Spool the turn so it's replayed once config is fixed, instead of dropping it.
   const { failClosedOnBadConfig } = await import('./error-log.js');
-  if (await failClosedOnBadConfig('stop', raw)) return respond();
+  if (await failClosedOnBadConfig('stop', raw)) {
+    appendSpool({
+      message: userMessage,
+      sessionId: input.session_id,
+      cwd: input.cwd || null,
+      transcriptPath: input.transcript_path || null,
+      reason: 'bad-config',
+    });
+    markProcessed(messageHash);
+    return respond();
+  }
 
   try {
     const facts = await classifyTurn(userMessage);
@@ -72,9 +85,22 @@ async function main() {
       process.stderr.write(`[sigil:stop] pod dispatch failed: ${maskSecrets(err.message)}\n`);
     }
 
-    await saveFacts(facts, { podUids });
+    // throwOnError so a save failure (embedder/DB down) reaches the catch and
+    // gets spooled, instead of being swallowed and lost.
+    await saveFacts(facts, { podUids, throwOnError: true });
   } catch (err) {
-    // Never block Claude — fail silently, but log so sigil doctor can surface it
+    // Never block Claude — but the content was memorable and we couldn't save
+    // it. Spool the raw turn for replay once the system recovers, and log so
+    // sigil doctor can surface it. markProcessed guards against reclassifying
+    // the same message; the spool is the recovery source.
+    markProcessed(messageHash);
+    appendSpool({
+      message: userMessage,
+      sessionId: input.session_id,
+      cwd: input.cwd || null,
+      transcriptPath: input.transcript_path || null,
+      reason: maskSecrets(err.message || 'save-failed'),
+    });
     process.stderr.write(`[sigil:stop] ${maskSecrets(err.message)}\n`);
     try {
       const { recordHookError } = await import('./error-log.js');
@@ -198,84 +224,6 @@ function markProcessed(hash) {
 
 function sha256(s) {
   return createHash('sha256').update(s).digest('hex').slice(0, 16);
-}
-
-// ─── Classifier — single LLM call deciding what to save ──────────────────
-
-const CLASSIFIER_PROMPT = `You decide whether a user's message contains durable, memorable content for a long-term AI memory system, and extract the facts if so.
-
-SAVE these signals:
-- Preferences ("I prefer X", "I always X", "I never X", "I like X")
-- Decisions ("we use X", "we picked X", "we don't use X", "we moved off X")
-- Constraints ("we can't use X because…", "X is blocked", "X must support Y")
-- Corrections ("actually it's X, not Y", "we changed X to Y")
-- Factual claims about the user's project, codebase, team, tools, or conventions
-
-DO NOT save:
-- Questions or code requests ("write me a X", "how do I Y", "fix this")
-- Casual chitchat or greetings ("ok", "thanks", "hi")
-- Ephemeral context that won't generalize ("this file", "this branch", "this run")
-- Generic claims about the world ("Python is interpreted", "git is version control")
-- Commands or instructions to Claude itself ("be more careful", "don't apologize")
-
-Each saved fact must:
-- Be a complete declarative statement that makes sense without the surrounding conversation
-- Stay under 25 words
-- Be specific enough that retrieving it later helps Claude answer better
-- Be phrased in third person where natural ("User prefers X" or "Project uses X")
-
-Respond as STRICT JSON, no markdown:
-{"memorable": boolean, "facts": ["...", "..."]}
-
-If "memorable" is false, "facts" must be an empty array.`;
-
-async function classifyTurn(userMessage) {
-  const { promptJson } = await import('../lib/llm.js');
-  const config = (await import('../config.js')).default;
-
-  const input = `${CLASSIFIER_PROMPT}\n\n---\nUser message:\n${userMessage}`;
-
-  const result = await promptJson(input, {
-    model: config.llm.extractionModel,
-    caller: 'stop-hook',
-  });
-
-  if (!result || result.memorable !== true) return [];
-  if (!Array.isArray(result.facts)) return [];
-
-  return result.facts
-    .filter((f) => typeof f === 'string')
-    .map((f) => f.trim())
-    .filter((f) => f.length >= 8 && f.length <= 200);
-}
-
-// ─── Save through the regular AUDM pipeline ──────────────────────────────
-
-async function saveFacts(facts, { podUids = [] } = {}) {
-  const { ingestDocument } = await import('../ingestion/pipeline.js');
-  const config = (await import('../config.js')).default;
-
-  // Run sequentially — keeps the ingest pipeline simpler and the LLM extractor predictable
-  for (const fact of facts) {
-    try {
-      await ingestDocument({
-        content: fact,
-        namespace: config.defaults.namespace,
-        // Skip the LLM classifier inside the pipeline — we already classified.
-        // The fact-extraction step still runs.
-        classify: false,
-        podUids,
-      });
-    } catch (err) {
-      process.stderr.write(`[sigil:stop] save failed: ${maskSecrets(err.message)}\n`);
-    }
-  }
-
-  // Refresh hot-context so the new fact shows up at next session start
-  try {
-    const { updateContextSnapshot } = await import('../memory/facts/hot-context.js');
-    await updateContextSnapshot({ namespace: config.defaults.namespace });
-  } catch { /* best effort */ }
 }
 
 main();

@@ -47,6 +47,7 @@ export const SIGIL_HOOK_ERRORS_LOG = join(SIGIL_HOME, '.hook-errors.log');
 export const SIGIL_LAST_CLEAN_DOCTOR = join(SIGIL_HOME, '.last-clean-doctor');
 export const SIGIL_ACTIVE_SESSION_CURSOR = join(SIGIL_HOME, '.active-session.json');
 export const SIGIL_STOP_CURSOR = join(SIGIL_HOME, '.stop-cursor.json');
+export const SIGIL_STOP_SPOOL = join(SIGIL_HOME, '.stop-spool.jsonl');
 export const SIGIL_HOOK_DEDUP = join(SIGIL_HOME, '.hook-dedup.json');
 
 // Daemon

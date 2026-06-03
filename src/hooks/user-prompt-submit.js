@@ -77,9 +77,13 @@ async function main() {
         },
       });
     } catch (searchErr) {
-      // A failed scoped search injects NOTHING (never the global brain). Log
-      // for `sigil doctor`; the prompt proceeds without memory.
+      // A failed scoped search injects NOTHING (never the global brain). RECORD
+      // it (not just stderr) so `sigil doctor` can tell "recall is broken" from
+      // "recall is quiet" — an erroring search lands in the hook-error budget;
+      // a legitimately empty result (below) does not. The prompt proceeds
+      // without memory either way.
       process.stderr.write(`[sigil:user-prompt-submit] scoped search failed: ${maskSecrets(searchErr.message)}\n`);
+      await recordHookError('user-prompt-submit', searchErr, raw).catch(() => {});
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy().catch(() => {});
       return respond();
@@ -88,6 +92,9 @@ async function main() {
     const facts = result?.facts || [];
 
     if (!facts.length) {
+      // Empty scope is precision-correct (the active pod legitimately has no
+      // match), NOT an error — stay silent so it doesn't pollute the error
+      // budget. The distinction is the whole point: errors are recorded above.
       const cortexDb = (await import('../db/cortex.js')).default;
       await cortexDb.destroy();
       return respond();

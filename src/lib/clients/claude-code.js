@@ -186,7 +186,7 @@ async function install({ dryRun = false } = {}) {
 // distinct from `detect()` which only asks "is Claude Code present on this
 // machine." `sigil doctor` uses this to flag drift (e.g., user edited
 // settings.json by hand and dropped a hook).
-async function verify() {
+async function verify({ deep = false } = {}) {
   const fs = await import('node:fs/promises');
   const importLine = `@${SHARED_INSTRUCTIONS_PATH}`;
 
@@ -239,6 +239,16 @@ async function verify() {
     if (pathMatch && !existsSync(pathMatch[1])) {
       return { installed: false, reason: `hook file missing on disk: ${pathMatch[1]} (run \`sigil init\`)` };
     }
+  }
+
+  // Deep: actually run the UserPromptSubmit hook with a synthetic payload and
+  // confirm it returns cleanly — catches a hook that crashes at runtime even
+  // though its file exists (bad config, MODULE_NOT_FOUND in a dep, etc.).
+  if (deep) {
+    const cmd = findHookCommand('UserPromptSubmit');
+    const { verifyClaudeHookRoundTrip } = await import('./roundtrip.js');
+    const rt = await verifyClaudeHookRoundTrip(cmd);
+    if (!rt.ok) return { installed: false, reason: `hook round-trip failed: ${rt.reason}` };
   }
 
   return { installed: true };

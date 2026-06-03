@@ -154,8 +154,17 @@ export async function apply(input, emit = () => {}) {
         kind: 'model-not-found',
       });
     }
-    emit({ pct: 100, label: 'Embedder ready.' });
-    return { provider: p.id, model: p.model, dim: v.length };
+    // If the corpus already has facts under a different model, switching now
+    // leaves them in a foreign vector space — warn and point at the repair.
+    let staleNote = '';
+    try {
+      const { checkCorpusConsistency } = await import('../../memory/facts/embedding-consistency.js');
+      const c = await checkCorpusConsistency();
+      if (c.stale > 0) staleNote = ` ${c.stale} existing facts use a different model — run \`sigil repair embeddings\` so they rank correctly.`;
+    } catch { /* best effort — never fail the step on the advisory check */ }
+
+    emit({ pct: 100, label: `Embedder ready.${staleNote}` });
+    return { provider: p.id, model: p.model, dim: v.length, staleFacts: staleNote ? true : false };
   } catch (err) {
     if (err instanceof StepError) throw err;
     // Classify provider/key/model failures honestly.

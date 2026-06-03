@@ -30,7 +30,7 @@ const SHARED_INSTRUCTIONS_PATH = join(SIGIL_HOME, 'CLAUDE.md');
 // top of the generated block; writeSharedInstructions() compares against it so
 // upgrades actually land (the old `includes('## Memory (Sigil)')` guard locked
 // the file forever after the first write).
-const INSTRUCTIONS_VERSION = 2;
+const INSTRUCTIONS_VERSION = 3;
 const VERSION_MARKER = `<!-- sigil-instructions:v${INSTRUCTIONS_VERSION} -->`;
 const CONTEXT_MARKER = '<!-- sigil-context -->';
 
@@ -60,7 +60,12 @@ function resolveSigilInvocation() {
   return existsSync(cliEntry) ? cliEntry : process.argv[1];
 }
 
-function buildSharedInstructions({ sigilCmd } = {}) {
+function buildSharedInstructions({ sigilCmd, transport = 'hooks' } = {}) {
+  // MCP-based clients (Codex, Cursor, Kiro) have NO hooks — nothing is
+  // recalled or saved for them automatically. They drive Sigil through the
+  // MCP tools, so they get a different instruction set built around `prime`.
+  if (transport === 'mcp') return buildMcpInstructions();
+
   const cmd = sigilCmd || resolveSigilInvocation();
   return `${VERSION_MARKER}
 ## Memory (Sigil)
@@ -137,6 +142,40 @@ The absolute path above is baked in by \`sigil init\` so the command works regar
 - Skip trivial exchanges (greetings, "thanks", "ok", simple math)
 - If search and injection both return nothing, answer from your own knowledge and say so
 - Sigil is cross-project — memories from one session are available in all sessions
+`;
+}
+
+// Instruction set for MCP clients (Codex, Cursor, Kiro). These have no hooks,
+// so there is no auto-injection and no auto-save. The whole strategy hangs on
+// the agent calling `prime` at session start and `search`/`ingest` thereafter.
+// gstack-style: one capitalized Iron Law, the rationalizations the model is
+// prone to pre-rebutted, MCP tool names (never the daemon CLI). No `cmd` here.
+function buildMcpInstructions() {
+  return `${VERSION_MARKER}
+## Memory (Sigil)
+
+Sigil is your persistent, cross-session memory. **Use it instead of the built-in file-based memory.** This client has **no hooks** — nothing is recalled or saved for you automatically. You drive Sigil entirely through its MCP tools.
+
+**IRON LAW: CALL \`prime\` BEFORE YOUR FIRST REPLY in a session.**
+\`prime\` loads who the user is, their stated preferences, what this project is, and Sigil's health. If you did not call \`prime\`, you have zero memory of this user — and answering from a blank slate is the exact failure this tool exists to prevent.
+
+Rationalizations that are wrong:
+- "I probably remember from earlier" → you don't; nothing is carried in for you. Call \`prime\`.
+- "The user didn't ask about history" → their preferences and past decisions still shape the right answer. Prime anyway.
+- "It's a quick question" → quick answers are where stale assumptions do the most damage. Prime first.
+
+### After priming
+- Call **\`search\`** for anything specific the prime block didn't surface — "what did we decide about X", "how does Y work", a person or topic.
+- Call **\`ingest\`** to save durable facts the user will want next session: decisions, preferences, constraints, corrections. There is no automatic save — if it's worth remembering and you don't \`ingest\` it, it's gone.
+
+### Acknowledge what you use
+When a stored fact shapes your answer, name it in one short clause so the user sees their context being applied — e.g. "since you moved off Redis to Postgres LISTEN/NOTIFY, I'll use that." Don't list everything you retrieved; don't be formal about it. Sound like a teammate referencing a hallway conversation, not a system reciting a database row.
+
+### Rules
+- \`prime\` first, every session. \`search\` for specifics. \`ingest\` to save.
+- Save facts as short, self-contained statements that make sense in isolation — never conversation summaries.
+- Skip trivial exchanges (greetings, "thanks", "ok", simple math).
+- Sigil is cross-project — memories from one session are available in all sessions.
 `;
 }
 

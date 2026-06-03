@@ -12,6 +12,7 @@ import { registerStatusTool } from './tools/status.js';
 import { registerIngestTool } from './tools/ingest.js';
 import { registerListPodsTool } from './tools/list-pods.js';
 import { registerGetPodTool } from './tools/get-pod.js';
+import { registerPrimeTool } from './tools/prime.js';
 
 // Agent provenance: writes from MCP clients (Cursor, Codex, etc.) are tagged
 // 'mcp'. The socket client forwards this in each request envelope so the
@@ -23,6 +24,9 @@ function createMcpServer() {
     name: 'sigil',
     version: '0.2.0',
   });
+
+  // Session start — call first; primes memory for clients without hooks.
+  registerPrimeTool(server);
 
   // Retrieval
   registerSearchTool(server);

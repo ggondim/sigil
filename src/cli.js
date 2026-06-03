@@ -156,6 +156,7 @@ const commands = {
   pod: runPod,
   export: runExport,
   maintain: runMaintain,
+  repair: runRepair,
   migrate: runMigrate,
   reset: runReset,
   register: runRegister,
@@ -1075,12 +1076,15 @@ async function runDoctor(args) {
     console.log(`sigil doctor — Diagnose Sigil setup
 
 Usage:
-  sigil doctor
+  sigil doctor [--deep]
 
-Checks: Postgres connection, LLM provider, embedding provider, hook registration, hook error budget.`);
+Checks: Postgres connection, LLM provider, embedding provider, hook registration, hook error budget.
+--deep also round-trips each connector (spawns the MCP server / runs a hook) to
+prove the integration actually works, not just that its files exist.`);
     process.exit(0);
   }
 
+  const deep = args.includes('--deep');
   const checks = [];
   const log = (status, label, detail = '') => {
     const icon = status === 'ok' ? '✓' : status === 'warn' ? '⚠' : '✗';
@@ -1135,6 +1139,21 @@ Checks: Postgres connection, LLM provider, embedding provider, hook registration
     const { getStats } = await import('./memory/documents/store.js');
     const [facts, stats] = await Promise.all([getFactCount(), getStats()]);
     log('ok', 'Stored data', `${stats.documentCount} docs, ${stats.totalChunks} chunks, ${facts} facts`);
+
+    // Embedding corpus consistency — must run BEFORE destroy() (shares this pool).
+    // A mixed-model corpus ranks incorrectly; point at `sigil repair embeddings`.
+    try {
+      const { checkCorpusConsistency } = await import('./memory/facts/embedding-consistency.js');
+      const c = await checkCorpusConsistency();
+      if (c.total === 0) log('ok', 'Embedding corpus', 'empty');
+      else if (c.mixed || c.stale > 0) {
+        const hist = c.histogram.map((h) => `${h.model}:${h.count}`).join(', ');
+        log('warn', 'Embedding corpus', `mixed models (${hist}) — ${c.stale} off the current model; run \`sigil repair embeddings\` to unify`);
+      } else log('ok', 'Embedding corpus', `${c.total} facts, single model (${c.histogram[0].model})`);
+    } catch (err) {
+      log('warn', 'Embedding corpus', `check failed: ${err.message.split('\n')[0]}`);
+    }
+
     await cortexDb.destroy();
   } catch (err) {
     // Unwrap AggregateError (thrown by pg under multi-address connect
@@ -1158,30 +1177,30 @@ Checks: Postgres connection, LLM provider, embedding provider, hook registration
     }
   }
 
-  // LLM provider
+  // LLM + embedding providers — LIVE probe (actually call them), not just
+  // "is one detected". A revoked key / unreachable host / wrong model is the
+  // silent failure this turns loud; detect-only reported green for all of them.
   try {
-    const { detectProvider, isOllamaReachable, isClaudeCliAvailable } = await import('./lib/llm/registry.js');
-    const config = (await import('./config.js')).default;
-    const provider = await detectProvider();
-
-    if (provider === 'anthropic') log('ok', 'LLM provider', `anthropic (API key set)`);
-    else if (provider === 'openai') log('ok', 'LLM provider', `openai (API key set)`);
-    else if (provider === 'openrouter') log('ok', 'LLM provider', `openrouter (model=${config.llm.openrouterModel})`);
-    else if (provider === 'ollama') log('ok', 'LLM provider', `ollama @ ${config.llm.ollamaHost}`);
-    else if (provider === 'claude-cli') log('ok', 'LLM provider', 'claude-cli (Claude Code subscription)');
-    else log('warn', 'LLM provider', provider);
+    const { probeProviders } = await import('./lib/provider-probe.js');
+    const health = await probeProviders();
+    const l = health.llm;
+    const e = health.embedding;
+    if (l?.ok) log('ok', 'LLM provider', `${l.provider}${l.model ? `/${l.model}` : ''} — probe ok`);
+    else log('fail', 'LLM provider', l?.provider ? `${l.provider}: ${(l.error || 'unreachable').split('\n')[0]}` : 'not configured — run `sigil init`');
+    if (e?.ok) log('ok', 'Embedding provider', `${e.provider}/${e.model} (dim=${e.dim}) — probe ok`);
+    else log('fail', 'Embedding provider', e?.provider ? `${e.provider}: ${(e.error || 'unreachable').split('\n')[0]}` : 'not configured — run `sigil init`');
   } catch (err) {
-    log('fail', 'LLM provider', err.message.split('\n')[0]);
+    log('warn', 'Providers', `live probe failed: ${err.message.split('\n')[0]}`);
   }
 
-  // Embedding provider
+  // Stop-hook spool — turns waiting to be replayed (saved during an outage).
   try {
-    const { detectEmbeddingProvider } = await import('./lib/llm/registry.js');
-    const config = (await import('./config.js')).default;
-    const provider = await detectEmbeddingProvider();
-    log('ok', 'Embedding provider', `${provider} / ${config.embedding.model}`);
+    const { spoolCount } = await import('./hooks/stop-spool.js');
+    const n = spoolCount();
+    if (n === 0) log('ok', 'Stop-hook spool', 'empty');
+    else log('warn', 'Stop-hook spool', `${n} unsaved turn${n > 1 ? 's' : ''} pending — restart the daemon or run \`sigil repair embeddings\` to replay`);
   } catch (err) {
-    log('fail', 'Embedding provider', err.message.split('\n')[0]);
+    log('warn', 'Stop-hook spool', `unreadable: ${err.message}`);
   }
 
   // Client integrations — for each detected client, run verify() to confirm
@@ -1194,9 +1213,9 @@ Checks: Postgres connection, LLM provider, embedding provider, hook registration
     for (const client of clients) {
       if (!(await client.detect())) continue;
       reported++;
-      const result = await client.verify();
+      const result = await client.verify({ deep });
       if (result.installed) {
-        log('ok', `${client.label} integration`, 'configured');
+        log('ok', `${client.label} integration`, deep ? 'configured + round-trip ok' : 'configured');
       } else {
         log('warn', `${client.label} integration`, `${result.reason} — run 'sigil init' to refresh`);
       }
@@ -2271,6 +2290,53 @@ Usage:
           console.log(`    ${p.a} ↔ ${p.b}  (decayed ${Number(p.decayed).toFixed(2)})`);
         }
       }
+    }
+  } finally {
+    await client.close();
+  }
+}
+
+// ─── Repair ──────────────────────────────────────────────────────────────────
+
+async function runRepair(args) {
+  const sub = args.find((a) => !a.startsWith('--'));
+  if (args.includes('--help') || (sub && sub !== 'embeddings')) {
+    console.log(`sigil repair — Heal a corpus with missing or stale embeddings
+
+Usage:
+  sigil repair embeddings [options]
+
+Re-embeds facts/chunks whose vectors are NULL (invisible to search) or were
+produced by a different embedding model than the one now configured (mixed
+corpus → meaningless ranking). Idempotent and resumable.
+
+Options:
+  --dry-run         Report what would be repaired; write nothing
+  --namespace=<ns>  Limit to one namespace
+  --all-chunks      Re-embed every chunk (use after switching providers; chunks
+                    carry no model stamp, so NULL-only is the default)`);
+    process.exit(0);
+  }
+
+  const dryRun = args.includes('--dry-run');
+  const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || null;
+  const allChunks = args.includes('--all-chunks');
+
+  const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
+  const client = await connectOrStartDaemon();
+  try {
+    const { data } = await client.call('repair.embeddings', { dryRun, namespace, allChunks });
+    if (data.dryRun) {
+      console.log(`Repair (dry run)${namespace ? ` [ns=${namespace}]` : ''} — target model: ${data.model}`);
+      console.log(`  Facts needing repair:  ${data.facts.scanned}`);
+      console.log(`  Chunks needing repair: ${data.chunks.scanned}`);
+      if (data.spool?.pending) console.log(`  Stop-hook spool:       ${data.spool.pending} turns pending replay`);
+      console.log('\nRun without --dry-run to re-embed them.');
+    } else {
+      console.log(`Repair complete${namespace ? ` [ns=${namespace}]` : ''} — model: ${data.model}`);
+      console.log(`  Facts re-embedded:  ${data.facts.repaired} / ${data.facts.scanned}`);
+      console.log(`  Chunks re-embedded: ${data.chunks.repaired} / ${data.chunks.scanned}`);
+      if (data.spool) console.log(`  Stop-spool replayed: ${data.spool.drained} turns (${data.spool.replayed} facts, ${data.spool.remaining} still pending)`);
     }
   } finally {
     await client.close();

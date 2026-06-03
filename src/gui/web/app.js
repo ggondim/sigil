@@ -136,7 +136,7 @@ async function refreshKb() {
     ]);
     const hot = data.hotFacts || [];
     $('#hot-facts').innerHTML = hot.length
-      ? hot.map((f) => `<li>${escape(f.content.slice(0, 140))}<span class="muted" style="margin-left:8px;">${f.accessCount}×</span></li>`).join('')
+      ? hot.map((f) => `<li>${escape(f.content.slice(0, 140))}<span class="muted" style="margin-left:var(--s-2);">${f.accessCount}×</span></li>`).join('')
       : '<li class="muted">no hot facts yet</li>';
   } catch (err) {
     $('#kb-pane').innerHTML = `<div class="row"><div class="k">error</div><div class="v">${escape(err.message)}</div></div>`;
@@ -250,7 +250,7 @@ async function openSwitcher(kind) {
     $('#cfg-switch-cards').innerHTML = cfgSwitch.providers.map((p) => `
       <label class="provider-card" data-cfg-id="${escape(p.id)}">
         <span class="check"></span>
-        <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:8px;">RECOMMENDED</span>' : ''}</span>
+        <span class="name">${escape(p.label)}${p.recommended ? ' <span class="badge info" style="margin-left:var(--s-2);">RECOMMENDED</span>' : ''}</span>
         <span class="hint">${escape(p.hint)}</span>
       </label>`).join('');
   } catch (err) {
@@ -319,7 +319,7 @@ $('#cfg-reset')?.addEventListener('click', () => {
   if (!host) return;
   const wipeMemory = $('#reset-wipe-memory')?.checked !== false;
   host.innerHTML = `
-    <div class="result err conflict-card" style="margin:0;">
+    <div class="result err" style="margin:0;">
       <strong>Reset Sigil?</strong>
       <div class="muted" style="margin:6px 0;">Disconnects every agent${wipeMemory ? ', wipes all stored memory,' : ''} and clears your config. You'll go back to setup. (The database itself is kept — use <code>sigil reset</code> in a terminal for a full DB teardown.)</div>
       <div class="flex-row" style="margin-top:8px;">
@@ -743,16 +743,16 @@ document.addEventListener('click', (e) => {
     return;
   }
   const a = e.target.closest('[data-activate]');
-  if (a) rpc('device.activate', { id: Number(a.dataset.activate) }).then(refreshDevices).catch((err) => alert(err.message));
+  if (a) rpc('device.activate', { id: Number(a.dataset.activate) }).then(refreshDevices).catch((err) => toast({ variant: 'error', message: err.message }));
   const cb = e.target.closest('[data-revoke-code]');
-  if (cb) rpc('pair.revoke', { id: Number(cb.dataset.revokeCode) }).then(refreshDevices).catch((err) => alert(err.message));
+  if (cb) rpc('pair.revoke', { id: Number(cb.dataset.revokeCode) }).then(refreshDevices).catch((err) => toast({ variant: 'error', message: err.message }));
 });
 
 $('#revoke-confirm')?.addEventListener('click', async () => {
   if (revokeTargetId == null) return;
   const reason = $('input[name="revoke-reason"]:checked').value;
   try { await rpc('device.revoke', { id: revokeTargetId, reason }); closeModal('revoke-modal'); refreshDevices(); }
-  catch (err) { alert(err.message); }
+  catch (err) { toast({ variant: 'error', message: err.message }); }
 });
 
 // Highlight selected radio card in revoke modal
@@ -779,7 +779,7 @@ new MutationObserver(() => { if ($('#dev-modal').hidden) { setTimeout(resetDevMo
   .observe($('#dev-modal'), { attributes: true, attributeFilter: ['hidden'] });
 
 $('#dev-create')?.addEventListener('click', async () => {
-  const name = $('#dev-name').value.trim(); if (!name) return alert('Device name required');
+  const name = $('#dev-name').value.trim(); if (!name) { toast({ variant: 'error', message: 'Device name is required.' }); return; }
   const role = $('#dev-role').value;
   const ttl = Number($('#dev-ttl').value) || 600;
   const ns = $('#dev-ns').value.trim();
@@ -796,7 +796,7 @@ $('#dev-create')?.addEventListener('click', async () => {
     $('#dev-result-master').firstChild.textContent = (data.masterNodeId || '(iroh not running)') + ' ';
     $('#dev-result-cmd').textContent = cmd;
     $('#dev-result-expiry').textContent = data.expiresAt;
-  } catch (err) { alert(`Create failed: ${err.message}`); }
+  } catch (err) { toast({ variant: 'error', message: err.message || 'Create pairing code failed.' }); }
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -821,4 +821,5 @@ async function runLanding() {
 const initial = (window.location.hash || '#health').slice(1);
 setRoute(validRoutes.includes(initial) ? initial : 'health');
 runLanding();
-setInterval(refreshHealth, 5000);
+setInterval(() => { if (!document.hidden) refreshHealth(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshHealth(); });

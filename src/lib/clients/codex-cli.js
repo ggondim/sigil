@@ -33,7 +33,6 @@ import { buildSharedInstructions } from './instructions.js';
 const CODEX_HOME = join(homedir(), '.codex');
 const CODEX_CONFIG_PATH = join(CODEX_HOME, 'config.toml');
 const CODEX_AGENTS_PATH = join(CODEX_HOME, 'AGENTS.md');
-const SIGIL_ENV_PATH = join(homedir(), '.sigil', '.env');
 
 // Package root — same trick the other client modules use to find dist/ vs src/.
 const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
@@ -86,10 +85,12 @@ async function writeMcpEntry({ dryRun = false } = {}) {
   const existedBefore = existsSync(CODEX_CONFIG_PATH);
 
   config.mcp_servers = config.mcp_servers || {};
+  // No env block: config.json is the source of truth (the MCP server reads it
+  // via getConfig()). The old DOTENV_CONFIG_PATH=~/.sigil/.env pointed at a file
+  // that config-store migrates+renames on first boot — dead coupling, removed.
   config.mcp_servers.sigil = {
     command: process.execPath,
     args: [resolveServerPath(), '--mcp'],
-    env: { DOTENV_CONFIG_PATH: SIGIL_ENV_PATH },
   };
 
   if (!dryRun) await fs.mkdir(CODEX_HOME, { recursive: true });
@@ -107,7 +108,7 @@ async function writeMcpEntry({ dryRun = false } = {}) {
 function buildSigilBlock() {
   return [
     BEGIN_MARKER,
-    buildSharedInstructions(),
+    buildSharedInstructions({ transport: 'mcp' }),
     END_MARKER,
   ].join('\n');
 }
@@ -166,7 +167,7 @@ async function install({ dryRun = false } = {}) {
   return { actions };
 }
 
-async function verify() {
+async function verify({ deep = false } = {}) {
   const fs = await import('node:fs/promises');
 
   if (!existsSync(CODEX_CONFIG_PATH)) {
@@ -188,6 +189,19 @@ async function verify() {
   const agents = await fs.readFile(CODEX_AGENTS_PATH, 'utf8');
   if (!agents.includes(BEGIN_MARKER) || !agents.includes(END_MARKER)) {
     return { installed: false, reason: 'sigil block markers missing from ~/.codex/AGENTS.md' };
+  }
+
+  // The registered server path must actually exist (catches a moved/reinstalled
+  // Sigil). Cheap — always checked.
+  const serverPath = resolveServerPath();
+  if (!existsSync(serverPath)) {
+    return { installed: false, reason: `MCP server missing at ${serverPath} — run \`sigil init\` to refresh` };
+  }
+  // Deep: prove the server actually starts and answers a tool call.
+  if (deep) {
+    const { verifyMcpRoundTrip } = await import('./roundtrip.js');
+    const rt = await verifyMcpRoundTrip(serverPath);
+    if (!rt.ok) return { installed: false, reason: `MCP round-trip failed: ${rt.reason}` };
   }
 
   return { installed: true };

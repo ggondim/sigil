@@ -27,10 +27,19 @@ export function registerStatus(registry) {
       setDbHealth({ healthy: dbHealthy, error: dbError, checkedAt: Date.now() });
     } catch { /* holder unavailable outside daemon */ }
 
+    // Provider health from the boot probe (cached — no live provider call per
+    // status poll). null until the daemon's boot probe completes.
+    let providers = null;
+    try {
+      const { getProviderHealth } = await import('../registry-holder.js');
+      providers = getProviderHealth();
+    } catch { /* holder unavailable outside daemon */ }
+
     if (!dbHealthy) {
       return {
         namespace,
         db: { healthy: false, error: dbError },
+        providers,
         documents: 0,
         chunks: 0,
         facts: 0,
@@ -62,6 +71,7 @@ export function registerStatus(registry) {
     return {
       namespace,
       db: { healthy: true, error: null },
+      providers,
       documents: docStats.documentCount,
       chunks: docStats.totalChunks,
       facts: factCount,

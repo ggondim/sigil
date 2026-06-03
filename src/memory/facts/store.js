@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import path from 'node:path';
 
 import cortexDb from '../../db/cortex.js';
-import { embed } from '../../ingestion/embedder.js';
+import { embedOrThrow } from '../../ingestion/embedder.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
 import { pgHalfvecColumn, pgHalfvecParam, pgVector } from '../../lib/vectors.js';
 import { maskSecrets } from '../../hooks/secret-mask.js';
@@ -20,14 +20,14 @@ const AMBIGUOUS_THRESHOLD = config.memory.ambiguousThreshold;
  * AUDM pipeline: Add, Update, Delete (contradict), or Merge.
  * For each fact, checks similarity against existing facts and decides what to do.
  */
-async function saveFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding: precomputed }) {
+async function saveFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding: precomputed }, db = cortexDb) {
   // Defense-in-depth secret masking for any caller that reaches saveFact
   // without going through the ingest pipeline's choke point. Masking BEFORE
   // the embed fallback keeps secrets out of the embedding API on this path
   // too. Idempotent — already-masked content is unchanged.
   content = maskSecrets(content);
-  const embedding = precomputed || await embed(content);
-  const similar = await findSimilar(embedding, { namespace });
+  const embedding = precomputed || await embedOrThrow(content);
+  const similar = await findSimilar(embedding, { namespace }, db);
 
   // AUDM telemetry attached to every return for the trace log: the similarity
   // that drove the decision, candidate count, and the thresholds in effect —
@@ -36,7 +36,7 @@ async function saveFact({ content, category, confidence, importance, namespace, 
   const thresholds = { skip: SKIP_THRESHOLD, ambiguous: AMBIGUOUS_THRESHOLD };
 
   if (!similar.length) {
-    const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
+    const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
     return { action: 'ADD', fact, audm: { topSimilarity: null, matchCount: 0, decision: 'no-match', thresholds } };
   }
 
@@ -59,25 +59,25 @@ async function saveFact({ content, category, confidence, importance, namespace, 
     if (decision === 'UPDATE') {
       // Insert the new version, then mark the old one superseded with a closed valid_until.
       // This preserves the full fact history as separate rows instead of overwriting in place.
-      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
-      await markSuperseded(topMatch.id, fact.id);
-      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'UPDATE', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` });
+      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
+      await markSuperseded(topMatch.id, fact.id, db);
+      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'UPDATE', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` }, db);
       return { action: 'UPDATE', fact, supersededId: topMatch.id, audm: { ...audmBase, decision: 'llm:UPDATE' } };
     }
 
     if (decision === 'CONTRADICT') {
-      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
-      await markContradicted(topMatch.id, fact.id);
-      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'CONTRADICT', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` });
+      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
+      await markContradicted(topMatch.id, fact.id, db);
+      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'CONTRADICT', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` }, db);
       return { action: 'CONTRADICT', fact, contradictedId: topMatch.id, audm: { ...audmBase, decision: 'llm:CONTRADICT' } };
     }
 
     // Ambiguous zone but the LLM judged the new fact distinct → add as new.
-    const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
+    const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
     return { action: 'ADD', fact, audm: { ...audmBase, decision: 'llm:ADD' } };
   }
 
-  const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding });
+  const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
   return { action: 'ADD', fact, audm: { ...audmBase, decision: 'below-ambiguous' } };
 }
 
@@ -95,7 +95,7 @@ async function audmDecide(newContent, existingContent) {
 
 // ── Core CRUD ───────────────────────────────────────────────────────────────
 
-async function insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }) {
+async function insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db = cortexDb) {
   const uid = `fact-${nanoid(16)}`;
 
   // Provenance + embedding-shape stamp. (PR review #5.)
@@ -117,7 +117,7 @@ async function insertFact({ content, category, confidence, importance, namespace
     createdByAgent = currentAgent();
   } catch { /* request-context unavailable outside daemon — fall through */ }
 
-  const [fact] = await cortexDb('fact')
+  const [fact] = await db('fact')
     .insert({
       uid,
       content,
@@ -128,7 +128,7 @@ async function insertFact({ content, category, confidence, importance, namespace
       status: 'active',
       sourceDocumentIds: sourceDocumentIds || [],
       sourceSection: sourceSection || null,
-      embedding: pgVector(embedding),
+      embedding: pgVector(embedding, { assertDim: true }),
       validFrom: new Date(),
       embeddingModel: config.embedding.model || null,
       embeddingDim: Number(config.embedding.dimensions) || null,
@@ -137,7 +137,7 @@ async function insertFact({ content, category, confidence, importance, namespace
     })
     .returning('*');
 
-  await cortexDb.raw(`
+  await db.raw(`
     UPDATE fact
     SET search_vector = to_tsvector('english', content)
     WHERE id = ?
@@ -180,23 +180,23 @@ async function listByCategory(category, { namespace, limit = 50 } = {}) {
   return query;
 }
 
-async function listByDocument(documentId) {
-  return cortexDb('fact')
+async function listByDocument(documentId, db = cortexDb) {
+  return db('fact')
     .whereRaw('? = ANY(source_document_ids)', [documentId])
     .where({ status: 'active' })
     .orderBy('createdAt', 'desc');
 }
 
-async function markContradicted(factId, contradictedById) {
-  await cortexDb('fact')
+async function markContradicted(factId, contradictedById, db = cortexDb) {
+  await db('fact')
     .where({ id: factId })
-    .update({ status: 'contradicted', contradictedById, validUntil: cortexDb.fn.now() });
+    .update({ status: 'contradicted', contradictedById, validUntil: db.fn.now() });
 }
 
-async function markSuperseded(factId, supersededById) {
-  await cortexDb('fact')
+async function markSuperseded(factId, supersededById, db = cortexDb) {
+  await db('fact')
     .where({ id: factId })
-    .update({ status: 'superseded', supersededById, validUntil: cortexDb.fn.now() });
+    .update({ status: 'superseded', supersededById, validUntil: db.fn.now() });
 }
 
 /**
@@ -215,9 +215,9 @@ async function markSuperseded(factId, supersededById) {
  *
  * No-op for a brand-new document (all facts citing it are in keptFactIds).
  */
-async function supersedeStaleDocFacts(documentId, keptFactIds = []) {
+async function supersedeStaleDocFacts(documentId, keptFactIds = [], db = cortexDb) {
   const kept = new Set((keptFactIds || []).filter((x) => x != null));
-  const current = await listByDocument(documentId);
+  const current = await listByDocument(documentId, db);
 
   // Partition first, then issue at most three bulk statements instead of N×2
   // serial round-trips (markSuperseded + recordHistory per fact). On a large
@@ -235,11 +235,11 @@ async function supersedeStaleDocFacts(documentId, keptFactIds = []) {
   if (toSupersede.length) {
     const ids = toSupersede.map((f) => f.id);
     // Bulk equivalent of markSuperseded(id, null) for each.
-    await cortexDb('fact')
+    await db('fact')
       .whereIn('id', ids)
-      .update({ status: 'superseded', supersededById: null, validUntil: cortexDb.fn.now() });
+      .update({ status: 'superseded', supersededById: null, validUntil: db.fn.now() });
     // Single multi-row history insert.
-    await cortexDb('history').insert(toSupersede.map((f) => ({
+    await db('history').insert(toSupersede.map((f) => ({
       targetType: 'fact',
       targetId: f.id,
       event: 'SUPERSEDE',
@@ -251,15 +251,15 @@ async function supersedeStaleDocFacts(documentId, keptFactIds = []) {
 
   if (toDissociate.length) {
     // Other sources still attest these — keep them active, drop only this doc.
-    await cortexDb('fact')
+    await db('fact')
       .whereIn('id', toDissociate.map((f) => f.id))
-      .update({ sourceDocumentIds: cortexDb.raw('array_remove(source_document_ids, ?)', [documentId]) });
+      .update({ sourceDocumentIds: db.raw('array_remove(source_document_ids, ?)', [documentId]) });
   }
 
   return { superseded: toSupersede.length, dissociated: toDissociate.length };
 }
 
-async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHOLD, limit = 5 }) {
+async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHOLD, limit = 5 }, db = cortexDb) {
   const vec = pgVector(embedding);
   const embeddingDistance = `${pgHalfvecColumn('embedding')} <=> ${pgHalfvecParam()}`;
 
@@ -267,8 +267,8 @@ async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHO
   // Lower hnsw.ef_search trades recall for ANN scan speed, dropping per-fact dedup
   // cost significantly during bulk ingest. SET LOCAL only takes effect inside the
   // surrounding transaction. (Ogham §F.)
-  return cortexDb.transaction(async (trx) => {
-    await trx.raw(`SET LOCAL hnsw.ef_search = 40`);
+  const run = async (trx) => {
+    await trx.raw('SET LOCAL hnsw.ef_search = 40');
     const { rows } = await trx.raw(`
       SELECT id, uid, content, category, status,
              1 - (${embeddingDistance}) as similarity
@@ -281,11 +281,15 @@ async function findSimilar(embedding, { namespace, threshold = AMBIGUOUS_THRESHO
       LIMIT ?
     `, [vec, namespace, vec, threshold, vec, limit]);
     return rows;
-  });
+  };
+  // When called inside an ingest transaction, run on THAT transaction — so
+  // within-batch dedup sees facts inserted earlier in the same (uncommitted)
+  // ingest, and SET LOCAL scopes to it. Standalone callers get their own tx.
+  return db.isTransaction ? run(db) : db.transaction(run);
 }
 
-async function recordHistory({ targetType, targetId, event, oldContent, newContent, triggeredBy }) {
-  await cortexDb('history').insert({
+async function recordHistory({ targetType, targetId, event, oldContent, newContent, triggeredBy }, db = cortexDb) {
+  await db('history').insert({
     targetType,
     targetId,
     event,

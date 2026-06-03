@@ -33,8 +33,6 @@ import { buildSharedInstructions } from './instructions.js';
 const CURSOR_HOME = join(homedir(), '.cursor');
 const CURSOR_MCP_PATH = join(CURSOR_HOME, 'mcp.json');
 const CURSOR_RULES_PATH = join(CURSOR_HOME, 'rules', 'sigil.mdc');
-const SIGIL_HOME = join(homedir(), '.sigil');
-const SIGIL_ENV_PATH = join(SIGIL_HOME, '.env');
 
 // Package root — same trick claude-code.js uses to find dist/ vs src/.
 const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
@@ -82,10 +80,12 @@ async function writeMcpEntry({ dryRun = false } = {}) {
 
   const existedBefore = existsSync(CURSOR_MCP_PATH);
   config.mcpServers = config.mcpServers || {};
+  // No env block: config.json is the source of truth (the MCP server reads it
+  // via getConfig()). The old DOTENV_CONFIG_PATH=~/.sigil/.env pointed at a file
+  // config-store migrates+renames on first boot — dead coupling, removed.
   config.mcpServers.sigil = {
     command: process.execPath,
     args: [resolveServerPath(), '--mcp'],
-    env: { DOTENV_CONFIG_PATH: SIGIL_ENV_PATH },
   };
 
   if (!dryRun) await fs.mkdir(CURSOR_HOME, { recursive: true });
@@ -112,7 +112,7 @@ function buildRulesFile() {
     '---',
     '',
   ].join('\n');
-  return frontmatter + buildSharedInstructions();
+  return frontmatter + buildSharedInstructions({ transport: 'mcp' });
 }
 
 async function writeRulesFile({ dryRun = false } = {}) {
@@ -138,7 +138,7 @@ async function install({ dryRun = false } = {}) {
   return { actions };
 }
 
-async function verify() {
+async function verify({ deep = false } = {}) {
   const fs = await import('node:fs/promises');
 
   if (!existsSync(CURSOR_MCP_PATH)) {
@@ -156,6 +156,16 @@ async function verify() {
 
   if (!existsSync(CURSOR_RULES_PATH)) {
     return { installed: false, reason: '~/.cursor/rules/sigil.mdc missing' };
+  }
+
+  const serverPath = resolveServerPath();
+  if (!existsSync(serverPath)) {
+    return { installed: false, reason: `MCP server missing at ${serverPath} — run \`sigil init\` to refresh` };
+  }
+  if (deep) {
+    const { verifyMcpRoundTrip } = await import('./roundtrip.js');
+    const rt = await verifyMcpRoundTrip(serverPath);
+    if (!rt.ok) return { installed: false, reason: `MCP round-trip failed: ${rt.reason}` };
   }
 
   return { installed: true };

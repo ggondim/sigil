@@ -12,6 +12,7 @@
 
 import { createHash } from 'node:crypto';
 import { pgVector } from '../lib/vectors.js';
+import { EMBEDDING_DIM } from '../lib/constants.js';
 import cortexDb from '../db/cortex.js';
 
 const MAX_CACHE_SIZE = 10_000;
@@ -124,12 +125,18 @@ async function embedBatchCached(texts, providerName, modelName, providerFn, prov
 
   const missTexts = [];
   const missIndexes = [];
+  const servedKeys = [];
   const results = new Array(texts.length);
 
   for (let i = 0; i < texts.length; i++) {
     const hit = cached.get(keys[i]);
-    if (hit) {
+    // Self-heal a stale-dimension cache: a hit whose length doesn't match the
+    // current EMBEDDING_DIM (e.g. a corpus embedded under a 768-d model before
+    // switching to 1024) is treated as a MISS, so it's re-embedded and the
+    // ON CONFLICT upsert in storeBatch overwrites the poisoned row.
+    if (hit && Array.isArray(hit) && hit.length === EMBEDDING_DIM) {
       results[i] = hit;
+      servedKeys.push(keys[i]);
     } else {
       missTexts.push(texts[i]);
       missIndexes.push(i);
@@ -150,10 +157,10 @@ async function embedBatchCached(texts, providerName, modelName, providerFn, prov
     });
   }
 
-  // Record hits async (non-blocking)
-  const hitKeys = keys.filter((k) => cached.has(k));
-  if (hitKeys.length) {
-    recordHits(hitKeys).catch(() => { /* best-effort */ });
+  // Record hits async (non-blocking) — only for vectors actually served from
+  // cache (a stale-dim row re-embedded above is a miss, not a hit).
+  if (servedKeys.length) {
+    recordHits(servedKeys).catch(() => { /* best-effort */ });
   }
 
   return results;

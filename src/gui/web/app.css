@@ -245,7 +245,7 @@ h3.section-sub {
   font-size: var(--t-base);
   font-weight: 500;
   cursor: pointer;
-  transition: background 80ms ease, border-color 80ms ease;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
   white-space: nowrap;
 }
 .btn:hover { background: var(--bg-surface-2); border-color: var(--border-strong); }
@@ -343,7 +343,7 @@ h3.section-sub {
 .table-wrap {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  overflow: hidden;
+  overflow-x: auto;
 }
 table { width: 100%; border-collapse: collapse; }
 th, td {
@@ -362,7 +362,7 @@ thead th {
   letter-spacing: 0.06em;
   padding: var(--s-2) var(--s-4);
 }
-tbody tr { transition: background 80ms ease; }
+tbody tr { transition: background var(--dur-1) var(--ease); }
 tbody tr:hover { background: var(--bg-surface-2); }
 tbody tr:last-child td { border-bottom: none; }
 td.mono { font-family: var(--font-mono); font-size: var(--t-sm); }
@@ -420,7 +420,7 @@ form textarea,
   background: var(--bg-canvas);
   color: var(--fg);
   font: var(--t-base) var(--font-mono);
-  transition: border-color 80ms ease;
+  transition: border-color var(--dur-1) var(--ease);
 }
 form textarea { padding: var(--s-2) var(--s-3); height: auto; min-height: 80px; resize: vertical; }
 form select,
@@ -428,6 +428,7 @@ form select,
 form input:focus, form select:focus, form textarea:focus,
 .onboarding-content input:focus, .onboarding-content select:focus,
 .input:focus { outline: none; border-color: var(--accent); }
+::placeholder { color: var(--fg-3); opacity: 1; }
 
 form .row-2col,
 .onboarding-content .row-2col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
@@ -442,19 +443,22 @@ form .actions { display: flex; gap: var(--s-2); margin-top: var(--s-2); }
 .onboarding-content #ob-llm-fields,
 .onboarding-content #ob-emb-fields { max-width: 560px; }
 
-pre.result {
+/* Shared box treatment for both pre (code output) and div (confirm prompts) */
+.result {
   background: var(--bg-canvas);
   border: 1px solid var(--border);
   padding: var(--s-3) var(--s-4);
+  margin: var(--s-4) 0 0;
+}
+pre.result {
   font: var(--t-sm) var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 320px;
   overflow: auto;
-  margin: var(--s-4) 0 0;
 }
-pre.result.ok  { border-color: rgba(78,196,108,0.30); }
-pre.result.err { border-color: rgba(226,100,100,0.30); }
+.result.ok  { border-color: rgba(78,196,108,0.30); }
+.result.err { border-color: rgba(226,100,100,0.30); }
 
 /* ════════════════════════════════════════════════════════════════════════
    Badges + status pills
@@ -549,7 +553,7 @@ pre.result.err { border-color: rgba(226,100,100,0.30); }
 .trace-block-h { font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-3); font-weight: 600; margin-bottom: var(--s-2); }
 .kvline { display: inline-block; margin-right: var(--s-4); font-size: var(--t-sm); }
 .kvline .muted { margin-right: 4px; }
-.synth { background: var(--bg-surface); border: 1px solid var(--border); border-left: 2px solid var(--accent); padding: var(--s-3) var(--s-4); font-size: var(--t-base); line-height: 1.55; }
+.synth { background: var(--brand-tint); border: 1px solid rgba(0, 132, 255, 0.30); padding: var(--s-3) var(--s-4); font-size: var(--t-base); line-height: 1.55; }
 .trace-json { background: var(--bg-surface); border: 1px solid var(--border); padding: var(--s-3); font: var(--t-xs) var(--font-mono); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; margin: var(--s-2) 0 0; }
 
 .trace-table-wrap { border: 1px solid var(--border); overflow-x: auto; }
@@ -698,7 +702,7 @@ table.trace-table td.audm-cell { font-size: var(--t-xs); color: var(--fg-2); whi
   background: var(--bg-canvas);
   border: 1px solid var(--border-2);
   cursor: pointer;
-  transition: border-color 80ms ease;
+  transition: border-color var(--dur-1) var(--ease);
 }
 .radio-card:hover { border-color: var(--accent); }
 .radio-card input { width: auto; height: auto; margin-top: 3px; accent-color: var(--accent); }
@@ -831,7 +835,7 @@ table.trace-table td.audm-cell { font-size: var(--t-xs); color: var(--fg-2); whi
   background: var(--bg-surface);
   border: 1px solid var(--border);
   cursor: pointer;
-  transition: border-color 80ms ease, background 80ms ease;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
 }
 .provider-card:hover { border-color: var(--border-strong); }
 .provider-card.selected {
@@ -952,7 +956,7 @@ footer .footer-inner {
 .setup-progress { margin-top: var(--s-4); }
 .setup-progress-bar {
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-1);
   background: var(--surface-2);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -962,8 +966,8 @@ footer .footer-inner {
   height: 100%;
   width: 0;
   background: var(--accent);
-  border-radius: 999px;
-  transition: width .35s ease;
+  border-radius: var(--radius-1);
+  transition: width .35s var(--ease);
 }
 .setup-progress-label {
   margin-top: var(--s-2);
@@ -986,8 +990,8 @@ footer .footer-inner {
   list-style: none;
   background: var(--bg-surface-2, var(--surface-2));
   border: 1px solid var(--border-strong, var(--border));
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-pop);
 }
 .combo-list li {
   display: flex;
@@ -995,7 +999,7 @@ footer .footer-inner {
   justify-content: space-between;
   gap: 16px;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-1);
   cursor: pointer;
 }
 .combo-list li:hover { background: var(--accent); color: var(--accent-fg); }
@@ -1012,7 +1016,7 @@ footer .footer-inner {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-0, #0a0a0c);
+  background: var(--bg-0, #08090b);
   opacity: 1;
   transition: opacity 0.5s ease;
 }
@@ -1046,4 +1050,142 @@ footer .footer-inner {
 @keyframes landing-pulse {
   0%, 100% { transform: scale(1); opacity: 0.9; }
   50% { transform: scale(1.06); opacity: 1; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   RESPONSIVE ADAPTATIONS
+   Breakpoints: 768px (tablet / narrow laptop), 480px (small phone).
+   Touch targets: pointer:coarse handles touch independently of screen size.
+   Desktop layout is unchanged; all rules below layer on top.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Touch target uplift — applies at any screen size with a coarse pointer ── */
+@media (pointer: coarse) {
+  .btn         { min-height: 40px; }
+  .btn.small   { min-height: 36px; }
+  .btn.large   { min-height: 48px; }
+  .chip        { min-height: 40px; }
+  nav a        { min-height: 44px; }
+  .copy-btn    { min-height: 32px; min-width: 32px; }
+  .modal-close { min-height: 44px; min-width: 44px; }
+  .trace-head  { min-height: 44px; }
+}
+
+/* ── ≤ 768px — tablet / landscape phone ───────────────────────────────────── */
+@media (max-width: 768px) {
+
+  /* Nav: scroll horizontally instead of wrapping to a second line */
+  nav {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav a { white-space: nowrap; flex-shrink: 0; }
+
+  /* Reduce page horizontal padding */
+  main { padding: var(--s-5) var(--s-4) var(--s-7); }
+
+  /* Section heads: stack title above action buttons */
+  .section-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--s-3);
+    padding-bottom: var(--s-4);
+    margin-bottom: var(--s-4);
+  }
+  .section-head .actions { align-self: flex-start; }
+
+  /* KV rows: stack key above value for long monospace values */
+  .kv .row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+    padding: var(--s-3) var(--s-4);
+  }
+  .kv .row .k {
+    font-size: var(--t-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-4);
+  }
+  .kv .row .v { font-size: var(--t-sm); }
+
+  /* Two-column form rows collapse to single column */
+  form .row-2col,
+  .onboarding-content .row-2col { grid-template-columns: 1fr; }
+
+  /* Forms: allow full width (remove 560px cap) */
+  .view form.panel,
+  .onboarding-content .wizard-step .field,
+  .onboarding-content #ob-db-url,
+  .onboarding-content #ob-db-fields,
+  .onboarding-content #ob-llm-fields,
+  .onboarding-content #ob-emb-fields { max-width: 100%; }
+
+  /* Modal: full width with viewport margin */
+  .modal { padding: var(--s-7) var(--s-3) var(--s-3); }
+  .modal-body { max-width: 100%; }
+
+  /* Onboarding: collapse sidebar — progress bar + h1 orient the user */
+  .onboarding { grid-template-columns: 1fr; }
+  .onboarding-sidebar { display: none; }
+  .onboarding-content {
+    padding: var(--s-5) var(--s-5) var(--s-7);
+    max-width: 100%;
+  }
+  .onboarding-content h1 { font-size: var(--t-2xl); }
+
+  /* Provider cards: allow wrapping to fewer columns on narrower screens */
+  .provider-card-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+
+  /* Stat grid: tighter minimum so 2 stats can sit side-by-side at 768px */
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+}
+
+/* ── ≤ 480px — small phone ─────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+
+  /* Header: tighter padding, hide version badge to free nav space */
+  .header-inner { padding: 0 var(--s-3); }
+  .brand { padding-right: var(--s-3); margin-right: var(--s-3); }
+  .brand-badge { display: none; }
+
+  /* Reduce page padding further */
+  main { padding: var(--s-4) var(--s-3) var(--s-6); }
+  .onboarding-content { padding: var(--s-4) var(--s-3) var(--s-5); }
+
+  /* Stat grid: single column */
+  .stat-grid { grid-template-columns: 1fr; }
+
+  /* Activity list: hide namespace and duration to give summary more room */
+  .trace-ns  { display: none; }
+  .trace-dur { display: none; }
+
+  /* Wizard actions: stack Continue above Back, both full-width */
+  .wizard-actions {
+    flex-direction: column-reverse;
+    gap: var(--s-2);
+  }
+  .wizard-actions .spacer { display: none; }
+  #setup-back,
+  #setup-run { width: 100%; justify-content: center; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   REDUCED MOTION
+   Kill all animation and transition durations when the OS requests it.
+   0.01ms keeps JS animationend/transitionend listeners firing correctly
+   while making motion imperceptible.
+   ════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

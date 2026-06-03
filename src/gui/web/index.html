@@ -2,9 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Sigil</title>
   <link rel="icon" type="image/svg+xml" href="/static/design/sigil-mark.svg">
+  <!-- Geist fonts: preconnect + parallel fetch (no blocking @import in CSS) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
   <!-- Sigil design system tokens (color, type, spacing, geometry) — loaded
        BEFORE app.css so the dashboard re-skins onto the brand. -->
   <link rel="stylesheet" href="/static/design/colors_and_type.css">

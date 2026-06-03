@@ -155,9 +155,9 @@ async function reassignEntity(oldEntityId, newEntityId) {
 
 // Bump cached counters. Cheap on attach; truth is restored by a periodic
 // recount in `sigil maintain` if it drifts.
-async function incrementCounters(podId, { docs = 0, facts = 0 }) {
+async function incrementCounters(podId, { docs = 0, facts = 0 }, db = cortexDb) {
   if (!docs && !facts) return;
-  await cortexDb.raw(
+  await db.raw(
     `UPDATE pod
        SET member_doc_count = member_doc_count + ?,
            member_fact_count = member_fact_count + ?,

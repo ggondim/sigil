@@ -32,6 +32,7 @@ import { registerManifest } from './manifest.js';
 import { registerDevice } from './device.js';
 import { registerTrace } from './trace.js';
 import { registerSetup } from './setup.js';
+import { registerRepair } from './repair.js';
 
 export function registerAll(registry, { startedAt }) {
   registerPing(registry, { startedAt });
@@ -60,4 +61,5 @@ export function registerAll(registry, { startedAt }) {
   registerDevice(registry);
   registerTrace(registry);
   registerSetup(registry);
+  registerRepair(registry);
 }
