@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // --- Mocks ---
+// The ingest gate (assertEmbeddingReady) consults setup.steps.embedding. On a
+// half-configured dev box that step may be 'error'/'pending', which would fail
+// these unit tests. Keep the real config shape (config.js reads database/llm/
+// embedding through the same getConfig) but force the embedding step to 'done'
+// so the gate passes.
+vi.mock('../setup/config-store.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    getConfig: vi.fn(() => ({ ...actual.getConfig(), setup: { steps: { embedding: 'done' } } })),
+  };
+});
+
 vi.mock('./parsers/index.js', () => ({
   parse: vi.fn().mockReturnValue({
     text: 'parsed document text',

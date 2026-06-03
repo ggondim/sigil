@@ -1797,6 +1797,16 @@ Examples:
     if (data.updated)      parts.push(`${data.updated} updated`);
     if (data.alreadyKnown) parts.push(`${data.alreadyKnown} already known`);
     console.log(parts.length ? `Remembered. (${parts.join(', ')})` : 'Already known.');
+  } catch (err) {
+    // The --bg path re-execs this command detached with stdio:'ignore', so a
+    // failure here would otherwise vanish — the user (and Claude) saw an
+    // optimistic "Saving in background…" and never learns the save was lost.
+    // Record it to the shared hook-errors log so `sigil doctor` surfaces it.
+    try {
+      const { recordHookError } = await import('./hooks/error-log.js');
+      await recordHookError('remember', err, facts.join('\n'));
+    } catch { /* never let logging mask the original failure */ }
+    throw err;
   } finally {
     await client.close();
   }

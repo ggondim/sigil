@@ -18,9 +18,32 @@ import * as podMembership from '../memory/pods/membership.js';
 import { fromSourceMetadata as resolvePodsFromMetadata } from '../memory/pods/resolver.js';
 import { maskSecrets } from '../hooks/secret-mask.js';
 import config from '../config.js';
+import { getConfig } from '../setup/config-store.js';
 import { PROMPTS_DIR } from '../lib/paths.js';
 
 const DEFAULT_PROMPT_PATH = join(PROMPTS_DIR, 'default-extraction.md');
+
+// Refuse to ingest when setup never finished the Embeddings step. Without a
+// working embedder, chunks/facts get no vector — the write either fails deep in
+// the pipeline (dimension mismatch / model-not-found) or, worse, looks like it
+// succeeded while nothing persists. Failing loudly here turns silent data loss
+// into an actionable error.
+//
+// Only blocks when the setup wizard recorded an embedding step that isn't
+// 'done'. Users who configured Sigil purely via env vars have no setup.steps,
+// so they're never blocked by this.
+function assertEmbeddingReady() {
+  const step = getConfig().setup?.steps?.embedding;
+  if (step && step !== 'done') {
+    const err = new Error(
+      `Sigil setup is incomplete — the Embeddings step is "${step}", so facts can't be `
+      + 'embedded or saved. Finish setup with `sigil init` (Ollama: run '
+      + '`ollama pull mxbai-embed-large` first), then retry.',
+    );
+    err.code = 'setup_incomplete';
+    throw err;
+  }
+}
 
 /**
  * Ingest a document into the Sigil knowledge base.
@@ -51,6 +74,9 @@ async function ingestDocument({
   podUids = [],
   resolvePodsFrom = null,
 }) {
+  // Gate first: never start a write the embedder can't finish (silent-loss guard).
+  assertEmbeddingReady();
+
   // Symmetric secret masking. Read-side masking already runs in the hook
   // before injection; mask here at the single ingest choke point so secrets
   // never reach the embedding API or get stored. This is BEFORE classify,
