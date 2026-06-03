@@ -3,13 +3,15 @@
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execSync as _execSync, spawn as _spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { config as dotenvConfig } from 'dotenv';
 
 // Package root — works whether run from project dir or globally installed
 const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
+let PKG_VERSION = '0.0.0';
+try { PKG_VERSION = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')).version; } catch { /* ignore */ }
 
 // Env precedence: shell env > project .env > global ~/.sigil/.env.
 // dotenv's default behavior (no `override`) never overwrites existing
@@ -86,8 +88,21 @@ async function launchAndOpenBrowser() {
   const { getGuiToken } = await import('./daemon/gui-token.js');
   const { canOpenBrowser, openBrowser } = await import('./lib/open-browser.js');
   process.stderr.write('[sigil] starting daemon…\n');
-  const client = await connectOrStartDaemon({ quiet: true });
-  const { data } = await client.call('ping', {});
+  let client = await connectOrStartDaemon({ quiet: true });
+  let { data } = await client.call('ping', {});
+
+  // If a daemon from an OLDER version is already running (e.g. the user just
+  // updated via npx), restart it so the new code takes effect — otherwise the
+  // stale daemon keeps serving and the "update" silently does nothing.
+  if (data.version && PKG_VERSION !== '0.0.0' && data.version !== PKG_VERSION) {
+    process.stderr.write(`[sigil] updating daemon ${data.version} → ${PKG_VERSION}…\n`);
+    try { await client.call('restartDaemon', {}); } catch { /* expected: connection drops on exit */ }
+    try { await client.close(); } catch { /* */ }
+    const { setTimeout: delay } = await import('node:timers/promises');
+    await delay(900);
+    client = await connectOrStartDaemon({ quiet: true });
+    ({ data } = await client.call('ping', {}));
+  }
 
   const { default: config } = await import('./config.js');
   const token = await getGuiToken();
@@ -98,7 +113,7 @@ async function launchAndOpenBrowser() {
   // setup isn't done yet.
   if (!canOpenBrowser()) {
     let setupComplete = false;
-    try { const st = await client.call('onboardingState', {}); setupComplete = st.data?.setupComplete; }
+    try { const st = await client.call('setup.state', {}); setupComplete = st.data?.complete; }
     catch { /* daemon may be mid-init */ }
     await client.close();
     console.log('');

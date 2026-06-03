@@ -19,14 +19,23 @@ export function selectDriver(config) {
     return {
       kind: 'url',
       provider: classifyProvider(url),
-      connection: buildUrlConnection(url),
+      connection: normalizeConnection(buildUrlConnection(url)),
     };
   }
   return {
     kind: 'local',
     provider: 'local',
-    connection: buildLocalConnection(config),
+    connection: normalizeConnection(buildLocalConnection(config)),
   };
+}
+
+// pg throws "SASL: client password must be a string" if password is null/
+// undefined. Coerce credentials to strings so a missing value degrades to a
+// clear auth error (or a no-password connect) instead of a cryptic SASL crash.
+function normalizeConnection(conn) {
+  if (conn.password == null) conn.password = '';
+  if (conn.user == null) delete conn.user;
+  return conn;
 }
 
 export { buildLocalConnection, buildLocalConnectionFromFields, buildUrlConnection, classifyProvider };
