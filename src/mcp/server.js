@@ -10,6 +10,7 @@ import { registerGetFactContextTool } from './tools/get-fact-context.js';
 import { registerGetEntityContextTool } from './tools/get-entity-context.js';
 import { registerStatusTool } from './tools/status.js';
 import { registerIngestTool } from './tools/ingest.js';
+import { registerRememberTool } from './tools/remember.js';
 import { registerListPodsTool } from './tools/list-pods.js';
 import { registerGetPodTool } from './tools/get-pod.js';
 import { registerPrimeTool } from './tools/prime.js';
@@ -46,6 +47,7 @@ function createMcpServer() {
   // Operations
   registerStatusTool(server);
   registerIngestTool(server);
+  registerRememberTool(server);
 
   return server;
 }
