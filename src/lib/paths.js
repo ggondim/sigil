@@ -9,9 +9,9 @@
  */
 
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 function findPackageRoot() {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +29,37 @@ function findPackageRoot() {
 }
 
 const PKG_ROOT = findPackageRoot();
+
+/**
+ * Is the running package located in an EPHEMERAL cache that a package manager
+ * garbage-collects — i.e. it was launched via `pnpm dlx`, `npx`, or `yarn dlx`
+ * rather than installed? Baking such a path into the shims/hooks (which is what
+ * `sigil init`/`connect` do) produces a setup that:
+ *   1. silently dies the moment the cache is reaped (the shim fails safe), and
+ *   2. cold-boots a heavy bundled node process from that path on every hook fire
+ *      (PostToolUse on every Edit/Write/Bash, ×N sessions) — a runaway pileup.
+ * So the persistence-writing entrypoints refuse it and ask the user to install
+ * Sigil globally first.
+ *
+ * @param {string} [root=PKG_ROOT]
+ * @returns {{ephemeral:boolean, kind?:'pnpm-dlx'|'npx'|'temp', installHint?:string, root:string}}
+ */
+function ephemeralPackageRoot(root = PKG_ROOT) {
+  // pnpm dlx (and yarn dlx) land under a `…/dlx/<hash>/…` segment.
+  if (root.includes(`${sep}dlx${sep}`)) {
+    return { ephemeral: true, kind: 'pnpm-dlx', installHint: 'pnpm add -g @anmol-srv/sigil', root };
+  }
+  // npx caches packages under `…/_npx/<hash>/…`.
+  if (root.includes(`${sep}_npx${sep}`)) {
+    return { ephemeral: true, kind: 'npx', installHint: 'npm i -g @anmol-srv/sigil', root };
+  }
+  // Anything under the OS temp dir is throwaway (covers other one-shot runners).
+  const tmp = tmpdir();
+  if (tmp && (root === tmp || root.startsWith(tmp + sep))) {
+    return { ephemeral: true, kind: 'temp', installHint: 'npm i -g @anmol-srv/sigil', root };
+  }
+  return { ephemeral: false, root };
+}
 
 export const PROMPTS_DIR = join(PKG_ROOT, 'prompts');
 export const MIGRATIONS_DIR = join(PKG_ROOT, 'src', 'db', 'migrations');
@@ -71,4 +102,4 @@ export const CLAUDE_HOME = join(HOME, '.claude');
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, 'settings.json');
 export const CLAUDE_MD_PATH = join(CLAUDE_HOME, 'CLAUDE.md');
 
-export { PKG_ROOT };
+export { PKG_ROOT, ephemeralPackageRoot };

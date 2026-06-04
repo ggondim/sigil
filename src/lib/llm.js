@@ -11,13 +11,13 @@ async function resolveForCall(taskModel) {
 
 // --- Public API (unchanged signatures) ---
 
-async function prompt(input, { model, caller } = {}) {
+async function prompt(input, { model, caller, temperature } = {}) {
   const { provider, model: resolvedModel } = await resolveForCall(model);
   const chatFn = await getProvider(provider);
   const start = Date.now();
 
   try {
-    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: false }), config.llm.maxRetries);
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: false, temperature }), config.llm.maxRetries);
     const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
 
     logCall({
@@ -39,7 +39,7 @@ async function prompt(input, { model, caller } = {}) {
   }
 }
 
-async function promptJson(input, { model, caller, schema } = {}) {
+async function promptJson(input, { model, caller, schema, temperature } = {}) {
   const { provider, model: resolvedModel } = await resolveForCall(model);
   const chatFn = await getProvider(provider);
   const start = Date.now();
@@ -48,7 +48,7 @@ async function promptJson(input, { model, caller, schema } = {}) {
     // `schema` (a JSON Schema) requests provider-enforced structured output.
     // Providers that support it (OpenAI, OpenRouter) constrain decoding to the
     // exact shape; others ignore it and fall back to plain JSON mode.
-    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: true, schema }), config.llm.maxRetries);
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: true, schema, temperature }), config.llm.maxRetries);
     const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
 
     logCall({

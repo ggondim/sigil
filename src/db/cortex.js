@@ -3,35 +3,62 @@ import knex from 'knex';
 import config from '../config.js';
 import { selectDriver } from './drivers/index.js';
 
-const driver = selectDriver(config);
+// The knex pool is built LAZILY, on first use — never at module load. Many
+// modules import this default export, and several are pulled into the daemon's
+// boot chain transitively (a handler → embedder → embedding-cache/llm-log →
+// here). Building eagerly would run selectDriver() at import time and, for a
+// not-yet-configured install, THROW its "not set up" error before the daemon
+// could even serve the setup GUI. Deferring keeps "importing cortex" always
+// safe; the clear error surfaces only when something actually queries the DB.
+let pool = null;
+function getPool() {
+  if (pool) return pool;
+  // Throws a clear `not_configured` error when no DB has been set up — instead
+  // of silently connecting to whatever Postgres owns localhost:5432.
+  const driver = selectDriver(config);
+  pool = knex({
+    // 'pg' for server-backed Postgres (url/local/docker), or the ClientPGlite
+    // dialect class for the in-process embedded engine.
+    client: driver.client || 'pg',
+    connection: driver.connection,
+    pool: {
+      // min:0 — hooks are short-lived processes (open pool, do one query, exit).
+      // The old min:2 forced two eager connections on every hook invocation and
+      // kept them alive, wasting Postgres backends for a 10ms task.
+      min: 0,
+      // Embedded PGlite is single-connection (one in-process engine): a larger
+      // pool only multiplexes onto the same engine and serializes anyway, so cap
+      // at 1 to avoid tarn handing out "extra" connections that all contend.
+      max: driver.kind === 'embedded' ? 1 : 10,
+      // Don't hang forever when Postgres is down or saturated — fail fast so the
+      // caller (hook/daemon) surfaces a clear error instead of blocking. tarn's
+      // defaults are 30s; 10s is plenty for a local/cloud Postgres.
+      acquireTimeoutMillis: 10_000,
+      createTimeoutMillis: 10_000,
+      // Reap idle connections so a long-lived daemon doesn't pin backends.
+      idleTimeoutMillis: 30_000,
+    },
+    postProcessResponse,
+    wrapIdentifier,
+  });
+  pool.__sigilDriver = driver;
+  return pool;
+}
 
-const cortexDb = knex({
-  // 'pg' for server-backed Postgres (url/local/docker), or the ClientPGlite
-  // dialect class for the in-process embedded engine.
-  client: driver.client || 'pg',
-  connection: driver.connection,
-  pool: {
-    // min:0 — hooks are short-lived processes (open pool, do one query, exit).
-    // The old min:2 forced two eager connections on every hook invocation and
-    // kept them alive, wasting Postgres backends for a 10ms task.
-    min: 0,
-    // Embedded PGlite is single-connection (one in-process engine): a larger
-    // pool only multiplexes onto the same engine and serializes anyway, so cap
-    // at 1 to avoid tarn handing out "extra" connections that all contend.
-    max: driver.kind === 'embedded' ? 1 : 10,
-    // Don't hang forever when Postgres is down or saturated — fail fast so the
-    // caller (hook/daemon) surfaces a clear error instead of blocking. tarn's
-    // defaults are 30s; 10s is plenty for a local/cloud Postgres.
-    acquireTimeoutMillis: 10_000,
-    createTimeoutMillis: 10_000,
-    // Reap idle connections so a long-lived daemon doesn't pin backends.
-    idleTimeoutMillis: 30_000,
+// Transparent lazy handle: callable like a knex instance (cortexDb('fact')) and
+// exposes every knex method/property (cortexDb.raw, .transaction, .destroy,
+// .schema, …). The pool is created on first access. Functions are bound to the
+// real instance so knex's internal `this` is correct when called as cortexDb.x().
+const cortexDb = new Proxy(function cortexDb() {}, {
+  apply(_t, _thisArg, args) { return getPool()(...args); },
+  get(_t, prop) {
+    const inst = getPool();
+    const val = inst[prop];
+    return typeof val === 'function' ? val.bind(inst) : val;
   },
-  postProcessResponse,
-  wrapIdentifier,
+  set(_t, prop, val) { getPool()[prop] = val; return true; },
+  has(_t, prop) { return prop in getPool(); },
 });
-
-cortexDb.__sigilDriver = driver;
 
 function postProcessResponse(result) {
   if (Array.isArray(result)) return result.map(toCamel);

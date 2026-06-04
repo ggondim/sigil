@@ -31,7 +31,10 @@ ${excerpts.join('\n')}
 Respond with a JSON array of ${chunks.length} context prefix strings.`;
 
   try {
-    const prefixes = await promptJson(fullPrompt, { model: config.llm.extractionModel, caller: 'contextualizer' });
+    // temperature: 0 — reproducible contextual prefixes keep the chunk text fed
+    // to extraction stable across runs (a varying prefix changes what gets
+    // extracted and embedded).
+    const prefixes = await promptJson(fullPrompt, { model: config.llm.extractionModel, caller: 'contextualizer', temperature: 0 });
 
     // Model sometimes wraps the array in an object — unwrap any single array value
     const resolvedPrefixes = Array.isArray(prefixes)

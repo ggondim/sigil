@@ -182,6 +182,18 @@ const config = {
     // Cuts ingest LLM cost by ~40% with no measurable quality drop.
     // Override per-deployment via MEMORY_AMBIGUOUS_THRESHOLD.
     ambiguousThreshold: Number(process.env.MEMORY_AMBIGUOUS_THRESHOLD) || 0.78,
+    // AUDM supersession scan: when retiring stale facts (UPDATE/CONTRADICT), cast
+    // a WIDER net than dedup. A real-world change ("migrated to Postgres") spawns
+    // several stale facts phrased about different facets whose embedding
+    // similarity to the new fact sits below the 0.78 dedup floor (measured: 0.74–
+    // 0.78 for genuine contradictions). The deterministic AUDM judge gates
+    // precision, so embedding only needs recall here. Lower than ambiguousThreshold
+    // on purpose; raise toward 0.78 to cut ingest LLM cost, lower to catch more
+    // facet-shifted contradictions. Override via MEMORY_SUPERSEDE_THRESHOLD.
+    supersedeThreshold: Number(process.env.MEMORY_SUPERSEDE_THRESHOLD) || 0.72,
+    // Max neighbors examined per new fact during the supersession scan (bounds
+    // the worst-case LLM calls per ingested fact).
+    supersedeScanLimit: Number(process.env.MEMORY_SUPERSEDE_SCAN_LIMIT) || 8,
     // Search: discard results below this cosine similarity floor
     minFactSimilarity: Number(process.env.MEMORY_MIN_FACT_SIMILARITY) || 0.45,
     // Injection floor (precision-first): for AUTO-injection paths (hooks /

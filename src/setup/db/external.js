@@ -8,10 +8,11 @@
  */
 import pg from 'pg';
 
-import { probeUrlConnection } from '../../db/setup.js';
+import { probeUrlConnection, buildSigilSignature } from '../../db/setup.js';
 import { buildUrlConnection } from '../../db/drivers/index.js';
 import { runMigrationsOn } from '../../db/migrate.js';
-import { StepError, fromError, quoteIdent, persistDatabase } from './shared.js';
+import { ensureDeviceId } from '../config-store.js';
+import { StepError, fromError, quoteIdent, quoteLiteral, persistDatabase } from './shared.js';
 import { verifyConnection } from './test.js';
 
 /**
@@ -66,6 +67,19 @@ export async function provisionExternal(input, emit = () => {}) {
 
     emit({ pct: 90, label: 'Verifying connection…' });
     const verified = await verifyConnection({ url });
+
+    // Best-effort signature so detection can recognize this as Sigil's db later.
+    // Managed/self-hosted owners can comment their own db; if these creds can't,
+    // skip silently — external mode connects by URL, so it never relies on this.
+    try {
+      const sigClient = new pg.Client(conn);
+      await sigClient.connect();
+      try {
+        await sigClient.query(
+          `COMMENT ON DATABASE ${quoteIdent(conn.database)} IS ${quoteLiteral(buildSigilSignature(ensureDeviceId()))}`,
+        );
+      } finally { try { await sigClient.end(); } catch { /* */ } }
+    } catch { /* signature is best-effort */ }
 
     persistDatabase({ mode: 'url', url, host: null, port: null, name: verified.database, user: null, password: null });
     emit({ pct: 100, label: 'Database ready.' });

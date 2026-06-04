@@ -1,7 +1,7 @@
 import config from '../../../config.js';
 import { estimateTokens } from '../log.js';
 
-async function chat(input, { model, jsonMode = false } = {}) {
+async function chat(input, { model, jsonMode = false, temperature } = {}) {
   const resolved = model || config.llm.ollamaModel;
   const url = `${config.llm.ollamaHost}/api/chat`;
 
@@ -11,6 +11,9 @@ async function chat(input, { model, jsonMode = false } = {}) {
     stream: false,
   };
   if (jsonMode) body.format = 'json';
+  // Ollama nests sampling params under `options`. Pin temperature for
+  // reproducible decisions (e.g. AUDM verdicts).
+  if (temperature != null) body.options = { ...(body.options || {}), temperature };
 
   const response = await fetch(url, {
     method: 'POST',

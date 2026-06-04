@@ -47,7 +47,11 @@ async function extractFactsFromChunk(chunk, systemPrompt, categories) {
   const text = buildChunkText(chunk);
   const fullPrompt = buildPrompt(systemPrompt, text, categories);
 
-  const parsed = await promptJson(fullPrompt, { model: config.llm.extractionModel, caller: 'extractor' });
+  // temperature: 0 — fact extraction must be reproducible. Non-deterministic
+  // phrasing of the same fact shifts its embedding, which in turn flips
+  // downstream AUDM supersession decisions run-to-run (the benchmark's main
+  // remaining source of variance).
+  const parsed = await promptJson(fullPrompt, { model: config.llm.extractionModel, caller: 'extractor', temperature: 0 });
   const facts = validateFacts(parsed, categories);
 
   return facts.map((f) => ({ ...f, sourceSection: chunk.sectionHeading || null }));

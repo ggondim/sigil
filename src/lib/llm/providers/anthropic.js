@@ -11,7 +11,7 @@ async function getClient() {
   return client;
 }
 
-async function chat(input, { model, jsonMode = false } = {}) {
+async function chat(input, { model, jsonMode = false, temperature } = {}) {
   const resolved = model || 'claude-haiku-4-5-20251001';
   const anthropic = await getClient();
 
@@ -23,6 +23,7 @@ async function chat(input, { model, jsonMode = false } = {}) {
     max_tokens: 4096,
     messages,
     ...(system && { system }),
+    ...(temperature != null && { temperature }),
   });
 
   return {

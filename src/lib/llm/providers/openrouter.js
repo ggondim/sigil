@@ -17,7 +17,7 @@ import config from '../../../config.js';
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
-async function chat(input, { model, jsonMode = false, schema = null } = {}) {
+async function chat(input, { model, jsonMode = false, schema = null, temperature } = {}) {
   const resolved = model || config.llm.openrouterModel;
   if (!config.llm.openrouterApiKey) {
     throw new Error('OPENROUTER_API_KEY is not set');
@@ -32,6 +32,8 @@ async function chat(input, { model, jsonMode = false, schema = null } = {}) {
   }
 
   const body = { model: resolved, messages };
+  // Pinned temperature (e.g. 0 for AUDM decisions) makes verdicts reproducible.
+  if (temperature != null) body.temperature = temperature;
   // Schema-constrained structured output forces the exact response shape — far
   // more reliable on small models than free-form json_object mode. OpenRouter
   // proxies this to providers that support it and emulates it for others.

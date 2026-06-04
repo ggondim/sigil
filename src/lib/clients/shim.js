@@ -29,7 +29,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 
-import { PKG_ROOT } from '../paths.js';
+import { PKG_ROOT, ephemeralPackageRoot } from '../paths.js';
 
 const SIGIL_HOME = join(homedir(), '.sigil');
 export const SIGIL_BIN_DIR = join(SIGIL_HOME, 'bin');
@@ -129,6 +129,40 @@ exec "$NODE" "$SCRIPT" "$@"
 `;
 }
 
+// Human-readable refusal for an ephemeral (pnpm dlx / npx) install. Shared by
+// the shim backstop and the early gates in `sigil init` / `sigil connect`.
+export function ephemeralInstallMessage(info) {
+  const runner = info.kind === 'npx' ? 'npx' : info.kind === 'temp' ? 'a one-shot runner' : 'pnpm dlx';
+  return [
+    `Sigil is running from a throwaway ${runner} cache:`,
+    `  ${info.root}`,
+    '',
+    'That directory is temporary — your package manager deletes it, which would',
+    "silently break memory, and every agent hook would cold-boot a heavy process",
+    'from it (a runaway pileup across sessions).',
+    '',
+    'Install Sigil persistently first, then set up:',
+    `  ${info.installHint}`,
+    '  sigil init',
+  ].join('\n');
+}
+
+/**
+ * Throw if the running package lives in an ephemeral dlx/npx cache. The single
+ * choke point every hook-installing path funnels through (init → connectors →
+ * mergeHooks, `sigil connect`, and the GUI's connectConnector all call
+ * writeLauncherShim), so this one guard protects them uniformly.
+ */
+export function assertPersistentInstall() {
+  const info = ephemeralPackageRoot();
+  if (info.ephemeral) {
+    const err = new Error(ephemeralInstallMessage(info));
+    err.code = 'EPHEMERAL_INSTALL';
+    err.info = info;
+    throw err;
+  }
+}
+
 /**
  * Write (or refresh) both launcher shims to ~/.sigil/bin/. Idempotent: if a
  * shim already exists with identical content it's left untouched (stable mtime,
@@ -136,6 +170,10 @@ exec "$NODE" "$SCRIPT" "$@"
  * orchestrator's summary.
  */
 export async function writeLauncherShim({ dryRun = false } = {}) {
+  // Never bake an ephemeral dlx/npx path into the shims — it would vanish on the
+  // next cache sweep and cold-boots a process per hook fire until then.
+  assertPersistentInstall();
+
   const fs = await import('node:fs/promises');
   const dist = resolveDistDir();
   const node = process.execPath;

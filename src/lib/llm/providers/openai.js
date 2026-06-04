@@ -1,6 +1,6 @@
 import config from '../../../config.js';
 
-async function chat(input, { model, jsonMode = false, schema = null } = {}) {
+async function chat(input, { model, jsonMode = false, schema = null, temperature } = {}) {
   const resolved = model || config.llm.openaiModel;
   const messages = [{ role: 'user', content: input }];
 
@@ -9,6 +9,7 @@ async function chat(input, { model, jsonMode = false, schema = null } = {}) {
   }
 
   const body = { model: resolved, messages };
+  if (temperature != null) body.temperature = temperature;
   // Schema-constrained structured output forces the exact response shape — far
   // more reliable on small models than free-form json_object mode.
   if (schema) {

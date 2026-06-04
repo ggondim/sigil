@@ -1,0 +1,6 @@
+{
+  "files": ["src/gui/web/index.html"],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}

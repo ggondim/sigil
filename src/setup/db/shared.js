@@ -29,6 +29,9 @@ export function genPassword() {
 /** Double-quote a SQL identifier safely. */
 export const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`;
 
+/** Single-quote a SQL string literal safely. */
+export const quoteLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
 /** Persist the resolved database connection into config.json. */
 export function persistDatabase(patch) {
   return patchConfig('database', patch);

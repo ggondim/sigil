@@ -9,7 +9,8 @@ import { userInfo } from 'node:os';
 import pg from 'pg';
 
 import { detectDocker } from '../../db/provision/docker.js';
-import { tcpOpen, binaryOnPath } from './shared.js';
+import { isSigilSignature } from '../../db/setup.js';
+import { tcpOpen, binaryOnPath, SIGIL_DB, SIGIL_USER } from './shared.js';
 
 // Homebrew/apt commonly land Postgres on 5432, but parallel installs (and this
 // machine) drift to 5433+. Probe both so we don't miss a running server.
@@ -34,8 +35,16 @@ function isAuthRequiredError(err) {
  * anyone with their own auth-required Postgres on 5432 — even when they picked
  * the bundled/embedded database).
  *
+ * Also reports whether THIS is Sigil's own server — i.e. the `sigil` database
+ * and the `sigil_app` role both already exist on it. Any Postgres can answer on
+ * 5432 (a user's app DB, a Docker container for another project); without this
+ * check setup would treat "some Postgres is listening" as "Sigil's database is
+ * ready" and hand the daemon a connection to a stranger's database.
+ *
  * Returns one of:
- *   { ok:true, version, pgvectorAvailable }      — logged in, read everything
+ *   { ok:true, version, pgvectorAvailable, sigilDbExists, sigilRoleExists,
+ *     signature }                                 — logged in, read everything
+ *     (signature is the COMMENT ON DATABASE marker, or null if unstamped)
  *   { ok:false, present:true, requiresAuth:true } — a Postgres is here but
  *                                                   rejected our passwordless probe
  *   { ok:false, present:false, code, message }    — nothing reachable / other error
@@ -46,7 +55,23 @@ async function probeLocalServer(host, port, user) {
     await client.connect();
     const v = await client.query('SELECT version() AS v');
     const ext = await client.query("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'");
-    return { ok: true, present: true, version: v.rows[0].v, pgvectorAvailable: ext.rowCount > 0 };
+    const db = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [SIGIL_DB]);
+    const role = await client.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [SIGIL_USER]);
+    // The authoritative check: a COMMENT ON DATABASE signature Sigil writes at
+    // provision time, readable here from the maintenance db with no extra creds.
+    const sig = await client.query(
+      "SELECT shobj_description(d.oid, 'pg_database') AS sig FROM pg_database d WHERE d.datname = $1",
+      [SIGIL_DB],
+    );
+    return {
+      ok: true,
+      present: true,
+      version: v.rows[0].v,
+      pgvectorAvailable: ext.rowCount > 0,
+      sigilDbExists: db.rowCount > 0,
+      sigilRoleExists: role.rowCount > 0,
+      signature: sig.rows[0]?.sig || null,
+    };
   } catch (err) {
     if (isAuthRequiredError(err)) return { ok: false, present: true, requiresAuth: true };
     return { ok: false, present: false, code: err.code, message: err.message };
@@ -60,7 +85,7 @@ async function probeLocalServer(host, port, user) {
  *   embedded: { available:boolean },
  *   local: { installed:boolean, running:boolean, host:string, port:number,
  *            version:string|null, adminUser:string, pgvectorAvailable:boolean,
- *            requiresAuth:boolean },
+ *            requiresAuth:boolean, isSigil:boolean, foreign:boolean },
  *   docker: { available:boolean, version:string|null, reason:string|null },
  * }>}
  */
@@ -75,6 +100,14 @@ export async function detectDatabase() {
     adminUser,
     pgvectorAvailable: false,
     requiresAuth: false,
+    // isSigil: the detected server already hosts Sigil's db + role (safe to
+    // reuse). foreign: a Postgres is here but it is NOT Sigil's — either it
+    // rejected our probe (can't verify) or it lacks the sigil db/role. The UI
+    // must never treat `foreign` as "Sigil is ready"; it means "create Sigil's
+    // database here, or pick another option" — and the daemon must not connect
+    // to it until provisioning has actually created the sigil db/role.
+    isSigil: false,
+    foreign: false,
   };
 
   for (const port of CANDIDATE_PORTS) {
@@ -91,8 +124,18 @@ export async function detectDatabase() {
       if (probe.ok) {
         local.version = probe.version;
         local.pgvectorAvailable = probe.pgvectorAvailable;
+        // Authoritative: a Sigil signature stamped on the database. Falls back
+        // to the db+role heuristic for installs provisioned before signatures
+        // existed. A bare Postgres (someone else's app/container) matches
+        // neither → foreign: present, but not ours.
+        local.isSigil = isSigilSignature(probe.signature)
+          || (probe.sigilDbExists && probe.sigilRoleExists);
+        local.foreign = !local.isSigil;
       } else {
+        // Rejected our passwordless probe → a Postgres is here but we can't
+        // confirm it's Sigil's. Treat as foreign until creds prove otherwise.
         local.requiresAuth = true;
+        local.foreign = true;
       }
       break;
     }

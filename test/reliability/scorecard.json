@@ -1,0 +1,52 @@
+{
+  "ts": "2026-05-29T13:53:38.969Z",
+  "commit": "local",
+  "model": "ollama:nomic-embed-text",
+  "precision": 0.833,
+  "recall": 1,
+  "leakRate": 0,
+  "cases": 6,
+  "gate": {
+    "minPrecision": 0.75,
+    "minRecall": 0.8,
+    "maxLeakRate": 0
+  },
+  "perCase": [
+    {
+      "name": "jwt (inject)",
+      "surfaced": 1,
+      "precision": 1,
+      "leaked": false
+    },
+    {
+      "name": "session (inject)",
+      "surfaced": 1,
+      "precision": 1,
+      "leaked": false
+    },
+    {
+      "name": "sourdough (inject)",
+      "surfaced": 1,
+      "precision": 1,
+      "leaked": false
+    },
+    {
+      "name": "paraphrase (inject)",
+      "surfaced": 1,
+      "precision": 1,
+      "leaked": false
+    },
+    {
+      "name": "cross-scope-leak (search)",
+      "surfaced": 3,
+      "precision": 0,
+      "leaked": false
+    },
+    {
+      "name": "off-topic (inject)",
+      "surfaced": 0,
+      "precision": 1,
+      "leaked": false
+    }
+  ]
+}

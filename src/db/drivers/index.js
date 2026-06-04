@@ -22,7 +22,8 @@ import { buildUrlConnection, classifyProvider } from './url.js';
 import { ClientPGlite, PGLITE_DB_PATH } from '../pglite-adapter.js';
 
 export function selectDriver(config) {
-  if (config.db.mode === 'embedded') {
+  const mode = config.db.mode;
+  if (mode === 'embedded') {
     return {
       kind: 'embedded',
       provider: 'pglite',
@@ -39,12 +40,45 @@ export function selectDriver(config) {
       client: 'pg',
     };
   }
-  return {
-    kind: 'local',
-    provider: 'local',
-    connection: normalizeConnection(buildLocalConnection(config)),
-    client: 'pg',
-  };
+  // Field-based local Postgres — ONLY when the user EXPLICITLY chose it: setup
+  // persisted mode 'local', or legacy SIGIL_DB_* env vars are present. A null/
+  // unknown mode with no URL and no env means setup never finished — and
+  // building a local driver here would silently point config.db's defaults
+  // (localhost:5432, user sigil_app) at whatever foreign Postgres owns that
+  // port, producing a baffling auth error against someone else's database
+  // instead of an honest "Sigil isn't set up". Fail loud instead.
+  if (mode === 'local' || hasExplicitLocalEnv()) {
+    return {
+      kind: 'local',
+      provider: 'local',
+      connection: normalizeConnection(buildLocalConnection(config)),
+      client: 'pg',
+    };
+  }
+  throw notConfiguredError();
+}
+
+// Legacy/dev escape hatch: discrete connection env vars select the local driver
+// even without a persisted mode (the original Sigil behavior). SIGIL_DB_MODE is
+// already folded into config.db.mode, so it's covered by the mode check above.
+function hasExplicitLocalEnv() {
+  return Boolean(
+    process.env.SIGIL_DB_HOST
+    || process.env.SIGIL_DB_PORT
+    || process.env.SIGIL_DB_NAME
+    || process.env.SIGIL_DB_USER
+    || process.env.SIGIL_DB_PASSWORD,
+  );
+}
+
+function notConfiguredError() {
+  const err = new Error(
+    'Sigil has no database configured yet. Run `sigil quickstart` (zero-prerequisite '
+    + 'embedded engine) or complete setup in the GUI. Refusing to connect to a default '
+    + 'localhost:5432 — that would hit whatever Postgres happens to own that port, not Sigil\'s.',
+  );
+  err.code = 'not_configured';
+  return err;
 }
 
 // pg throws "SASL: client password must be a string" if password is null/

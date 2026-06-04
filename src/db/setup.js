@@ -14,6 +14,25 @@
 import pg from 'pg';
 
 import { buildUrlConnection, classifyProvider } from './drivers/url.js';
+import { ensureDeviceId } from '../setup/config-store.js';
+
+/**
+ * Signature Sigil stamps onto the database it provisions, as a COMMENT ON
+ * DATABASE. Lets later detection PROVE that a Postgres answering on a given port
+ * is Sigil's OWN database — not a stranger's that merely happens to share the
+ * port (the exact mix-up that connected an install to an unrelated dev DB).
+ * Readable from the maintenance ('postgres') db via
+ * shobj_description(oid,'pg_database'), so detection needs neither the sigil_app
+ * password nor a connection into the sigil db. Versioned; detection matches on
+ * the stable prefix and is forward-compatible with later format bumps.
+ */
+export const SIGIL_SIGNATURE_PREFIX = 'sigil-instance:v1';
+export function buildSigilSignature(deviceId) {
+  return deviceId ? `${SIGIL_SIGNATURE_PREFIX}:${deviceId}` : SIGIL_SIGNATURE_PREFIX;
+}
+export function isSigilSignature(s) {
+  return typeof s === 'string' && s.startsWith('sigil-instance:');
+}
 
 const PG_ERR = {
   DB_DOES_NOT_EXIST: '3D000',
@@ -132,6 +151,17 @@ export async function ensurePostgresDatabase({
     await adminClient.query(
       `GRANT ALL PRIVILEGES ON DATABASE ${quoteIdent(sigilDb)} TO ${quoteIdent(sigilUser)}`,
     );
+
+    // Stamp the database so detection can later prove it's Sigil's own (not some
+    // other Postgres sharing the port). Best-effort: COMMENT ON DATABASE needs
+    // ownership; if these admin creds lack it, skip and let the db+role
+    // heuristic stand. Runs for both the freshly-created and pre-existing paths.
+    try {
+      await adminClient.query(
+        `COMMENT ON DATABASE ${quoteIdent(sigilDb)} IS ${quoteLiteral(buildSigilSignature(ensureDeviceId()))}`,
+      );
+      actions.push('stamped Sigil signature');
+    } catch { /* not owner — signature is best-effort */ }
   } finally {
     await adminClient.end();
   }

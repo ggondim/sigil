@@ -19,7 +19,8 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
-import { probeUrlConnection } from '../setup.js';
+import { probeUrlConnection, buildSigilSignature } from '../setup.js';
+import { ensureDeviceId } from '../../setup/config-store.js';
 
 /**
  * Resolve the `docker` binary to an absolute path. The daemon runs under
@@ -237,6 +238,10 @@ export async function provisionLocalPostgres({ onProgress } = {}) {
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${APP_USER};
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${APP_USER};
     CREATE EXTENSION IF NOT EXISTS vector;`);
+
+  // Stamp the database so detection can later prove it's Sigil's own. The
+  // container's `postgres` superuser owns the db, so this always succeeds.
+  await psql('postgres', `COMMENT ON DATABASE ${DB_NAME} IS '${buildSigilSignature(ensureDeviceId())}'`);
 
   const url = `postgres://${APP_USER}:${encodeURIComponent(appPw)}@localhost:${port}/${DB_NAME}`;
 

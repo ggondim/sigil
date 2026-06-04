@@ -15,6 +15,10 @@ const AUDM_PROMPT_PATH = path.join(PROMPTS_DIR, 'audm-decision.md');
 // Paraphrased content with nomic-embed-text typically lands 0.75-0.88.
 const SKIP_THRESHOLD = config.memory.skipThreshold;
 const AMBIGUOUS_THRESHOLD = config.memory.ambiguousThreshold;
+// Supersession scan casts a wider (lower) net than dedup — the LLM judge gates
+// precision, so embedding only needs recall when hunting stale facts to retire.
+const SUPERSEDE_THRESHOLD = config.memory.supersedeThreshold;
+const SUPERSEDE_SCAN_LIMIT = config.memory.supersedeScanLimit;
 
 /**
  * AUDM pipeline: Add, Update, Delete (contradict), or Merge.
@@ -27,13 +31,15 @@ async function saveFact({ content, category, confidence, importance, namespace, 
   // too. Idempotent — already-masked content is unchanged.
   content = maskSecrets(content);
   const embedding = precomputed || await embedOrThrow(content);
-  const similar = await findSimilar(embedding, { namespace }, db);
+  // Scan at the (lower) supersession floor so facet-shifted stale facts surface
+  // as candidates; the AUDM judge decides which are actually invalidated.
+  const similar = await findSimilar(embedding, { namespace, threshold: SUPERSEDE_THRESHOLD, limit: SUPERSEDE_SCAN_LIMIT }, db);
 
   // AUDM telemetry attached to every return for the trace log: the similarity
   // that drove the decision, candidate count, and the thresholds in effect —
   // so the Activity log can explain *why* a fact was added vs deduped vs
   // superseded. Purely additive; existing callers ignore `audm`.
-  const thresholds = { skip: SKIP_THRESHOLD, ambiguous: AMBIGUOUS_THRESHOLD };
+  const thresholds = { skip: SKIP_THRESHOLD, ambiguous: AMBIGUOUS_THRESHOLD, supersede: SUPERSEDE_THRESHOLD };
 
   if (!similar.length) {
     const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
@@ -49,43 +55,69 @@ async function saveFact({ content, category, confidence, importance, namespace, 
     thresholds,
   };
 
+  // Near-exact duplicate of an existing active fact → skip; don't store a redundant row.
   if (topMatch.similarity >= SKIP_THRESHOLD) {
     return { action: 'SKIP', existing: topMatch, audm: { ...audmBase, decision: 'skip-duplicate' } };
   }
 
-  if (topMatch.similarity >= AMBIGUOUS_THRESHOLD) {
-    const decision = await audmDecide(content, topMatch.content);
+  // Cluster-aware supersession. A single real-world change ("migrated to
+  // Postgres") decomposes into several stale facts — primary store, session
+  // state, a dated event — that are NOT all the new fact's single nearest
+  // neighbor. So we compare the new fact against EVERY active neighbor in the
+  // ambiguous band [AMBIGUOUS, SKIP) and retire each one the (temperature-0,
+  // deterministic) AUDM judge marks UPDATE/CONTRADICT — not just topMatch.
+  // findSimilar already filters to >= AMBIGUOUS, so we only exclude near-dups.
+  const candidates = similar.filter((s) => s.similarity < SKIP_THRESHOLD);
 
-    if (decision === 'UPDATE') {
-      // Insert the new version, then mark the old one superseded with a closed valid_until.
-      // This preserves the full fact history as separate rows instead of overwriting in place.
-      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
-      await markSuperseded(topMatch.id, fact.id, db);
-      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'UPDATE', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` }, db);
-      return { action: 'UPDATE', fact, supersededId: topMatch.id, audm: { ...audmBase, decision: 'llm:UPDATE' } };
-    }
-
-    if (decision === 'CONTRADICT') {
-      const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
-      await markContradicted(topMatch.id, fact.id, db);
-      await recordHistory({ targetType: 'fact', targetId: topMatch.id, event: 'CONTRADICT', oldContent: topMatch.content, newContent: content, triggeredBy: `audm:sim=${topMatch.similarity.toFixed(3)}` }, db);
-      return { action: 'CONTRADICT', fact, contradictedId: topMatch.id, audm: { ...audmBase, decision: 'llm:CONTRADICT' } };
-    }
-
-    // Ambiguous zone but the LLM judged the new fact distinct → add as new.
+  if (!candidates.length) {
     const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
-    return { action: 'ADD', fact, audm: { ...audmBase, decision: 'llm:ADD' } };
+    return { action: 'ADD', fact, audm: { ...audmBase, decision: 'below-ambiguous' } };
   }
 
+  // Insert the new version once, then retire each invalidated neighbor against
+  // it. Old facts become separate superseded/contradicted rows (full history
+  // preserved) rather than being overwritten in place.
   const fact = await insertFact({ content, category, confidence, importance, namespace, sourceDocumentIds, sourceSection, embedding }, db);
-  return { action: 'ADD', fact, audm: { ...audmBase, decision: 'below-ambiguous' } };
+  const retired = [];
+  for (const cand of candidates) {
+    const decision = await audmDecide(content, cand.content);
+    if (decision === 'UPDATE') {
+      await markSuperseded(cand.id, fact.id, db);
+      await recordHistory({ targetType: 'fact', targetId: cand.id, event: 'UPDATE', oldContent: cand.content, newContent: content, triggeredBy: `audm:sim=${cand.similarity.toFixed(3)}` }, db);
+      retired.push({ id: cand.id, decision: 'UPDATE', similarity: Number(cand.similarity) });
+    } else if (decision === 'CONTRADICT') {
+      await markContradicted(cand.id, fact.id, db);
+      await recordHistory({ targetType: 'fact', targetId: cand.id, event: 'CONTRADICT', oldContent: cand.content, newContent: content, triggeredBy: `audm:sim=${cand.similarity.toFixed(3)}` }, db);
+      retired.push({ id: cand.id, decision: 'CONTRADICT', similarity: Number(cand.similarity) });
+    }
+    // ADD → the neighbor is genuinely distinct; leave it active.
+  }
+
+  // Headline action reflects what actually happened (UPDATE wins over CONTRADICT
+  // for back-compat counting; ADD when nothing was retired). `retired` carries
+  // the full per-neighbor detail; supersededId/contradictedId stay populated for
+  // existing callers that read the single-id contract.
+  const action = retired.some((r) => r.decision === 'UPDATE') ? 'UPDATE'
+    : retired.some((r) => r.decision === 'CONTRADICT') ? 'CONTRADICT'
+      : 'ADD';
+  return {
+    action,
+    fact,
+    supersededId: retired.find((r) => r.decision === 'UPDATE')?.id ?? null,
+    contradictedId: retired.find((r) => r.decision === 'CONTRADICT')?.id ?? null,
+    retired,
+    audm: { ...audmBase, decision: retired.length ? `llm:${action}×${retired.length}` : 'llm:ADD' },
+  };
 }
 
 async function audmDecide(newContent, existingContent) {
   const systemPrompt = await readFile(AUDM_PROMPT_PATH, 'utf8');
 
   const input = `${systemPrompt}\n\n**EXISTING FACT:** ${existingContent}\n\n**NEW FACT:** ${newContent}`;
-  const text = await llmPrompt(input, { model: config.llm.decisionModel, caller: 'audm' });
+  // temperature: 0 — AUDM is a classification, not a creative call. A pinned
+  // temperature makes verdicts reproducible run-to-run (the same fact pair must
+  // always resolve the same way; otherwise stale-fact retirement is a coin toss).
+  const text = await llmPrompt(input, { model: config.llm.decisionModel, caller: 'audm', temperature: 0 });
 
   const upper = text.trim().toUpperCase();
   if (upper.includes('UPDATE')) return 'UPDATE';

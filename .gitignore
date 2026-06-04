@@ -31,3 +31,6 @@ eval/longmemeval/reports/__pycache__/
 # reliability lane transient output
 test/reliability/.last-run.json
 .gstack/
+
+# local benchmarking lane — untracked (downloaded datasets + per-run output)
+benchmarks/

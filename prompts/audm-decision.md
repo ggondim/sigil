@@ -28,4 +28,25 @@ EXISTING: "Session started 2 minutes late"
 NEW: "Session started on time"
 → **CONTRADICT**
 
+### State changing over time (same subject + attribute, new value)
+
+When both facts describe the **same subject's same attribute or property** but the
+value has changed — a tool was swapped, a role changed, a price moved, a system was
+migrated — the OLD fact is no longer true. Choose UPDATE (the new value replaces the
+old) or CONTRADICT (the old assertion is now false). Do **not** choose ADD just because
+the new fact is phrased as an event ("was migrated", "was promoted", "moved to"): a
+migration/promotion still invalidates the prior state.
+
+EXISTING: "The primary datastore is Redis"
+NEW: "The application migrated from Redis to Postgres as the primary datastore"
+→ **CONTRADICT** (same attribute — the primary datastore — old value Redis no longer holds)
+
+EXISTING: "All session state is managed within Redis"
+NEW: "Session state management was moved to Postgres LISTEN/NOTIFY"
+→ **UPDATE** (same attribute — where session state lives — changed from Redis to Postgres)
+
+EXISTING: "Priya works as a backend engineer on the payments team"
+NEW: "Priya was promoted to engineering manager of the payments team"
+→ **UPDATE** (same subject's role changed; she is no longer a backend engineer)
+
 Respond with exactly one of: UPDATE, ADD, or CONTRADICT.

@@ -49,7 +49,7 @@ export async function runSetup(args = []) {
   if (!args.includes('--quickstart')) {
     console.log(`${C.bold('sigil setup')} — choose a path:\n`);
     console.log(`  ${C.bold('sigil setup --quickstart')}   ${C.dim('zero-config: embedded DB + local embedder')}`);
-    console.log(`  ${C.bold('sigil init')}                 ${C.dim('interactive wizard (full control)')}`);
+    console.log(`  ${C.bold('sigil init')}                 ${C.dim('interactive TUI wizard (same steps as the dashboard)')}`);
     console.log(`  ${C.bold('sigil')}                      ${C.dim('open the web setup wizard in your browser')}\n`);
     return;
   }
