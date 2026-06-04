@@ -155,7 +155,7 @@ function renderComingSoon() {
 async function renderDatabaseStep() {
   shell({
     title: 'Set up your database.',
-    lede: 'Sigil stores every fact and embedding in Postgres + pgvector. Connect one you run, let Sigil spin one up in Docker, or point it at a managed database.',
+    lede: 'Sigil stores every fact and embedding in Postgres + pgvector. Use the built-in database (nothing to install), connect one you run, spin one up in Docker, or point it at a managed database.',
     body: `<div id="setup-detect" class="setup-detect muted">Checking this machine…</div>
       <div class="provider-card-grid" id="setup-db-modes"></div>
       <div id="setup-fields" hidden></div>`,
@@ -166,13 +166,20 @@ async function renderDatabaseStep() {
 }
 
 function renderDbModes() {
-  const det = dbDetect || { local: {}, docker: {} };
+  const det = dbDetect || { embedded: {}, local: {}, docker: {} };
   const s = $('#setup-detect');
-  if (det.local?.running) s.innerHTML = `Found Postgres on <b>localhost:${det.local.port}</b> — pgvector ${det.local.pgvectorAvailable ? '<b>available ✓</b>' : '<b>not available</b>'}.`;
-  else if (det.local?.installed) s.textContent = 'Postgres is installed but not running.';
-  else s.textContent = 'No local Postgres detected.';
+  if (det.local?.running) s.innerHTML = `Found Postgres on <b>localhost:${det.local.port}</b> — pgvector ${det.local.pgvectorAvailable ? '<b>available ✓</b>' : '<b>not available</b>'}. The built-in database needs nothing installed.`;
+  else if (det.local?.installed) s.innerHTML = 'Postgres is installed but not running. The built-in database needs nothing installed.';
+  else s.innerHTML = 'No local Postgres detected — the built-in database below needs nothing installed.';
 
   const cards = [];
+  // Embedded (PGlite) — the zero-prerequisite default. Always available: a full
+  // Postgres 17 + pgvector compiled to WASM, running in-process under ~/.sigil/db.
+  if (det.embedded?.available !== false) {
+    cards.push(card('mode', 'embedded',
+      'Use the built-in database <span class="badge info" style="margin-left:var(--s-2);">RECOMMENDED</span>',
+      'No install — Postgres + pgvector run inside Sigil, stored at ~/.sigil/db'));
+  }
   if (det.local?.running) cards.push(card('mode', 'local', 'Connect to local Postgres', `localhost:${det.local.port} · reuse your running server`, { action: 'connect' }));
   else if (det.local?.installed) cards.push(card('mode', 'local', 'Start &amp; connect local Postgres', 'Start your installed Postgres, then set up', { action: 'start' }));
   if (det.docker?.installed) {

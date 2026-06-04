@@ -22,6 +22,7 @@ import { WebSocketServer } from 'ws';
 
 import { GUI_WEB_DIR_BUILT, GUI_WEB_DIR_DEV } from '../lib/paths.js';
 import { getGuiToken, isValidToken } from './gui-token.js';
+import { wireInProcessDispatch, handleMcpRequest } from './mcp-http.js';
 import bus from './events.js';
 
 const MIME = {
@@ -46,6 +47,10 @@ function resolveWebDir() {
 export async function startHttpServer({ registry, log, config }) {
   const webDir = resolveWebDir();
   const token = await getGuiToken();
+
+  // Bridge the MCP tools' daemonCall() to the in-process registry so the /mcp
+  // route doesn't loop back through the Unix socket.
+  wireInProcessDispatch(registry);
 
   const server = createServer(async (req, res) => {
     try {
@@ -165,6 +170,13 @@ async function route(req, res, { registry, webDir, log }) {
     }
     const result = await registry.dispatch(body.method, body.params, { transport: 'http' });
     return writeJson(res, 200, result);
+  }
+
+  // MCP over Streamable HTTP. The SDK transport owns the response (it parses the
+  // JSON-RPC body off the still-unread request stream and writes the reply), so
+  // we hand it req/res directly. Stateless: a fresh server per request.
+  if (req.method === 'POST' && path === '/mcp') {
+    return handleMcpRequest(req, res);
   }
 
   writeJson(res, 404, { ok: false, error: { code: 'not_found', message: `${req.method} ${path}` } });

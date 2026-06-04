@@ -209,33 +209,38 @@ async function resolveTopicsFromFacts(facts, { promptPath, namespace }) {
 
   if (!Array.isArray(parsed)) return [];
 
-  const validTopics = parsed.filter((t) => t.name);
-  if (!validTopics.length) return [];
+  return resolveEntityList(parsed.filter((t) => t.name), { namespace, episodeText: factsText });
+}
 
-  // Two-pass resolution to make rename detection deterministic regardless
-  // of the LLM's topic-output order.
-  //
-  //   Pass 1: for every topic, do a fast exact-name lookup (Stage 1 only).
-  //           Topics that already exist in the DB get resolved here and
-  //           their IDs join the "anchor cohort."
-  //   Pass 2: topics that didn't exist get the full resolveEntity cascade
-  //           with `episodeEntityIds = anchorCohort` — so the LLM Stage 3
-  //           dedup always sees the existing entities mentioned in the
-  //           same passage as candidates.
-  //
-  // Without this ordering, "Smara is now named Sigil" can fail when the
-  // extractor returns ["Sigil", "Smara"] in that order: Sigil would be
-  // resolved first as a brand-new entity (cohort empty), then Smara would
-  // hit Stage 1 — and the rename signal is lost. Two-pass resolves Smara
-  // first regardless of LLM ordering.
-  const topics = new Array(validTopics.length);
+/**
+ * Resolve a list of extracted { name, description } items into canonical
+ * entities, with deterministic rename detection. Shared by the entity-only
+ * path (resolveTopicsFromFacts) and the fused graph-extraction path.
+ *
+ * Two-pass resolution makes rename detection independent of the LLM's output
+ * order:
+ *   Pass 1: every item gets a fast exact-name lookup (Stage 1 only). Items
+ *           that already exist join the "anchor cohort."
+ *   Pass 2: items that didn't exist get the full resolveEntity cascade with
+ *           `episodeEntityIds = anchorCohort`, so Stage 3 dedup always sees
+ *           the existing same-passage entities as rename candidates.
+ *
+ * Without this, "Smara is now named Sigil" fails when the extractor returns
+ * ["Sigil", "Smara"]: Sigil resolves first as brand-new (empty cohort), then
+ * Smara hits Stage 1 and the rename signal is lost. Two-pass resolves the
+ * pre-existing name first regardless of order.
+ */
+async function resolveEntityList(validItems, { namespace, episodeText }) {
+  if (!validItems?.length) return [];
+
+  const resolved = new Array(validItems.length);
   const anchorCohort = [];
   const needsFullResolve = [];
 
-  for (let i = 0; i < validTopics.length; i++) {
-    const existing = await findByNameQuick(validTopics[i].name, namespace);
+  for (let i = 0; i < validItems.length; i++) {
+    const existing = await findByNameQuick(validItems[i].name, namespace);
     if (existing) {
-      topics[i] = existing;
+      resolved[i] = existing;
       anchorCohort.push(existing.id);
     } else {
       needsFullResolve.push(i);
@@ -243,20 +248,20 @@ async function resolveTopicsFromFacts(facts, { promptPath, namespace }) {
   }
 
   for (const i of needsFullResolve) {
-    const item = validTopics[i];
+    const item = validItems[i];
     const entity = await resolveEntity({
       name: item.name,
-      entityType: 'topic',
+      entityType: item.entityType || 'topic',
       description: item.description || null,
       namespace,
-      episodeText: factsText,
+      episodeText,
       episodeEntityIds: anchorCohort,
     });
-    topics[i] = entity;
+    resolved[i] = entity;
     if (entity?.id) anchorCohort.push(entity.id);
   }
 
-  return topics.filter(Boolean);
+  return resolved.filter(Boolean);
 }
 
 // Lightweight Stage 1 only — used for the two-pass ordering above.
@@ -269,4 +274,4 @@ async function findByNameQuick(name, namespace) {
   return canonical;
 }
 
-export { resolveEntity, resolveTopicsFromFacts };
+export { resolveEntity, resolveTopicsFromFacts, resolveEntityList };

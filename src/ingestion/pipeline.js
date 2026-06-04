@@ -174,12 +174,16 @@ async function ingestDocument({
     // Entities AFTER commit — additive graph enrichment, must not roll back facts.
     let entityResult = { entityCount: 0, relationCount: 0, factEntityLinks: 0, topics: [] };
     if (!skipEntities && thoughtResult.results.length) {
-      entityResult = await linkDocumentEntities(
-        { title: finalTitle, sourceType, metadata },
-        thoughtResult.results,
-        ns,
-        entities,
-      );
+      try {
+        entityResult = await linkDocumentEntities(
+          { title: finalTitle, sourceType, metadata },
+          thoughtResult.results,
+          ns,
+          entities,
+        );
+      } catch (err) {
+        process.stderr.write(`[thought] entity linking failed (facts preserved): ${err.message}` + "\n");
+      }
     }
 
     process.stderr.write(`Done. Route: thought, ${thoughtResult.counts.total} facts (${thoughtResult.counts.added} new)` + "\n");
@@ -266,15 +270,20 @@ async function ingestDocument({
     });
 
     // Step 5: Link entities — graph enrichment, AFTER facts are durably
-    // committed. A linking failure must not roll back valid facts.
+    // committed. A linking failure must not roll back valid facts, so it's
+    // caught here: the facts are already committed and a partial graph is fine.
     if (!skipEntities && factResult.results.length) {
       process.stderr.write('[5/6] Linking entities...' + "\n");
-      entityResult = await linkDocumentEntities({
-        title: finalTitle,
-        sourceType,
-        metadata,
-      }, factResult.results, ns, entities);
-      process.stderr.write(`  ${entityResult.entityCount} entities, ${entityResult.relationCount} relations` + "\n");
+      try {
+        entityResult = await linkDocumentEntities({
+          title: finalTitle,
+          sourceType,
+          metadata,
+        }, factResult.results, ns, entities);
+        process.stderr.write(`  ${entityResult.entityCount} entities, ${entityResult.relationCount} relations` + "\n");
+      } catch (err) {
+        process.stderr.write(`  [5/6] entity linking failed (facts preserved): ${err.message}` + "\n");
+      }
     }
 
   } catch (err) {

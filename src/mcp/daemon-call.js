@@ -15,6 +15,13 @@ import { connectOrStartDaemon } from '../clients/auto-spawn.js';
 let clientPromise = null;
 let cachedClient = null;
 
+// In-process dispatch override. When the MCP tools run INSIDE the daemon (the
+// HTTP /mcp transport), there's no point opening a Unix socket back to our own
+// process — set a direct dispatcher that calls the registry. Returns the
+// unwrapped `data` (or throws) so it's drop-in for the socket path below.
+let inProcessDispatch = null;
+export function setInProcessDispatch(fn) { inProcessDispatch = fn; }
+
 async function getClient() {
   if (cachedClient) return cachedClient;
   if (!clientPromise) {
@@ -28,21 +35,30 @@ async function getClient() {
 // PR review #14: reconnect by err.code (set by socket-client on
 // transport errors), not substring match of err.message — which would
 // false-positive on any handler error that mentioned ENOENT/closed.
+//
+// ECLOSED is stamped by socket-client.js on BOTH stale-client conditions:
+//   - "daemon connection closed" — the socket drops mid-call
+//   - "client is closed"         — a call is made AFTER the socket already
+//                                  closed (e.g. the daemon restarted under a
+//                                  long-lived MCP session). Without this, that
+//                                  second case never reconnected and every tool
+//                                  call after a daemon restart failed.
 const TRANSPORT_ERROR_CODES = new Set([
   'ECONNREFUSED',
   'ENOENT',
   'EPIPE',
   'ECONNRESET',
+  'ECLOSED',
 ]);
 function isTransportError(err) {
   if (!err) return false;
   if (err.code && TRANSPORT_ERROR_CODES.has(err.code)) return true;
-  // The socket-client surfaces "daemon connection closed" as a plain
-  // Error (no code) when the underlying socket drops mid-call.
-  return /^daemon connection closed/i.test(err.message || '');
+  // Fallback for older clients that don't stamp a code on these.
+  return /^(daemon connection closed|client is closed)/i.test(err.message || '');
 }
 
 export async function daemonCall(method, params) {
+  if (inProcessDispatch) return inProcessDispatch(method, params ?? {});
   const client = await getClient();
   try {
     const { data } = await client.call(method, params ?? {});

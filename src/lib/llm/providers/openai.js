@@ -1,6 +1,6 @@
 import config from '../../../config.js';
 
-async function chat(input, { model, jsonMode = false } = {}) {
+async function chat(input, { model, jsonMode = false, schema = null } = {}) {
   const resolved = model || config.llm.openaiModel;
   const messages = [{ role: 'user', content: input }];
 
@@ -9,7 +9,13 @@ async function chat(input, { model, jsonMode = false } = {}) {
   }
 
   const body = { model: resolved, messages };
-  if (jsonMode) body.response_format = { type: 'json_object' };
+  // Schema-constrained structured output forces the exact response shape — far
+  // more reliable on small models than free-form json_object mode.
+  if (schema) {
+    body.response_format = { type: 'json_schema', json_schema: { name: 'sigil_response', strict: true, schema } };
+  } else if (jsonMode) {
+    body.response_format = { type: 'json_object' };
+  }
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',

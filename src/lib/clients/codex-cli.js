@@ -29,6 +29,7 @@ import TOML from '@iarna/toml';
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
+import { MCP_SHIM_PATH, writeLauncherShim } from './shim.js';
 
 const CODEX_HOME = join(homedir(), '.codex');
 const CODEX_CONFIG_PATH = join(CODEX_HOME, 'config.toml');
@@ -85,12 +86,13 @@ async function writeMcpEntry({ dryRun = false } = {}) {
   const existedBefore = existsSync(CODEX_CONFIG_PATH);
 
   config.mcp_servers = config.mcp_servers || {};
-  // No env block: config.json is the source of truth (the MCP server reads it
-  // via getConfig()). The old DOTENV_CONFIG_PATH=~/.sigil/.env pointed at a file
-  // that config-store migrates+renames on first boot — dead coupling, removed.
+  // Point `command` at the stable MCP shim (~/.sigil/bin/sigil-mcp), not a
+  // baked `node /abs/dist/server.js` — survives Node-version switches /
+  // reinstalls. config.json remains the source of truth for runtime config.
+  await writeLauncherShim({ dryRun });
   config.mcp_servers.sigil = {
-    command: process.execPath,
-    args: [resolveServerPath(), '--mcp'],
+    command: MCP_SHIM_PATH,
+    args: [],
   };
 
   if (!dryRun) await fs.mkdir(CODEX_HOME, { recursive: true });
@@ -191,11 +193,14 @@ async function verify({ deep = false } = {}) {
     return { installed: false, reason: 'sigil block markers missing from ~/.codex/AGENTS.md' };
   }
 
-  // The registered server path must actually exist (catches a moved/reinstalled
-  // Sigil). Cheap — always checked.
+  // The registered command is the stable shim; it (and its target server) must
+  // exist. Catches a moved/reinstalled Sigil.
+  if (!existsSync(MCP_SHIM_PATH)) {
+    return { installed: false, reason: `MCP launcher missing at ${MCP_SHIM_PATH} — run \`sigil connect\`` };
+  }
   const serverPath = resolveServerPath();
   if (!existsSync(serverPath)) {
-    return { installed: false, reason: `MCP server missing at ${serverPath} — run \`sigil init\` to refresh` };
+    return { installed: false, reason: `MCP server missing at ${serverPath} — run \`sigil connect\` to refresh` };
   }
   // Deep: prove the server actually starts and answers a tool call.
   if (deep) {

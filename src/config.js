@@ -36,6 +36,11 @@ const config = {
   // class as the `embedding` block below.
   db: {
     type: 'postgres',
+    // Persistence mode: 'embedded' (in-process PGlite, zero prerequisites),
+    // 'local'/'docker' (discrete host/port fields), or 'url' (connection
+    // string). Read live so a mid-session onboarding switch is picked up.
+    // Env escape hatch: SIGIL_DB_MODE=embedded forces the embedded engine.
+    get mode() { return process.env.SIGIL_DB_MODE || store().database.mode || null; },
     // Connection URL takes precedence when set. Recognized providers
     // (Neon, Supabase, RDS, Render, Railway, CockroachDB) get sensible
     // SSL defaults automatically; override with ?sslmode=... in the URL.
@@ -206,6 +211,21 @@ const config = {
     // false → skip per-chunk fact extraction during ingest (Ogham-style lazy mode).
     // Trades ~17× cheaper writes for ~4 points of hit@1 on narrow queries.
     eagerExtract: env('SIGIL_EAGER_EXTRACT', 'true') !== 'false',
+    // Semantic relationship extraction. Entities AND relationships are pulled in
+    // ONE fused graph-extraction call (the GraphRAG/LightRAG pattern), then
+    // predicates are canonicalized in a local, LLM-free pass. This turns the
+    // structurally-present but semantically-empty graph into a real knowledge
+    // graph without adding an LLM round-trip over the prior entity-only stage.
+    // Set SIGIL_EXTRACT_RELATIONS=false to fall back to entity-only linking.
+    extractRelations: env('SIGIL_EXTRACT_RELATIONS', 'true') !== 'false',
+    // Gleaning: after the first graph extraction, re-ask the model "what did you
+    // miss?" this many times to recover recall a single pass loses (GraphRAG's
+    // trick). Defaults OFF: schema-constrained structured output already recovers
+    // most of the recall gleaning targeted, and each round is a full extra
+    // graph-extraction call — not worth doubling ingest latency by default. Set
+    // SIGIL_GRAPH_GLEAN_ROUNDS=1+ to trade latency for recall. Only fires for
+    // fact-dense documents (≥5 facts) so short inputs never pay for it.
+    graphGleanRounds: Number(env('SIGIL_GRAPH_GLEAN_ROUNDS', 0)),
   },
 
   hebbian: {

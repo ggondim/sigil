@@ -12,7 +12,7 @@ async function contextualizeChunks(chunks, documentText, { title }) {
 
   const systemPrompt = await readFile(PROMPT_PATH, 'utf8');
 
-  const excerpts = chunks.map((c, i) => `Chunk ${i + 1}: ${c.content.slice(0, 200)}`);
+  const excerpts = chunks.map((c, i) => `Chunk ${i + 1}: ${c.content.slice(0, 350)}`);
 
   const fullPrompt = `${systemPrompt}
 

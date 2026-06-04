@@ -42,6 +42,7 @@ Usage:
 
 Commands:
   init [--dry-run]         Set up Sigil (DB, env, hooks, Claude integration)
+  connect [--clients ...]  Re-pin launcher shims + re-sync AI client configs (fix stale paths)
   uninstall [--dry-run]    Remove Sigil's entries from selected AI clients
   doctor                   Diagnose Sigil setup (DB, LLM, embeddings, hooks)
   remember "text"          Save a fact or note to memory
@@ -141,6 +142,8 @@ async function launchAndOpenBrowser() {
 
 const commands = {
   init: runInit,
+  connect: runConnect,
+  setup: runSetupVerb,
   uninstall: runUninstall,
   doctor: runDoctor,
   remember: runRemember,
@@ -186,6 +189,11 @@ async function runPairVerb(args) {
 async function runJoinVerb(args) {
   const { runJoin } = await import('./cli-handlers/join.js');
   return runJoin(args);
+}
+
+async function runSetupVerb(args) {
+  const { runSetup } = await import('./cli-handlers/quickstart.js');
+  return runSetup(args);
 }
 
 const handler = commands[command];
@@ -991,6 +999,142 @@ Files Sigil touches (originals are backed up to <path>.sigil.bak before write):
 }
 
 function pad(s, n) { return String(s).padEnd(n); }
+
+// ─── Connect ────────────────────────────────────────────────────────────────
+//
+// Re-runnable client (re)registration. Unlike `init`, it touches NO database,
+// provider, or embedding config — it only:
+//   1. Regenerates the stable launcher shims (~/.sigil/bin/), re-pinning them to
+//      the CURRENT package + node location. This is the self-heal for a
+//      reinstall / Node-version switch (nvm/fnm) that left a harness config
+//      pointing at a dead path.
+//   2. Re-runs each selected client's install() to re-sync its generated files
+//      (Claude Code hooks + CLAUDE.md, Cursor, Codex CLI, Kiro) against the
+//      fresh shims.
+//   3. Refreshes the hot-context snapshot (best-effort; skipped if the DB is
+//      unreachable — connect must work even when other things are broken).
+//
+// Safe non-interactively (agents / CI): with --clients/--all, or when stdin is
+// not a TTY, it skips the picker and uses the given/detected set.
+async function runConnect(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`sigil connect — (Re)register Sigil with your AI clients
+
+Usage:
+  sigil connect [--clients <a,b,...>] [--all] [--dry-run]
+
+Re-pins the stable launcher shims (~/.sigil/bin/) to the current install and
+re-syncs each client's generated config (Claude Code hooks + CLAUDE.md, Cursor,
+Codex CLI, Kiro). Run this after upgrading, reinstalling, or switching Node
+versions if memory stops working — it fixes stale paths WITHOUT re-running the
+full setup wizard. Touches no database, provider, or API keys.
+
+Options:
+  --clients <a,b,...>   Comma-separated client ids. Accepts: claude-code (claude),
+                        cursor, codex-cli (codex), kiro, hermes.
+  --all                 (Re)connect every detected client without prompting.
+  --dry-run             Show what would change; write nothing.
+
+Non-interactive: with --clients/--all, or when stdin is not a TTY, the picker is
+skipped (agent/CI-friendly).`);
+    process.exit(0);
+  }
+
+  const dryRun = args.includes('--dry-run');
+  const all = args.includes('--all');
+
+  // Parse --clients <list> (supports both `--clients a,b` and `--clients=a,b`).
+  const ALIASES = {
+    claude: 'claude-code', 'claude-code': 'claude-code',
+    cursor: 'cursor',
+    codex: 'codex-cli', 'codex-cli': 'codex-cli',
+    kiro: 'kiro', hermes: 'hermes',
+  };
+  let explicitIds = null;
+  const cFlagIdx = args.findIndex((a) => a === '--clients' || a.startsWith('--clients='));
+  if (cFlagIdx !== -1) {
+    const raw = args[cFlagIdx].includes('=')
+      ? args[cFlagIdx].split('=').slice(1).join('=')
+      : args[cFlagIdx + 1];
+    explicitIds = (raw || '').split(',').map((s) => s.trim()).filter(Boolean)
+      .map((s) => ALIASES[s.toLowerCase()] || s.toLowerCase());
+  }
+
+  const clack = await import('@clack/prompts');
+  const { intro, outro, multiselect, spinner, note, cancel, isCancel } = clack;
+
+  intro(dryRun ? 'Sigil connect — DRY RUN (no files will be written)' : 'Sigil connect');
+
+  // 1. Re-pin the stable launcher shims (always — even with no clients picked).
+  const { writeLauncherShim } = await import('./lib/clients/shim.js');
+  const shimRes = await writeLauncherShim({ dryRun });
+
+  const { listClients } = await import('./lib/clients/index.js');
+  const clients = await listClients();
+  const validIds = new Set(clients.map((c) => c.id));
+  const detected = await Promise.all(clients.map((c) => c.detect()));
+  const detectedIds = clients.filter((_, i) => detected[i]).map((c) => c.id);
+
+  // 2. Decide the target client set.
+  let pickedIds;
+  if (explicitIds) {
+    const unknown = explicitIds.filter((id) => !validIds.has(id));
+    if (unknown.length) {
+      cancel(`Unknown client id(s): ${unknown.join(', ')}. Valid: ${[...validIds].join(', ')}.`);
+      process.exit(1);
+    }
+    pickedIds = explicitIds;
+  } else if (all || !process.stdin.isTTY) {
+    // Non-interactive (agent / CI / piped): re-sync everything detected.
+    pickedIds = detectedIds;
+    if (!pickedIds.length) {
+      note('No AI clients detected. Shims were re-pinned; install a client, then re-run `sigil connect` (or pass --clients).', 'Nothing to connect');
+      outro('Done.');
+      process.exit(0);
+    }
+  } else {
+    pickedIds = await multiselect({
+      message: '(Re)connect Sigil for which clients? (space to toggle, enter to confirm)',
+      options: clients.map((c, i) => ({
+        value: c.id,
+        label: c.label,
+        hint: detected[i] ? `${c.hint} — detected` : c.hint,
+      })),
+      initialValues: detectedIds.length ? detectedIds : ['claude-code'],
+      required: false,
+    });
+    if (isCancel(pickedIds)) { cancel('Connect cancelled.'); process.exit(0); }
+  }
+
+  // 3. Re-run install() for each picked client (re-syncs configs to the shims).
+  const planned = shimRes.actions.map((a) => ({ client: 'shim', ...a }));
+
+  const s = spinner();
+  s.start(dryRun ? 'Computing connect plan...' : 'Re-syncing client integrations...');
+  for (const id of pickedIds) {
+    const client = clients.find((c) => c.id === id);
+    const { actions } = await client.install({ dryRun });
+    for (const a of actions) planned.push({ client: client.label, ...a });
+  }
+  // Refresh the hot-context snapshot. Best-effort: connect must not require the
+  // DB, so a failure here (DB down) is swallowed.
+  if (!dryRun) {
+    const { updateContextSnapshot } = await import('./memory/facts/hot-context.js');
+    await updateContextSnapshot({}).catch(() => {});
+  }
+  s.stop(dryRun
+    ? 'Plan computed.'
+    : `Connected ${pickedIds.length} client${pickedIds.length === 1 ? '' : 's'}: ${pickedIds.join(', ')}`);
+
+  const lines = planned.map((p) => `  ${pad(p.action, 8)} [${p.client}] ${p.path}${p.detail ? `  (${p.detail})` : ''}`);
+  note(lines.join('\n') || '(no changes)', dryRun ? 'Plan' : 'Re-synced');
+
+  outro(dryRun
+    ? 'Dry run complete. Re-run without --dry-run to apply.'
+    : 'Done. Open a new agent session to pick up the refreshed integration.');
+
+  process.exit(0);
+}
 
 // ─── Uninstall ──────────────────────────────────────────────────────────────
 
@@ -1869,36 +2013,58 @@ Examples:
 
 async function runRegister(args) {
   if (args.includes('--help')) {
-    console.log(`sigil register — Register Sigil as a Claude Code MCP server
+    console.log(`sigil register — Register Sigil as an MCP server (advanced)
 
 Usage:
-  sigil register [--print]
+  sigil register [--http] [--print]
+
+By default registers a stable STDIO launcher (~/.sigil/bin/sigil-mcp). Because
+the registration points at the shim — not a versioned package path — it keeps
+working across Node-version switches (nvm/fnm) and reinstalls.
+
+With --http, registers the daemon's URL-based MCP transport instead
+(http://<host>:<port>/mcp + bearer token). The daemon must be running; the URL
+never changes, so this is the most portable option for clients that support
+HTTP MCP.
 
 Options:
-  --print   Print the config JSON without modifying files`);
+  --http    Register the URL-based HTTP transport instead of stdio
+  --print   Print the config without modifying any files`);
     process.exit(0);
   }
 
-  const globalEnvPath = join(homedir(), '.sigil', '.env');
-  const envPath = existsSync(globalEnvPath) ? globalEnvPath : resolve(process.cwd(), '.env');
-  await doRegister(PKG_DIR, envPath, args.includes('--print'));
+  await doRegister({ http: args.includes('--http'), printOnly: args.includes('--print') });
 }
 
-async function doRegister(pkgDir, envPath, printOnly = false) {
+async function doRegister({ http = false, printOnly = false } = {}) {
   const fs = await import('node:fs/promises');
+  const { MCP_SHIM_PATH, writeLauncherShim } = await import('./lib/clients/shim.js');
 
-  const serverPath = join(pkgDir, 'src', 'server.js');
+  // Build the MCP entry + the `claude mcp add` invocation for the chosen
+  // transport. Both avoid baking a versioned package path.
+  let mcpEntry;
+  let claudeAddArgs;
+  let summary;
 
-  const mcpEntry = {
-    command: process.execPath,
-    args: [serverPath, '--mcp'],
-    env: { DOTENV_CONFIG_PATH: envPath },
-  };
+  if (http) {
+    const config = (await import('./config.js')).default;
+    const { getGuiToken } = await import('./daemon/gui-token.js');
+    const token = await getGuiToken();
+    const url = `http://${config.http.host}:${config.http.port}/mcp`;
+    mcpEntry = { type: 'http', url, headers: { Authorization: `Bearer ${token}` } };
+    claudeAddArgs = `sigil -s user --transport http ${url} --header ${JSON.stringify(`Authorization: Bearer ${token}`)}`;
+    summary = `URL transport: ${url} (daemon must be running)`;
+  } else {
+    await writeLauncherShim({});
+    mcpEntry = { command: MCP_SHIM_PATH, args: [] };
+    claudeAddArgs = `sigil -s user -- ${MCP_SHIM_PATH}`;
+    summary = `stdio launcher: ${MCP_SHIM_PATH}`;
+  }
 
   const configJson = JSON.stringify({ mcpServers: { sigil: mcpEntry } }, null, 2);
 
   if (printOnly) {
-    console.log('\nAdd this to your Claude Code MCP config:\n');
+    console.log('\nAdd this to your MCP client config:\n');
     console.log(configJson);
     return;
   }
@@ -1910,12 +2076,9 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
       // Remove existing entry first (idempotent)
       try { _execSync('claude mcp remove sigil', { stdio: 'pipe' }); } catch { /* not registered yet */ }
       try { _execSync('claude mcp remove cortex', { stdio: 'pipe' }); } catch { /* legacy name from pre-rename */ }
-      _execSync(
-        `claude mcp add sigil -s user -- ${process.execPath} ${serverPath} --mcp`,
-        { stdio: 'pipe', env: { ...process.env, DOTENV_CONFIG_PATH: envPath } },
-      );
+      _execSync(`claude mcp add ${claudeAddArgs}`, { stdio: 'pipe' });
       console.log('Registered sigil MCP server via `claude mcp add`.');
-      console.log(`  Server: ${serverPath}`);
+      console.log(`  ${summary}`);
       return;
     } catch {
       // Fall through to manual instructions
@@ -1931,10 +2094,10 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
 
     try {
       const raw = await fs.readFile(configPath, 'utf8');
-      const config = JSON.parse(raw);
-      config.mcpServers = config.mcpServers || {};
-      config.mcpServers.sigil = mcpEntry;
-      await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+      const cfg = JSON.parse(raw);
+      cfg.mcpServers = cfg.mcpServers || {};
+      cfg.mcpServers.sigil = mcpEntry;
+      await fs.writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf8');
       console.log(`Registered sigil MCP server in ${configPath}`);
       registered = true;
       break;
@@ -1944,9 +2107,8 @@ async function doRegister(pkgDir, envPath, printOnly = false) {
   }
 
   if (!registered) {
-    console.log('Could not auto-register. Add this to your Claude Code MCP configuration:\n');
+    console.log('Could not auto-register. Add this to your MCP client config:\n');
     console.log(configJson);
-    console.log('\nOr run: claude mcp add sigil -- node ' + serverPath + ' --mcp');
   }
 }
 
@@ -1991,13 +2153,15 @@ Usage:
 
 Options:
   --namespace=<ns>    Target namespace (default: from config)
+  --wait              Wait for ingestion to finish and report results
+                      (default: queue in the background and return immediately)
   --skip-facts        Skip fact extraction
   --skip-entities     Skip entity linking
 
 Examples:
   sigil ingest ./docs/README.md
   sigil ingest "docs/**/*.md"
-  sigil ingest https://example.com/page
+  sigil ingest https://example.com/page --wait
   sigil ingest file1.md file2.md --namespace=engineering`);
     process.exit(0);
   }
@@ -2008,15 +2172,20 @@ Examples:
   const namespace = flags.find((f) => f.startsWith('--namespace='))?.split('=')[1];
   const skipFacts = flags.includes('--skip-facts');
   const skipEntities = flags.includes('--skip-entities');
+  // Graph-building ingestion is LLM-heavy and can run well past the 30s RPC
+  // timeout. By default we fire-and-forget: the daemon queues + processes each
+  // source and returns instantly. `--wait` keeps the old synchronous reporting
+  // (with a generous timeout) for scripts that need the per-doc result.
+  const wait = flags.includes('--wait');
 
-  const results = { success: [], failed: [], skipped: [] };
+  const results = { success: [], failed: [], skipped: [], queued: [] };
   const startTime = Date.now();
 
   // File/URL/glob resolution stays in CLI — these are local filesystem
   // operations and don't need to run in the daemon. The daemon does the
   // heavy lifting (chunking, embedding, fact extraction) per source.
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
-  const client = await connectOrStartDaemon();
+  const client = await connectOrStartDaemon(wait ? { timeoutMs: 300_000 } : undefined);
   try {
     for (const input of inputs) {
       try {
@@ -2045,8 +2214,12 @@ Examples:
             metadata: source.metadata,
             skipFacts,
             skipEntities,
+            background: !wait,
           });
-          if (data.skipped) {
+          if (data.queued) {
+            results.queued.push(source.title);
+            console.log('  Queued');
+          } else if (data.skipped) {
             results.skipped.push(source.title);
             console.log('  Skipped (unchanged)');
           } else {
@@ -2062,7 +2235,11 @@ Examples:
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\nDone in ${elapsed}s — ${results.success.length} ingested, ${results.skipped.length} skipped, ${results.failed.length} failed`);
+    if (results.queued.length) {
+      console.log(`\nQueued ${results.queued.length} document${results.queued.length === 1 ? '' : 's'} for background ingestion (${results.failed.length} failed). Run \`sigil status\` to watch the graph grow.`);
+    } else {
+      console.log(`\nDone in ${elapsed}s — ${results.success.length} ingested, ${results.skipped.length} skipped, ${results.failed.length} failed`);
+    }
 
     if (results.success.length > 0) {
       await client.call('refreshContext', {}).catch(() => {});
@@ -2071,7 +2248,7 @@ Examples:
     await client.close();
   }
 
-  if (results.failed.length && !results.success.length) process.exit(1);
+  if (results.failed.length && !results.success.length && !results.queued.length) process.exit(1);
 }
 
 // ─── Search ──────────────────────────────────────────────────────────────────

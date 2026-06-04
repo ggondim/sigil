@@ -18,6 +18,7 @@ import { registerGetPod } from './get-pod.js';
 import { registerListPods } from './list-pods.js';
 import { registerIngestDoc } from './ingest-doc.js';
 import { registerListFacts } from './list-facts.js';
+import { registerGraphSnapshot } from './graph-snapshot.js';
 import { registerForgetFact } from './forget-fact.js';
 import { registerRefreshContext } from './refresh-context.js';
 import { registerTestDbConnection } from './test-db-connection.js';
@@ -47,6 +48,7 @@ export function registerAll(registry, { startedAt }) {
   registerListPods(registry);
   registerIngestDoc(registry);
   registerListFacts(registry);
+  registerGraphSnapshot(registry);
   registerForgetFact(registry);
   registerRefreshContext(registry);
   registerTestDbConnection(registry);

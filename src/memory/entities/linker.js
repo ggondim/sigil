@@ -1,12 +1,8 @@
-import path from 'node:path';
-
-import { resolveEntity, resolveTopicsFromFacts } from './resolver.js';
+import { resolveEntity } from './resolver.js';
 import { createRelation } from './relations.js';
+import { extractAndResolveGraph } from './graph-extractor.js';
 import { linkEntitiesToFact } from '../facts/entity-linker.js';
-import { PROMPTS_DIR } from '../../lib/paths.js';
 import cortexDb from '../../db/cortex.js';
-
-const ENTITY_PROMPT = path.join(PROMPTS_DIR, 'entity-extraction.md');
 
 /**
  * Orchestrates entity linking for a document ingestion.
@@ -85,14 +81,13 @@ async function linkCustomEntities({ entityDefs, factObjects, firstFactId, namesp
     if (!source || !target) continue;
 
     const relFact = findFactMentioning(factObjects, rel.source) || findFactMentioning(factObjects, rel.target);
-    await createRelation({
+    relationCount += await safeCreateRelation({
       sourceId: source.id,
       targetId: target.id,
       relationType: rel.type,
       sourceFactId: relFact?.id || firstFactId,
       validAt: today,
     });
-    relationCount++;
   }
 
   // Widen with any pod-backed entities (person pods) the facts also mention,
@@ -126,9 +121,10 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
     // every thought-route fact orphaned in fact_entity. Renames in
     // particular relied on these links being present so that the renamed
     // entity's UUID still points at the historical text.)
-    const topics = factObjects.length
-      ? await resolveTopicsFromFacts(factObjects, { promptPath: ENTITY_PROMPT, namespace })
-      : [];
+    const graph = factObjects.length
+      ? await extractAndResolveGraph(factObjects, { namespace, today })
+      : { entities: [], relationCount: 0 };
+    const topics = graph.entities;
 
     const podEntities = await findMentionedPodEntities(factObjects, namespace);
     const allEntities = mergeUniqueById(topics, podEntities);
@@ -144,7 +140,7 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
 
     return {
       entityCount: allEntities.length,
-      relationCount: 0,
+      relationCount: graph.relationCount,
       factEntityLinks,
       topics: topics.map((e) => e.name),
     };
@@ -171,33 +167,32 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
     });
   }
 
-  const topics = factObjects.length
-    ? await resolveTopicsFromFacts(factObjects, { promptPath: ENTITY_PROMPT, namespace })
-    : [];
+  const graph = factObjects.length
+    ? await extractAndResolveGraph(factObjects, { namespace, today })
+    : { entities: [], relationCount: 0 };
+  const topics = graph.entities;
 
-  let relationCount = 0;
+  let relationCount = graph.relationCount;
 
   if (authorEntity) {
-    await createRelation({
+    relationCount += await safeCreateRelation({
       sourceId: docEntity.id,
       targetId: authorEntity.id,
       relationType: 'AUTHORED_BY',
       sourceFactId: firstFactId,
       validAt: today,
     });
-    relationCount++;
   }
 
   for (const topic of topics) {
     const topicFact = findFactMentioning(factObjects, topic.name);
-    await createRelation({
+    relationCount += await safeCreateRelation({
       sourceId: docEntity.id,
       targetId: topic.id,
       relationType: 'COVERS',
       sourceFactId: topicFact?.id || firstFactId,
       validAt: today,
     });
-    relationCount++;
   }
 
   const declaredEntities = [docEntity, authorEntity, ...topics].filter(Boolean);
@@ -219,6 +214,20 @@ async function linkDefaultEntities({ title, sourceType, metadata, factObjects, f
     factEntityLinks,
     topics: topics.map((t) => t.name),
   };
+}
+
+// Best-effort relation insert. A structural edge that fails (e.g. a transient
+// FK race when a concurrent ingest merges one of the endpoint entities) must
+// not abort the rest of the linking — graph enrichment is additive. Returns 1
+// on success, 0 on failure, so callers can accumulate the count.
+async function safeCreateRelation(spec) {
+  try {
+    await createRelation(spec);
+    return 1;
+  } catch (err) {
+    console.error(`[linker] relation failed (${spec.relationType}): ${err.message}`);
+    return 0;
+  }
 }
 
 function findFactMentioning(facts, term) {

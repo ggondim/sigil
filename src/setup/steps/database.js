@@ -14,6 +14,7 @@
  * choice (+ confirm popup for external), then apply() runs one linear path.
  */
 import { detectDatabase } from '../db/detect.js';
+import { provisionEmbedded } from '../db/embedded.js';
 import { provisionLocal } from '../db/local.js';
 import { provisionDocker } from '../db/docker.js';
 import { provisionExternal } from '../db/external.js';
@@ -26,8 +27,8 @@ export const detect = detectDatabase;
 
 export function validate(input = {}) {
   const errors = {};
-  if (!['local', 'docker', 'url'].includes(input.mode)) {
-    errors.mode = 'choose one of: local, docker, url';
+  if (!['embedded', 'local', 'docker', 'url'].includes(input.mode)) {
+    errors.mode = 'choose one of: embedded, local, docker, url';
   }
   if (input.mode === 'url' && !input.url) errors.url = 'a connection string is required';
   if (input.mode === 'local' && input.action && !['connect', 'start'].includes(input.action)) {
@@ -44,6 +45,7 @@ export async function apply(input = {}, emit = () => {}) {
   const v = validate(input);
   if (!v.ok) throw new StepError({ message: `Invalid database input: ${JSON.stringify(v.errors)}`, kind: 'other' });
 
+  if (input.mode === 'embedded') return provisionEmbedded(input, emit);
   if (input.mode === 'local') return provisionLocal(input, emit);
   if (input.mode === 'docker') return provisionDocker(input, emit);
   return provisionExternal(input, emit);

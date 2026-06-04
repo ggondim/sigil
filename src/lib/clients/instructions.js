@@ -16,11 +16,9 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
-import { execSync } from 'node:child_process';
 
 import { safeWrite } from '../safe-write.js';
-import { PKG_ROOT } from '../paths.js';
+import { LAUNCHER_SHIM_PATH, writeLauncherShim } from './shim.js';
 
 const SIGIL_HOME = join(homedir(), '.sigil');
 const SHARED_INSTRUCTIONS_PATH = join(SIGIL_HOME, 'CLAUDE.md');
@@ -30,34 +28,23 @@ const SHARED_INSTRUCTIONS_PATH = join(SIGIL_HOME, 'CLAUDE.md');
 // top of the generated block; writeSharedInstructions() compares against it so
 // upgrades actually land (the old `includes('## Memory (Sigil)')` guard locked
 // the file forever after the first write).
-const INSTRUCTIONS_VERSION = 3;
+const INSTRUCTIONS_VERSION = 4;
 const VERSION_MARKER = `<!-- sigil-instructions:v${INSTRUCTIONS_VERSION} -->`;
 const CONTEXT_MARKER = '<!-- sigil-context -->';
 
 // Resolves the command an agent should use to call sigil from a Bash tool.
 // Agent runtimes (Claude Code, Cursor, Codex) often spawn shells without the
 // user's interactive PATH (no nvm / brew / fnm), so a bare `sigil` reference
-// fails with "command not found." Bake the absolute install path into the
-// instructions at write time so every call from the model lands a real binary.
+// fails with "command not found."
 //
-// Detection order:
-//   1. `which sigil` — finds the installed bin symlink (preferred — uses
-//      the user's regular shell PATH at the moment init runs).
-//   2. `process.argv[1]` — the path to the running CLI script. Always
-//      absolute, executable via shebang.
+// We no longer bake the *package* path (which sigil / dist/cli.js) — that path
+// moves on every Node version switch or reinstall and silently breaks the
+// instructions. Instead we point at the STABLE launcher shim at
+// ~/.sigil/bin/sigil, which never moves and re-resolves the real binary at
+// runtime (see shim.js). writeSharedInstructions() guarantees the shim exists
+// before this path is written into any agent's config.
 function resolveSigilInvocation() {
-  try {
-    const path = execSync('which sigil', { stdio: ['pipe', 'pipe', 'ignore'] })
-      .toString().trim();
-    if (path) return path;
-  } catch { /* not on PATH from this shell — fall through */ }
-  // Fallback: the packaged CLI entry. NOT process.argv[1] — when init runs
-  // from inside the daemon process, argv[1] is dist/daemon.js, which would
-  // bake a non-CLI path into every agent's instructions. PKG_ROOT is
-  // bundle-safe, so this resolves to the real `sigil` CLI in both source and
-  // installed layouts.
-  const cliEntry = join(PKG_ROOT, 'dist', 'cli.js');
-  return existsSync(cliEntry) ? cliEntry : process.argv[1];
+  return LAUNCHER_SHIM_PATH;
 }
 
 function buildSharedInstructions({ sigilCmd, transport = 'hooks' } = {}) {
@@ -131,7 +118,7 @@ When you do save, batch facts into ONE call (separate quoted arguments), use \`-
 ! ${cmd} remember --bg "User prefers tabs over spaces" "Project uses Postgres 15"
 \`\`\`
 
-The absolute path above is baked in by \`sigil init\` so the command works regardless of which shell PATH the agent's Bash subprocess inherits. Re-run \`sigil init\` to refresh after moving machines or reinstalling.
+The launcher above (\`~/.sigil/bin/sigil\`) is a stable shim written by \`sigil init\`; it resolves the real binary at runtime, so it keeps working across Node version switches and reinstalls without the agent's Bash PATH. Re-run \`sigil init\` only if you move the install to a new path.
 
 ### Rules
 
@@ -187,6 +174,10 @@ async function writeSharedInstructions({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
 
   if (!dryRun) await fs.mkdir(SIGIL_HOME, { recursive: true });
+
+  // The instructions reference ~/.sigil/bin/sigil — make sure that shim exists
+  // before we write a file that tells the agent to run it. Idempotent.
+  await writeLauncherShim({ dryRun });
 
   let existing = '';
   try {

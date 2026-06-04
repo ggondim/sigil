@@ -17,7 +17,7 @@ import config from '../../../config.js';
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
-async function chat(input, { model, jsonMode = false } = {}) {
+async function chat(input, { model, jsonMode = false, schema = null } = {}) {
   const resolved = model || config.llm.openrouterModel;
   if (!config.llm.openrouterApiKey) {
     throw new Error('OPENROUTER_API_KEY is not set');
@@ -32,7 +32,14 @@ async function chat(input, { model, jsonMode = false } = {}) {
   }
 
   const body = { model: resolved, messages };
-  if (jsonMode) body.response_format = { type: 'json_object' };
+  // Schema-constrained structured output forces the exact response shape — far
+  // more reliable on small models than free-form json_object mode. OpenRouter
+  // proxies this to providers that support it and emulates it for others.
+  if (schema) {
+    body.response_format = { type: 'json_schema', json_schema: { name: 'sigil_response', strict: true, schema } };
+  } else if (jsonMode) {
+    body.response_format = { type: 'json_object' };
+  }
 
   const baseUrl = (config.llm.openrouterBaseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
   const headers = {

@@ -17,18 +17,12 @@ import { existsSync } from 'node:fs';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
-import { PKG_ROOT } from '../paths.js';
 import { writeSharedInstructions, SHARED_INSTRUCTIONS_PATH } from './instructions.js';
+import { HOOK_SHIM_PATH, writeLauncherShim } from './shim.js';
 
 const CLAUDE_HOME = join(homedir(), '.claude');
 const CLAUDE_MD_PATH = join(CLAUDE_HOME, 'CLAUDE.md');
 const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, 'settings.json');
-
-// Package root — bundle-safe (walks up to package.json), so hook paths are
-// correct whether this module runs from source (src/lib/clients/) or bundled
-// into dist/daemon.js. A naive dirname-walk overshoots when bundled and wrote
-// broken hook commands like /Users/you/Drive/src/hooks/... → MODULE_NOT_FOUND.
-const PKG_DIR = PKG_ROOT;
 
 const meta = {
   id: 'claude-code',
@@ -69,12 +63,15 @@ async function writeImportLine({ dryRun = false } = {}) {
 
 // Merges Sigil's 4 hook entries into ~/.claude/settings.json.
 //
-// Hook scripts ship in two places:
-//   - src/hooks/*.js   when running from source
-//   - dist/hooks/*.js  when running from the published binary
-// We prefer dist/ if present so installed users get the bundled scripts.
+// Hook commands invoke the STABLE hook shim (~/.sigil/bin/sigil-hook <name>)
+// rather than `node /abs/path/dist/hooks/<name>.js`. The shim path never moves,
+// so a Node version switch or reinstall can't leave settings.json pointing at a
+// dead path; the shim re-resolves the real script at runtime and fails safe if
+// it can't (see shim.js). We ensure the shim exists before referencing it.
 async function mergeHooks({ dryRun = false } = {}) {
   const fs = await import('node:fs/promises');
+
+  await writeLauncherShim({ dryRun });
 
   let settings = {};
   try {
@@ -82,15 +79,14 @@ async function mergeHooks({ dryRun = false } = {}) {
     settings = JSON.parse(raw);
   } catch { /* file doesn't exist or invalid — start fresh */ }
 
-  const srcHooks = join(PKG_DIR, 'src', 'hooks');
-  const distHooks = join(PKG_DIR, 'dist', 'hooks');
-  const hookDir = existsSync(distHooks) ? distHooks : srcHooks;
+  // Quote the shim path so a homedir with spaces still parses as one argument.
+  const hook = (name) => `'${HOOK_SHIM_PATH}' ${name}`;
 
   const sigilHooks = {
     UserPromptSubmit: {
       hooks: [{
         type: 'command',
-        command: `node ${join(hookDir, 'user-prompt-submit.js')}`,
+        command: hook('user-prompt-submit'),
         timeout: 10,
         statusMessage: 'Searching memory...',
       }],
@@ -99,7 +95,7 @@ async function mergeHooks({ dryRun = false } = {}) {
       matcher: 'Edit|Write|Bash',
       hooks: [{
         type: 'command',
-        command: `node ${join(hookDir, 'post-tool-use.js')}`,
+        command: hook('post-tool-use'),
         timeout: 10,
         async: true,
       }],
@@ -107,7 +103,7 @@ async function mergeHooks({ dryRun = false } = {}) {
     Stop: {
       hooks: [{
         type: 'command',
-        command: `node ${join(hookDir, 'stop.js')}`,
+        command: hook('stop'),
         timeout: 30,
         async: true,
       }],
@@ -115,7 +111,7 @@ async function mergeHooks({ dryRun = false } = {}) {
     SessionEnd: {
       hooks: [{
         type: 'command',
-        command: `node ${join(hookDir, 'session-end.js')}`,
+        command: hook('session-end'),
         timeout: 10,
         async: true,
       }],
@@ -125,11 +121,11 @@ async function mergeHooks({ dryRun = false } = {}) {
   const existedBefore = existsSync(CLAUDE_SETTINGS_PATH);
   settings.hooks = settings.hooks || {};
 
-  // Recognise prior Sigil hooks by their script filename — robust against
-  // varying install paths (some users have the binary under /cortex/,
-  // others /sigil/, others /opt/, ...). Filtering by literal "sigil" in
-  // the path missed installs whose path didn't contain it — causing every
-  // re-run of sigil init to APPEND a duplicate hook entry.
+  // Recognise prior Sigil hooks so re-running init REPLACES them instead of
+  // appending a duplicate. Matches both forms:
+  //   - new: `'~/.sigil/bin/sigil-hook' stop`   (the stable shim)
+  //   - old: `node /abs/path/dist/hooks/stop.js` (legacy baked path)
+  // Filename matching is robust against varying install paths.
   const SIGIL_HOOK_FILES = [
     'user-prompt-submit.js',
     'stop.js',
@@ -137,7 +133,9 @@ async function mergeHooks({ dryRun = false } = {}) {
     'session-end.js',
   ];
   const isSigilHook = (cmd) =>
-    typeof cmd === 'string' && SIGIL_HOOK_FILES.some((fn) => cmd.endsWith(fn) || cmd.includes(`/${fn}`));
+    typeof cmd === 'string'
+    && (cmd.includes('sigil-hook')
+      || SIGIL_HOOK_FILES.some((fn) => cmd.endsWith(fn) || cmd.includes(`/${fn}`)));
 
   for (const [event, entry] of Object.entries(sigilHooks)) {
     const existing = settings.hooks[event] || [];
@@ -211,12 +209,15 @@ async function verify({ deep = false } = {}) {
   const HOOK_FILES = ['user-prompt-submit.js', 'post-tool-use.js', 'stop.js', 'session-end.js'];
   const required = ['UserPromptSubmit', 'PostToolUse', 'Stop', 'SessionEnd'];
 
-  // Find the command string registered for an event, if any.
+  // Find the command string registered for an event, if any. Recognises both
+  // the new shim form (`'~/.sigil/bin/sigil-hook' stop`) and the legacy
+  // `node /abs/.../stop.js` form.
   const findHookCommand = (event) => {
     for (const h of hooks[event] || []) {
       for (const inner of h.hooks || []) {
         if (typeof inner.command === 'string'
-          && HOOK_FILES.some((fn) => inner.command.includes(fn))) {
+          && (inner.command.includes('sigil-hook')
+            || HOOK_FILES.some((fn) => inner.command.includes(fn)))) {
           return inner.command;
         }
       }
@@ -229,12 +230,19 @@ async function verify({ deep = false } = {}) {
     return { installed: false, reason: `hooks missing: ${missing.join(', ')}` };
   }
 
-  // Registered isn't enough — the hook file must exist on disk. A moved or
-  // reinstalled repo leaves settings.json pointing at a stale path; without
-  // this check `sigil doctor` reports a false green while every hook silently
-  // fails with MODULE_NOT_FOUND.
+  // Registered isn't enough — the hook must be reachable on disk. A moved or
+  // reinstalled repo could leave settings.json pointing at a stale path;
+  // without this check `sigil doctor` reports a false green while every hook
+  // silently fails. Shim form: the shim file must exist (it self-heals/fails
+  // safe at runtime). Legacy form: the .js script must exist.
   for (const event of required) {
     const cmd = findHookCommand(event);
+    if (cmd.includes('sigil-hook')) {
+      if (!existsSync(HOOK_SHIM_PATH)) {
+        return { installed: false, reason: `hook launcher missing: ${HOOK_SHIM_PATH} (run \`sigil init\`)` };
+      }
+      continue;
+    }
     const pathMatch = cmd.match(/(\/[^\s"']+\.js)/);
     if (pathMatch && !existsSync(pathMatch[1])) {
       return { installed: false, reason: `hook file missing on disk: ${pathMatch[1]} (run \`sigil init\`)` };
@@ -287,7 +295,9 @@ async function uninstall({ dryRun = false } = {}) {
     }
     const SIGIL_HOOK_FILES = ['user-prompt-submit.js', 'stop.js', 'post-tool-use.js', 'session-end.js'];
     const isSigilHook = (cmd) =>
-      typeof cmd === 'string' && SIGIL_HOOK_FILES.some((fn) => cmd.endsWith(fn) || cmd.includes(`/${fn}`));
+      typeof cmd === 'string'
+      && (cmd.includes('sigil-hook')
+        || SIGIL_HOOK_FILES.some((fn) => cmd.endsWith(fn) || cmd.includes(`/${fn}`)));
 
     let touched = false;
     for (const event of Object.keys(settings.hooks || {})) {

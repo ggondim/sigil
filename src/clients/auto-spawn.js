@@ -28,15 +28,16 @@ const POLL_INTERVAL_MAX_MS = 400;
  *      to appear and accept a 'ping'.
  *   3. Cap the total wait at READY_TIMEOUT_MS.
  */
-export async function connectOrStartDaemon({ quiet = false } = {}) {
+export async function connectOrStartDaemon({ quiet = false, timeoutMs } = {}) {
+  const opts = timeoutMs ? { timeoutMs } : undefined;
   if (await canConnect()) {
-    return openSocketClient();
+    return openSocketClient(opts);
   }
 
   if (!quiet) process.stderr.write('[sigil] daemon not running, starting it...\n');
   await spawnDaemon();
   await waitForReady();
-  return openSocketClient();
+  return openSocketClient(opts);
 }
 
 async function canConnect() {

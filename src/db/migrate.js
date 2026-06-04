@@ -42,3 +42,25 @@ export async function runMigrationsOn(spec) {
     await knex.destroy();
   }
 }
+
+/**
+ * Run migrations against the in-process PGlite engine (embedded mode).
+ *
+ * Deliberately does NOT destroy() the knex instance: PGlite is a process-wide
+ * singleton (src/db/pglite-adapter.js) shared with the daemon's cortex pool, and
+ * destroy() would close it and break every later query. PGlite flushes to disk
+ * on write and is released on process exit. pool.max:1 because PGlite is
+ * single-connection — a larger pool just multiplexes onto the one engine.
+ *
+ * @returns {Promise<{ batchNo: number, ran: string[] }>}
+ */
+export async function migrateEmbedded() {
+  const { ClientPGlite, PGLITE_DB_PATH } = await import('./pglite-adapter.js');
+  const knex = knexFactory({
+    client: ClientPGlite,
+    connection: { pglitePath: PGLITE_DB_PATH },
+    pool: { min: 1, max: 1 },
+  });
+  const [batchNo, ran] = await knex.migrate.latest({ directory: MIGRATIONS_DIR });
+  return { batchNo, ran };
+}

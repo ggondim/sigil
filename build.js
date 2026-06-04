@@ -20,10 +20,14 @@ const DIST = 'dist';
 const EXTERNAL = [
   'knex',                      // dynamic migration loading
   'pg',                        // native bindings
+  '@electric-sql/pglite',      // embedded engine — WASM, dynamically imported
+  '@electric-sql/pglite/vector',
+  '@electric-sql/pglite/contrib/pg_trgm',
   '@anthropic-ai/sdk',         // dynamic import, heavy
   '@modelcontextprotocol/sdk', // MCP protocol
   '@modelcontextprotocol/sdk/server/mcp.js',
   '@modelcontextprotocol/sdk/server/stdio.js',
+  '@modelcontextprotocol/sdk/server/streamableHttp.js',
   'dotenv',                    // light, better to externalize for config flexibility
   'ws',                        // WebSocket — bufferutil/utf-8-validate optional natives
   '@number0/iroh',             // Iroh NAPI binding — prebuilt native, must be external

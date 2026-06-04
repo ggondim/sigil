@@ -24,7 +24,7 @@ import { EMBEDDING_DIM } from '../lib/constants.js';
 
 export const CONFIG_SCHEMA_VERSION = 1;
 
-const DB_MODES = ['local', 'docker', 'url'];
+const DB_MODES = ['embedded', 'local', 'docker', 'url'];
 const STEP_STATUSES = ['pending', 'active', 'done', 'error'];
 
 /**
@@ -37,7 +37,7 @@ function defaults() {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     device: { id: null },
     database: {
-      mode: null,            // 'local' | 'docker' | 'url'
+      mode: null,            // 'embedded' | 'local' | 'docker' | 'url'
       url: null,
       host: 'localhost',
       port: 5432,

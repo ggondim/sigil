@@ -64,7 +64,9 @@ export function openSocketClient({ path = SIGIL_DAEMON_SOCK, timeoutMs = 30_000 
       closed = true;
       for (const [, entry] of pending) {
         clearTimeout(entry.timer);
-        entry.reject(new Error('daemon connection closed'));
+        const e = new Error('daemon connection closed');
+        e.code = 'ECLOSED';
+        entry.reject(e);
       }
       pending.clear();
     });
@@ -74,7 +76,15 @@ export function openSocketClient({ path = SIGIL_DAEMON_SOCK, timeoutMs = 30_000 
     function makeApi() {
       return {
         call(method, params) {
-          if (closed) return Promise.reject(new Error('client is closed'));
+          if (closed) {
+            // Stamp a transport code so callers (e.g. the MCP daemon-call
+            // reconnect path) can detect a stale-closed client and reconnect,
+            // rather than surfacing "client is closed" to the user. This fires
+            // when the daemon restarted out from under a long-lived client.
+            const e = new Error('client is closed');
+            e.code = 'ECLOSED';
+            return Promise.reject(e);
+          }
           const id = randomUUID();
           // Carry agent provenance ('claude-code' / 'codex' / 'cursor' / 'mcp'
           // / 'cli') so the daemon can stamp created_by_agent. Set per entry

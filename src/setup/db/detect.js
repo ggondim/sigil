@@ -32,6 +32,7 @@ async function probeLocalServer(host, port, user) {
 
 /**
  * @returns {Promise<{
+ *   embedded: { available:boolean },
  *   local: { installed:boolean, running:boolean, host:string, port:number,
  *            version:string|null, adminUser:string, pgvectorAvailable:boolean },
  *   docker: { available:boolean, version:string|null, reason:string|null },
@@ -66,5 +67,8 @@ export async function detectDatabase() {
   }
 
   const docker = await detectDocker();
-  return { local, docker };
+  // Embedded (PGlite) is always available — it's an in-process WASM engine with
+  // no host prerequisites. Reported so the UI can render it data-driven.
+  const embedded = { available: true };
+  return { embedded, local, docker };
 }

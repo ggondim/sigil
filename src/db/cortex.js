@@ -6,14 +6,19 @@ import { selectDriver } from './drivers/index.js';
 const driver = selectDriver(config);
 
 const cortexDb = knex({
-  client: 'pg',
+  // 'pg' for server-backed Postgres (url/local/docker), or the ClientPGlite
+  // dialect class for the in-process embedded engine.
+  client: driver.client || 'pg',
   connection: driver.connection,
   pool: {
     // min:0 — hooks are short-lived processes (open pool, do one query, exit).
     // The old min:2 forced two eager connections on every hook invocation and
     // kept them alive, wasting Postgres backends for a 10ms task.
     min: 0,
-    max: 10,
+    // Embedded PGlite is single-connection (one in-process engine): a larger
+    // pool only multiplexes onto the same engine and serializes anyway, so cap
+    // at 1 to avoid tarn handing out "extra" connections that all contend.
+    max: driver.kind === 'embedded' ? 1 : 10,
     // Don't hang forever when Postgres is down or saturated — fail fast so the
     // caller (hook/daemon) surfaces a clear error instead of blocking. tarn's
     // defaults are 30s; 10s is plenty for a local/cloud Postgres.

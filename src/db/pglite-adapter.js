@@ -7,23 +7,29 @@
  */
 
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
+
+import { SIGIL_DB_PATH } from '../lib/paths.js';
 
 const _require = createRequire(import.meta.url);
 const ClientPG = _require('knex/lib/dialects/postgres/index.js');
 
-export const PGLITE_DB_PATH = process.env.SIGIL_PGLITE_PATH || join(homedir(), '.sigil', 'db');
+// In-process PGlite data directory (~/.sigil/db). Override with SIGIL_PGLITE_PATH.
+export const PGLITE_DB_PATH = process.env.SIGIL_PGLITE_PATH || SIGIL_DB_PATH;
 
 let pgliteInstance = null;
 
 async function getPGlite(dbPath) {
   if (!pgliteInstance) {
     const { PGlite } = await import('@electric-sql/pglite');
+    // Every extension Sigil's migrations CREATE must be registered here, or
+    // `CREATE EXTENSION` fails ("control file not found"). Keep in sync with
+    // `grep -ri 'create extension' src/db/migrations`: currently vector
+    // (pgvector — embeddings) and pg_trgm (entity-name trigram index).
     const { vector } = await import('@electric-sql/pglite/vector');
+    const { pg_trgm } = await import('@electric-sql/pglite/contrib/pg_trgm');
     mkdirSync(dbPath, { recursive: true });
-    pgliteInstance = new PGlite(`file://${dbPath}`, { extensions: { vector } });
+    pgliteInstance = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } });
     await pgliteInstance.waitReady;
   }
   return pgliteInstance;
