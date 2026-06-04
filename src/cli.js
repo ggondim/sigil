@@ -1781,14 +1781,26 @@ Usage:
   echo "fact" | sigil remember           Read fact from stdin
   sigil remember --bg "fact1" "fact2"    Save in background (returns immediately)
 
+Options:
+  --namespace=<ns>   Target namespace (default: from config / DEFAULT_NAMESPACE)
+  --bg               Save in background and return immediately
+
 Examples:
   sigil remember "I prefer tabs over spaces"
   sigil remember "Uses React" "Prefers TypeScript" "Deadline is April 20"
-  sigil remember --bg "user likes dark mode" "project uses Postgres"`);
+  sigil remember --bg "user likes dark mode" "project uses Postgres"
+  sigil remember --namespace=hermes-cli "agent decided to use Postgres LISTEN/NOTIFY"`);
     process.exit(0);
   }
 
   const background = flags.includes('--bg') || flags.includes('--background');
+
+  // Target namespace. The daemon resolves `params.namespace || config.defaults.namespace`,
+  // so an absent flag falls back to the daemon's default. Passing it here is the ONLY way
+  // an external caller (e.g. the Hermes SigilProvider) can steer the write namespace — the
+  // persistent daemon already resolved its own DEFAULT_NAMESPACE at startup, so injecting
+  // DEFAULT_NAMESPACE into this subprocess's env has no effect on the daemon.
+  const namespace = flags.find((f) => f.startsWith('--namespace='))?.split('=')[1] || undefined;
 
   // Collect facts: each positional arg is a separate fact
   let facts = textArgs.filter(Boolean);
@@ -1812,9 +1824,15 @@ Examples:
     // daemon process anyway (the detached child just sends the RPC and
     // exits once the call resolves).
     const { spawn } = await import('node:child_process');
+    // Forward all passthrough flags except the backgrounding flags themselves, then the
+    // RESOLVED facts (which may have come from stdin, not argv). Forwarding the whole flag
+    // set — not just facts — means --namespace (and any future flag) survives the detached
+    // re-exec; the old `['remember', ...facts]` silently dropped every flag. See
+    // buildRememberRespawnArgs (unit-tested) for the exact contract.
+    const { buildRememberRespawnArgs } = await import('./cli-handlers/remember-args.js');
     const child = spawn(
       process.execPath,
-      [process.argv[1], 'remember', ...facts],
+      [process.argv[1], ...buildRememberRespawnArgs(flags, facts)],
       { detached: true, stdio: 'ignore', env: { ...process.env } },
     );
     child.unref();
@@ -1825,7 +1843,7 @@ Examples:
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
-    const { data } = await client.call('remember', { facts });
+    const { data } = await client.call('remember', { facts, namespace });
     const parts = [];
     if (data.added)        parts.push(`${data.added} new`);
     if (data.updated)      parts.push(`${data.updated} updated`);
