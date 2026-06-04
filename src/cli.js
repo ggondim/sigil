@@ -76,13 +76,12 @@ if (command === '--help' || command === '-h') {
   process.exit(0);
 }
 
-// Zero-arg launch: start the daemon (auto-spawn if needed) and open the
-// browser at the GUI URL. This is the "npx sigil" UX — one command and
-// you land on the onboarding wizard.
-if (!command) {
-  await launchAndOpenBrowser();
-  process.exit(0);
-}
+// Zero-arg launch ("npx sigil") is dispatched below through the same
+// diagnostic try/catch as every other command — see the `handler` resolution
+// near the bottom. Running it here, at module top level, used to put the
+// daemon-spawn call OUTSIDE that catch: a startup timeout surfaced as a raw
+// unhandled-rejection dump (a code-frame from the minified bundle) instead of
+// an actionable message.
 
 async function launchAndOpenBrowser() {
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
@@ -196,7 +195,10 @@ async function runSetupVerb(args) {
   return runSetup(args);
 }
 
-const handler = commands[command];
+// Zero-arg → the launch-and-open-browser flow; otherwise a named command.
+const handler = command
+  ? commands[command]
+  : async () => { await launchAndOpenBrowser(); process.exit(0); };
 if (!handler) {
   console.error(`Unknown command: ${command}\n`);
   console.log(HELP);
@@ -257,6 +259,18 @@ try {
     console.error('credentials once to update the sigil_app user), or edit ~/.sigil/.env manually.');
     console.error('');
     console.error('Underlying error: ' + msg.split('\n')[0]);
+    process.exit(1);
+  }
+
+  if (/daemon did not become ready/i.test(msg)) {
+    // waitForReady already enriches this with the tail of sigild.log (see
+    // auto-spawn.js). Print it verbatim — the log tail is the actionable part —
+    // without the bundle's raw stack/code-frame noise.
+    console.error(`Error: ${msg}`);
+    console.error('');
+    console.error('If the log shows "already running", a stale pidfile from a prior crash is');
+    console.error('blocking startup. Clear it and retry:');
+    console.error('  rm -f ~/.sigil/sigild.pid ~/.sigil/sock ~/.sigil/heartbeat.json');
     process.exit(1);
   }
 

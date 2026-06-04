@@ -44,14 +44,25 @@ export async function removeSocketFile() {
   try { await unlink(SIGIL_DAEMON_SOCK); } catch { /* missing is fine */ }
 }
 
-/** Best-effort read of the heartbeat pid (the most accurate "who's serving"). */
-async function readHeartbeatPid() {
+// The daemon refreshes heartbeat.json every 15s. Treat a heartbeat as stale
+// after three missed beats — long enough to absorb scheduling jitter / a busy
+// event loop, short enough that a recycled PID can't masquerade as live for
+// long.
+const HEARTBEAT_STALE_MS = 45_000;
+
+/** Best-effort read of the full heartbeat record ({ pid, ts, ... }). */
+async function readHeartbeat() {
   try {
-    const hb = JSON.parse(await readFile(SIGIL_HEARTBEAT, 'utf8'));
-    return Number.isFinite(hb?.pid) ? hb.pid : null;
+    return JSON.parse(await readFile(SIGIL_HEARTBEAT, 'utf8'));
   } catch {
     return null;
   }
+}
+
+/** Best-effort read of the heartbeat pid (the most accurate "who's serving"). */
+async function readHeartbeatPid() {
+  const hb = await readHeartbeat();
+  return Number.isFinite(hb?.pid) ? hb.pid : null;
 }
 
 /**
@@ -83,25 +94,42 @@ async function isHttpDaemonServing() {
  * Returns the live daemon PID if one is running, otherwise null and cleans
  * up any stale pid/socket files. Call this before starting a new daemon.
  *
- * Checks two independent signals so we never start a second daemon that
- * steals the Unix socket but can't bind the HTTP port (the split-brain that
- * leaves the GUI talking to a daemon with a stale auth token):
- *   1. the pidfile names a live process, OR
- *   2. something answers /healthz on the configured HTTP port.
+ * A live PID is NOT sufficient on its own: `process.kill(pid, 0)` only proves
+ * *some* process owns that PID, not that it's our daemon. After a hard kill or
+ * a reboot the pidfile can name a recycled PID now held by an unrelated process
+ * (or, via the EPERM branch in isPidAlive, another user's process) — which used
+ * to make the booting daemon declare itself a duplicate and exit without ever
+ * binding its socket, leaving the CLI to time out. So we corroborate liveness
+ * with two daemon-specific signals:
+ *   1. a fresh heartbeat.json whose pid matches the pidfile, OR
+ *   2. something answers /healthz on the configured HTTP port (authoritative —
+ *      the TCP bind is exclusive, so the port can't be silently stolen).
+ * Only then is the slot considered occupied; otherwise we clean up the stale
+ * pid/socket so a fresh start can succeed.
  */
 export async function detectRunningDaemon() {
   const pid = await readPidFile();
-  if (pid && isPidAlive(pid)) return pid;
 
-  // Pidfile didn't name a live process — but a daemon started outside this
-  // pidfile may still be serving. Probe the port before declaring the slot
-  // free; if it answers, leave the socket/pidfile untouched (they're the
-  // incumbent's) and report the real pid from the heartbeat when we can.
+  // A live PID only counts as *our* daemon if a fresh heartbeat confirms it.
+  if (pid && isPidAlive(pid)) {
+    const hb = await readHeartbeat();
+    const fresh = hb && Number.isFinite(hb.ts) && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS;
+    if (fresh && hb.pid === pid) return pid;
+    // Live PID but no matching fresh heartbeat: either a recycled/unrelated PID
+    // or a daemon mid-boot before its first heartbeat. Fall through to the
+    // authoritative port probe rather than trusting the PID alone.
+  }
+
+  // The /healthz probe is the trustworthy signal: a daemon started outside this
+  // pidfile may still be serving, and the port can't be silently stolen. If it
+  // answers, leave the socket/pidfile untouched (they're the incumbent's) and
+  // report the real pid from the heartbeat when we can.
   if (await isHttpDaemonServing()) {
     return (await readHeartbeatPid()) ?? 'unknown';
   }
 
-  // Genuinely stale — clean up so a fresh start succeeds.
+  // Genuinely stale (no live+confirmed PID, nothing serving) — clean up so a
+  // fresh start succeeds.
   if (pid) await removePidFile();
   if (existsSync(SIGIL_DAEMON_SOCK)) await removeSocketFile();
   return null;

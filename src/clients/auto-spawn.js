@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, openSync, closeSync, mkdirSync } from 'node:fs';
+import { existsSync, openSync, closeSync, mkdirSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -95,7 +95,25 @@ async function waitForReady() {
     await delay(interval);
     interval = Math.min(interval * 2, POLL_INTERVAL_MAX_MS);
   }
+  // The daemon never bound its socket in time. The actionable part is *why* —
+  // which the daemon wrote to its log right before exiting. Inline the tail so
+  // the caller sees the real cause ("already running", a bind error, a stack)
+  // instead of having to go open the file themselves.
+  const tail = readLogTail(SIGIL_DAEMON_LOG, 12);
+  const suffix = tail
+    ? `\n\n--- ${SIGIL_DAEMON_LOG} (last lines) ---\n${tail}`
+    : ` — check ${SIGIL_DAEMON_LOG}`;
   throw new Error(
-    `daemon did not become ready within ${READY_TIMEOUT_MS}ms — check ${SIGIL_DAEMON_LOG}`,
+    `daemon did not become ready within ${READY_TIMEOUT_MS}ms${suffix}`,
   );
+}
+
+/** Best-effort read of the last `n` non-empty lines of the daemon log. */
+function readLogTail(path, n) {
+  try {
+    const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim());
+    return lines.slice(-n).join('\n');
+  } catch {
+    return ''; // log missing / unreadable — caller falls back to the path.
+  }
 }
