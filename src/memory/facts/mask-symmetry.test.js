@@ -17,10 +17,14 @@ const embedCalls = [];
 const insertedRows = [];
 
 beforeAll(() => {
-  // Capture what the embedder receives.
+  // Capture what the embedder receives. saveFact writes through embedOrThrow
+  // (the guarded EMBEDDING_DIM=1024 boundary), so capture there and emit 1024-d.
+  const capture = (text) => { embedCalls.push(text); return Array(1024).fill(0.01); };
   vi.doMock('../../ingestion/embedder.js', () => ({
-    embed: vi.fn(async (text) => { embedCalls.push(text); return Array(768).fill(0.01); }),
-    embedBatch: vi.fn(async (texts) => texts.map(() => Array(768).fill(0.01))),
+    embed: vi.fn(async (text) => capture(text)),
+    embedBatch: vi.fn(async (texts) => texts.map(capture)),
+    embedOrThrow: vi.fn(async (text) => capture(text)),
+    embedBatchOrThrow: vi.fn(async (texts) => texts.map(capture)),
   }));
   vi.doMock('../../lib/llm.js', () => ({ prompt: vi.fn(), promptJson: vi.fn() }));
 

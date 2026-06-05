@@ -23,6 +23,8 @@ const { mockRaw, mockChain, mockFact } = vi.hoisted(() => {
 vi.mock('../../ingestion/embedder.js', () => ({
   embed: vi.fn(),
   embedBatch: vi.fn(),
+  embedOrThrow: vi.fn(),
+  embedBatchOrThrow: vi.fn(),
 }));
 
 vi.mock('../../lib/llm.js', () => ({
@@ -42,11 +44,13 @@ vi.mock('../../db/cortex.js', () => ({
   }),
 }));
 
-import { embed } from '../../ingestion/embedder.js';
+import { embedOrThrow } from '../../ingestion/embedder.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
 import { saveFact } from './store.js';
 
-const FAKE_VEC = Array(768).fill(0.1);
+// EMBEDDING_DIM is 1024; the precomputed-embedding path serializes through
+// lib/vectors.js, which rejects anything that isn't 1024-d.
+const FAKE_VEC = Array(1024).fill(0.1);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -54,7 +58,7 @@ beforeEach(() => {
   Object.values(mockChain).forEach((fn) => fn.mockReturnValue(mockChain));
   mockChain.returning.mockResolvedValue([mockFact]);
   mockChain.update.mockResolvedValue(1);
-  embed.mockResolvedValue(FAKE_VEC);
+  embedOrThrow.mockResolvedValue(FAKE_VEC);
 });
 
 const baseArgs = {
@@ -87,7 +91,7 @@ describe('saveFact — AUDM decision branches', () => {
   it('uses pre-computed embedding when provided (no embed() call)', async () => {
     mockFindSimilar([]);
     await saveFact({ ...baseArgs, embedding: FAKE_VEC });
-    expect(embed).not.toHaveBeenCalled();
+    expect(embedOrThrow).not.toHaveBeenCalled();
   });
 
   it('similarity >= 0.88 → SKIP without LLM call', async () => {
@@ -102,12 +106,13 @@ describe('saveFact — AUDM decision branches', () => {
     expect(llmPrompt).not.toHaveBeenCalled();
   });
 
-  it('similarity < 0.78 → ADD without LLM call', async () => {
+  it('weak match below the supersede floor → ADD without LLM call', async () => {
+    // findSimilar applies the supersede floor (0.72) in SQL, so a neighbor at
+    // 0.50 is dropped before saveFact ever sees it — the SELECT comes back empty.
+    // No candidate ⇒ ADD, and the AUDM judge (LLM) is never consulted.
     mockRaw
       .mockResolvedValueOnce({ rows: [] }) // SET LOCAL ef_search
-      .mockResolvedValueOnce({
-        rows: [{ id: 2, uid: 'fact-existing', content: 'completely unrelated', similarity: 0.50, status: 'active' }],
-      })
+      .mockResolvedValueOnce({ rows: [] }) // findSimilar SELECT — floor filters out the weak match
       .mockResolvedValueOnce({ rows: [] }); // search_vector update
 
     const result = await saveFact(baseArgs);

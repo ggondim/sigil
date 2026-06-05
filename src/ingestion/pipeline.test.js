@@ -29,13 +29,30 @@ vi.mock('./chunker.js', () => ({
   ]),
 }));
 
-vi.mock('./embedder.js', () => ({
-  embed: vi.fn().mockResolvedValue(Array(768).fill(0.1)),
-  embedBatch: vi.fn().mockResolvedValue([Array(768).fill(0.1), Array(768).fill(0.2)]),
-}));
+// embedder.js exports embed/embedBatch plus the guarded write-path variants
+// embedOrThrow/embedBatchOrThrow (which assert EMBEDDING_DIM=1024). The pipeline
+// writes through *OrThrow, so the mock must expose them and emit 1024-d vectors
+// — one per input, since assertEmbeddings checks vector count == input count.
+vi.mock('./embedder.js', () => {
+  const vec = () => Array(1024).fill(0.1);
+  const batch = (texts) => texts.map(vec);
+  return {
+    embed: vi.fn(async () => vec()),
+    embedBatch: vi.fn(async (texts) => batch(texts)),
+    embedOrThrow: vi.fn(async () => vec()),
+    embedBatchOrThrow: vi.fn(async (texts) => batch(texts)),
+  };
+});
 
 vi.mock('./contextualizer.js', () => ({
   contextualizeChunks: vi.fn((chunks) => Promise.resolve(chunks)),
+}));
+
+// Fact writes run inside cortexDb.transaction(cb). saveFact/supersedeStaleDocFacts
+// are mocked and these tests attach no pods, so the trx object is never used —
+// a stub that just invokes the callback is enough to avoid a real DB connection.
+vi.mock('../db/cortex.js', () => ({
+  default: Object.assign(vi.fn(), { transaction: vi.fn(async (cb) => cb({})) }),
 }));
 
 vi.mock('../memory/documents/store.js', () => ({
