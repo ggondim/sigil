@@ -69,7 +69,7 @@ export async function buildPreamble({ cwd = process.cwd(), limit = 12, call } = 
       callFn = async (m, p) => (await ownClient.call(m, p ?? {})).data;
     } catch (err) {
       r.checks.daemon = { ok: false, detail: err.message };
-      r.issues.push('Sigil daemon not reachable — run `npx sigil` (or `sigil daemon start`).');
+      r.issues.push('Sigil daemon not reachable — run `sigil` (or `sigil daemon start`).');
       return finalize(r);
     }
   }

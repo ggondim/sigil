@@ -129,13 +129,21 @@ Caveats: oracle is the easy split; n=100 is small; per-question haystack is ~25 
 ## Get started
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh
+```
+
+The installer puts Sigil on your `PATH` persistently, then launches first-run setup. It runs migrations against a built-in local database (no Postgres to stand up), asks two questions (LLM provider, embedder), and wires itself into every AI agent it finds on your machine. That's it.
+
+Prefer your own package manager, or bringing your own Postgres?
+
+```bash
 docker run -d --name sigil-pg -p 5432:5432 \
-  -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15
+  -e POSTGRES_PASSWORD=sigil_dev pgvector/pgvector:pg15   # optional: external Postgres
 
 npm install -g @anmol-srv/sigil
 sigil init
 ```
 
-`sigil init` asks you two questions (LLM provider, Postgres connection), runs migrations, and wires itself into every AI agent it finds on your machine. That's it.
+> Don't use `npx`/`pnpx` — Sigil is a persistent daemon + editor hooks, and those run from a throwaway cache that gets deleted, which breaks memory. The installer (or `npm install -g`) is the supported path.
 
 [Full quickstart guide →](/quickstart/)

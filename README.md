@@ -11,10 +11,12 @@ Local-first memory shared across Claude Code, Codex CLI, Cursor, Kiro, and any a
 </div>
 
 ```bash
-npx @anmol-srv/sigil
+curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh
 ```
 
-That's it. The command launches Sigil and opens a dashboard in your browser where you configure everything — database, LLM, and embedding provider — with live connection tests and one-click fixes. No config files to edit, no setup prompts in the terminal.
+That's it. The installer puts Sigil on your PATH persistently, then launches it and opens a dashboard in your browser where you configure everything — database, LLM, and embedding provider — with live connection tests and one-click fixes. No config files to edit, no setup prompts in the terminal.
+
+> **Why not `npx`?** Sigil is persistent infrastructure (a background daemon + editor hooks pinned to a path). `npx`/`pnpx` runs from a throwaway cache your package manager later deletes, which would silently break memory — so Sigil refuses to set up from there. The installer above (or `npm install -g @anmol-srv/sigil`) is the supported path.
 
 <div align="center">
 
@@ -78,7 +80,7 @@ sigil facts --limit=20                   # list recent facts
 sigil why "auth setup"                   # explain the search
 ```
 
-That's exactly how Claude Code (via Bash tool), Codex CLI, terminal-based agents, Hermes, and your own CI scripts use Sigil today. The CLI is auto-detected on `PATH` after `npm install -g @anmol-srv/sigil`; agents discover it the same way they discover `git` or `node`.
+That's exactly how Claude Code (via Bash tool), Codex CLI, terminal-based agents, Hermes, and your own CI scripts use Sigil today. The CLI is auto-detected on `PATH` once installed (the `curl … | sh` installer, or `npm install -g @anmol-srv/sigil`); agents discover it the same way they discover `git` or `node`.
 
 For clients that prefer structured tool calls (Cursor, Continue, Cline, Claude Desktop, Kiro, any MCP-spec agent), Sigil also exposes the same memory as a 9-tool MCP server. `sigil register --print` generates the config. MCP is the second interface, not the only one.
 
@@ -156,13 +158,13 @@ Retrieval is hybrid: pgvector cosine + tsvector keyword fused via Reciprocal Ran
 
 Sigil needs **Postgres 13+ with the `pgvector` extension** running somewhere reachable. You bring the server; the dashboard does everything else.
 
-### 1. Launch
+### 1. Install & launch
 
 ```bash
-npx @anmol-srv/sigil
+curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh
 ```
 
-This starts the Sigil daemon and opens the dashboard in your browser. The daemon runs even before anything is configured, so the setup wizard is always reachable. Everything below happens in the UI — no terminal prompts, no editing `~/.sigil/.env` by hand.
+This installs Sigil persistently (on your PATH), starts the daemon, and opens the dashboard in your browser. The daemon runs even before anything is configured, so the setup wizard is always reachable. Everything below happens in the UI — no terminal prompts, no editing `~/.sigil/.env` by hand.
 
 ### 2. Configure in the dashboard
 

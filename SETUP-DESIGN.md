@@ -12,9 +12,9 @@ Sigil has **five entry points that each assume setup already happened**:
 
 | Entry point | How it's reached | What it assumes is true |
 |---|---|---|
-| CLI (`sigil <cmd>`) | `npx` / global bin | daemon running, DB reachable, config valid |
+| CLI (`sigil <cmd>`) | global bin (persistent install) | daemon running, DB reachable, config valid |
 | MCP server (stdio) | harness spawns `node dist/server.js --mcp` | daemon socket exists, baked path still valid |
-| Browser GUI | `npx sigil` → opens `127.0.0.1:7777` | a browser exists to open |
+| Browser GUI | `sigil` (zero-arg) → opens `127.0.0.1:7777` | a browser exists to open |
 | Hooks (4×) | Claude reads `~/.claude/settings.json` | baked `node /abs/path/...` resolves, provider valid |
 | Future TUI | — | — |
 
@@ -48,12 +48,12 @@ The research confirms three install tiers have become standard for agent-facing 
 The ideal first-run, ranked by how few things must be true:
 
 ```
-$ npx @anmol-srv/sigil
+$ curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh
 ```
-…should Just Work to a usable memory in **one command, zero questions, zero infra**, then progressively offer power. Concretely:
+…should Just Work to a usable memory in **one command, zero questions, zero infra**, then progressively offer power. The installer puts Sigil somewhere permanent (a throwaway `npx`/`pnpx` cache can't host a persistent daemon — see §4), then hands off to the zero-arg launch. Concretely:
 
 ### Tier 0 — Zero-config default (NEW, the big unlock)
-- `npx @anmol-srv/sigil` with no prior setup → starts daemon on an **embedded local store** (no Postgres prompt), picks **`claude-cli` provider** (already the default — uses the Claude subscription, no API key), uses a **local embedder** by default, runs migrations against the embedded DB, smoke-tests, registers hooks into detected clients, prints the GUI URL.
+- The `curl … | sh` installer, then `sigil` (zero-arg) with no prior setup → starts daemon on an **embedded local store** (no Postgres prompt), picks **`claude-cli` provider** (already the default — uses the Claude subscription, no API key), uses a **local embedder** by default, runs migrations against the embedded DB, smoke-tests, registers hooks into detected clients, prints the GUI URL.
 - The user answers **nothing**. Memory works in the next agent turn.
 - Postgres becomes a **`sigil db upgrade postgres`** opt-in for users who want sync/scale — not a precondition. (See §5.)
 
@@ -101,7 +101,7 @@ Hooks must exec *something*. Don't freeze the resolved path; instead:
 - Install a **stable launcher** at a fixed, version-manager-independent location: `~/.sigil/bin/sigil` (a tiny shell shim that execs the current node + the installed cli.js, resolving the real location at runtime). Reference `~/.sigil/bin/sigil` everywhere — it never moves even when node does.
 - Generated `CLAUDE.md` references `~/.sigil/bin/sigil remember ...` instead of the frozen `dist/cli.js` path.
 - The shim self-heals: on each run it verifies the target still resolves; if not, it re-resolves (or prints a one-line `sigil connect` hint).
-- Alternative considered: `npx -y @anmol-srv/sigil` in hooks. **Rejected** for hooks — npx cold-start (300ms–2s) blows the 10s read-hook budget and adds network flakiness. The shim is faster and offline-safe. Keep `npx` only for the *first* bootstrap.
+- Alternative considered: `npx -y @anmol-srv/sigil` — in hooks *and* as the first-run bootstrap. **Rejected entirely.** `npx`/`pnpx` run from a throwaway dlx/`_npx` cache the package manager later deletes; that silently breaks the persistent daemon and every pinned hook (and the cold-start, 300ms–2s, also blows the 10s read-hook budget). So: first-run bootstrap is the `curl … | sh` installer (or `npm install -g`), which lands Sigil somewhere permanent; hooks exec the stable `~/.sigil/bin/sigil` shim. A startup gate (`ephemeralPackageRoot` in `src/lib/paths.js`) refuses to set up from an ephemeral cache and points the user at the persistent install — so an `npx` invocation fails fast with a hint instead of half-configuring.
 
 **Net:** after this, a node version switch or reinstall **cannot** break an existing install. `sigil connect` re-points everything if it ever does.
 
@@ -154,7 +154,8 @@ This is what the user explicitly asked about, and the research shows it's now a 
 **(a) A canonical install prompt** users paste into any coding agent:
 ```
 Install Sigil (persistent agent memory) for this machine. Run:
-  npx -y @anmol-srv/sigil init --agent
+  npm install -g @anmol-srv/sigil && sigil init --agent
+  (do NOT use npx/pnpx — Sigil needs a persistent install, not a throwaway cache)
 Then confirm `sigil status` reports a healthy daemon and that
 hooks were registered into my detected agent clients. If the GUI
 URL is printed, share it. If anything fails, run `sigil doctor`
@@ -181,7 +182,7 @@ From `CLAUDE-INTEGRATION-ANALYSIS.md`: 30s socket vs 120s claude-cli; 10s read-h
 ## 9. Update / versioning (P1)
 
 - **`update-notifier`** on CLI invocation (the npm-standard, low-noise once-a-day check) → prints "vX→vY available, run `sigil upgrade`". **[V — package is the standard]**
-- **`sigil upgrade`**: `npm i -g` (or refresh npx) → restart daemon → re-run `sigil connect` to re-sync generated files. One command.
+- **`sigil upgrade`**: `npm i -g @anmol-srv/sigil` → restart daemon → re-run `sigil connect` to re-sync generated files. One command.
 - **Daemon version drift:** you already auto-restart the daemon on CLI/daemon version mismatch (cli.js ~L97). Keep it; add a health line in `doctor`.
 - **Re-syncing generated files without clobbering edits:** you already use an `INSTRUCTIONS_VERSION` marker + marker-delimited blocks (`<!-- sigil-context -->`). Extend the same managed-block discipline to *every* file you write into a user's config (the `@import` line, hook entries, Cursor/Codex/Kiro blocks): only ever rewrite content **between your markers**, never the whole file. On upgrade, re-emit managed blocks; leave everything outside untouched.
 
@@ -189,7 +190,7 @@ From `CLAUDE-INTEGRATION-ANALYSIS.md`: 30s socket vs 120s claude-cli; 10s read-h
 
 ## 10. Headless / SSH / CI degradation (P1)
 
-`npx sigil` assumes it can open a browser. Detect the environment and degrade:
+`sigil` (zero-arg) assumes it can open a browser. Detect the environment and degrade:
 - No TTY, or `$SSH_CONNECTION`/`$CI`/no `$DISPLAY` (Linux) → **don't try to open a browser**; print the GUI URL + token and the `sigil init` CLI path instead. Add an explicit `--no-browser` flag.
 - For remote setups where even `127.0.0.1:7777` isn't reachable from the user's machine, document an SSH port-forward one-liner, or fall back to **fully-CLI `init`** (no GUI needed — the wizard already works in the terminal).
 - This is the same class of fix as the Neutron "no display" failure already in your memory. Make "no browser available" a first-class, non-fatal branch, not an exception.
@@ -199,7 +200,8 @@ From `CLAUDE-INTEGRATION-ANALYSIS.md`: 30s socket vs 120s claude-cli; 10s read-h
 ## 11. Recommended command surface (consolidated)
 
 ```
-npx @anmol-srv/sigil                 # Tier 0: zero-config, embedded, just works
+curl -fsSL …/install.sh | sh         # Tier 0: persistent install + zero-config first run
+sigil                                # zero-arg launch: dashboard / resume setup (embedded, just works)
 sigil init                           # Tier 1: interactive (slimmed; every prompt has a default)
 sigil init --yes | --config f.json   # non-interactive / inline config (CI)
 sigil init --agent                   # Tier 2: agent-driven, JSON out, no TTY
@@ -218,7 +220,7 @@ sigil status                         # health: daemon, DB, provider, embedding-l
 1. Embedded storage default (PGlite+pgvector), Postgres demoted to `db upgrade`. (§5) — *open: storage benchmark first*
 2. Stable `~/.sigil/bin/sigil` shim → no baked paths. (§4) — **✅ DONE**. Hooks + CLAUDE.md re-routed through `~/.sigil/bin/sigil` + `sigil-hook` (instructions v4). MCP clients (Cursor/Codex/Kiro) + `register` now use the `~/.sigil/bin/sigil-mcp` stdio shim — no baked `node /abs/server.js`. **Plus** the daemon now serves MCP over HTTP at `POST /mcp` (Streamable HTTP, bearer-auth, in-process registry dispatch), enabling URL-based registration (`sigil register --http` → `claude mcp add --transport http http://127.0.0.1:7777/mcp`). The URL never moves, so it's immune to path drift entirely.
 3. Embedding-lock file + fail-closed remedy messaging. (§6)
-4. Tier-0 zero-config first run (`npx sigil` answers nothing, works). (§2)
+4. Tier-0 zero-config first run (`sigil` answers nothing, works). (§2)
 
 **P1:**
 5. `sigil connect` as standalone re-runnable command — **✅ DONE** (`runConnect` in `src/cli.js`; re-pins shims + re-syncs clients, agent/CI-safe, `--clients`/`--all`/`--dry-run`). Managed-block discipline for all generated files still pending. (§3,§9)

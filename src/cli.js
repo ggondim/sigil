@@ -83,6 +83,20 @@ if (command === '--help' || command === '-h') {
 // an actionable message.
 
 async function launchAndOpenBrowser() {
+  // Refuse the zero-arg launch (`pnpx @anmol-srv/sigil`, `npx …`) BEFORE spawning
+  // a daemon from the ephemeral cache. Without this the GUI wizard walks the user
+  // through DB/LLM/embedding, then only hits the persistence guard at the
+  // connectors step (writeLauncherShim) — after a heavy daemon has already
+  // cold-booted from a dir the package manager is about to delete. Gate it up
+  // front so `pnpx` fails fast with the install hint instead of half-setting-up.
+  const { ephemeralPackageRoot } = await import('./lib/paths.js');
+  const ephemeral = ephemeralPackageRoot();
+  if (ephemeral.ephemeral) {
+    const { ephemeralInstallMessage } = await import('./lib/clients/shim.js');
+    process.stderr.write(ephemeralInstallMessage(ephemeral) + '\n');
+    process.exit(1);
+  }
+
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const { getGuiToken } = await import('./daemon/gui-token.js');
   const { canOpenBrowser, openBrowser } = await import('./lib/open-browser.js');
@@ -1923,7 +1937,7 @@ Tears down:
   - ~/.sigil/            config.json + all local state
   - ~/.claude/CLAUDE.md  the @~/.sigil/CLAUDE.md import line
 
-Re-run 'npx @anmol-srv/sigil' (or 'sigil') afterwards to set up fresh.`);
+Re-run 'sigil' afterwards to set up fresh.`);
     process.exit(0);
   }
 
@@ -1979,7 +1993,7 @@ Re-run 'npx @anmol-srv/sigil' (or 'sigil') afterwards to set up fresh.`);
   await removeClaudeMdImport();
 
   console.log('');
-  console.log('  Reset complete. Run `npx @anmol-srv/sigil` (or `sigil`) to set up again.');
+  console.log('  Reset complete. Run `sigil` to set up again.');
   console.log('');
   process.exit(0);
 }

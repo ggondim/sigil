@@ -36,9 +36,13 @@ Sigil needs Postgres 13+ with the `pgvector` extension. You bring the database; 
 
 ## 2. Install Sigil
 
+The installer puts Sigil on your `PATH` and launches first-run setup in one step:
+
 ```bash
-npm install -g @anmol-srv/sigil
+curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh
 ```
+
+Prefer a package manager? `npm install -g @anmol-srv/sigil` (or `pnpm add -g @anmol-srv/sigil`) works too — then run `sigil init` (Step 3). Avoid `npx`/`pnpx`: Sigil is a persistent daemon and runs its hooks from disk, so a throwaway cache would silently break memory.
 
 ## 3. Run `sigil init`
 
