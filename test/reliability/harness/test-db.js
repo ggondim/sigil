@@ -20,6 +20,7 @@ import { dirname, resolve } from 'node:path';
 import knex from 'knex';
 import { PGlite } from '@electric-sql/pglite';
 import { vector } from '@electric-sql/pglite/vector';
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 
 import { ClientPGlite } from '../../../src/db/pglite-adapter.js';
 
@@ -43,7 +44,11 @@ const wrapIdentifier = (value, orig) => orig(value.replace(/[A-Z]/g, (c) => `_${
  * @returns {Promise<{ db: import('knex').Knex, pg: PGlite }>}
  */
 export async function createTestDb() {
-  const pg = new PGlite({ extensions: { vector } });
+  // Register every extension the migrations CREATE — vector (pgvector) and
+  // pg_trgm (entity-name trigram index, migration 20260601000006). Missing one
+  // makes `CREATE EXTENSION` fail and aborts the whole migration run, which
+  // silently skips every reliability suite. Keep in sync with pglite-adapter.js.
+  const pg = new PGlite({ extensions: { vector, pg_trgm } });
   await pg.waitReady;
 
   const db = knex({
