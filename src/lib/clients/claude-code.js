@@ -77,7 +77,22 @@ async function mergeHooks({ dryRun = false } = {}) {
   try {
     const raw = await fs.readFile(CLAUDE_SETTINGS_PATH, 'utf8');
     settings = JSON.parse(raw);
-  } catch { /* file doesn't exist or invalid — start fresh */ }
+  } catch (err) {
+    // ENOENT is fine — a fresh settings.json is the correct outcome. Anything
+    // else means the file EXISTS but we couldn't load it; starting fresh here
+    // would silently WIPE every other hook/setting the user has (gstack hooks,
+    // statusline, permissions, ...). Mirror cursor.js / codex-cli.js and refuse
+    // to touch it — surface it instead. Distinguish the two non-ENOENT cases so
+    // the user fixes the right thing: a SyntaxError is malformed JSON; anything
+    // else (EACCES, EPERM, EISDIR, ...) is an I/O problem on a file that may be
+    // perfectly valid JSON we just can't read.
+    if (err.code !== 'ENOENT') {
+      const detail = err instanceof SyntaxError
+        ? `invalid JSON — not touched (${err.message}); fix or move it, then re-run`
+        : `could not read (${err.code || err.message}) — not touched; fix permissions/ownership, then re-run`;
+      return { action: 'skip', path: CLAUDE_SETTINGS_PATH, detail };
+    }
+  }
 
   // Quote the shim path so a homedir with spaces still parses as one argument.
   const hook = (name) => `'${HOOK_SHIM_PATH}' ${name}`;
