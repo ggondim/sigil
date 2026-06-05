@@ -88,10 +88,29 @@ export async function dropConfiguredDatabase() {
  */
 export async function factoryReset({ wipeMemory = true } = {}) {
   const disconnected = await disconnectAllClients();
+  const embedded = getConfig().database?.mode === 'embedded';
   let tablesWiped = 0;
+  let dbRemoved = false;
   if (wipeMemory) {
-    try { tablesWiped = await wipeMemoryData(); } catch { /* DB may be unreachable; config wipe still proceeds */ }
+    if (embedded) {
+      // The bundled DB is an in-process PGlite engine holding ~/.sigil/db open in
+      // THIS (daemon) process. A bare TRUNCATE would leave that data dir behind —
+      // and a version-incompatible or half-written dir aborts the WASM engine on
+      // the next setup ("Aborted()"). So release the handle (resetCortexPool →
+      // knex destroy → destroyPGlite) and delete the dir, so the next bundled-DB
+      // setup starts from a clean, version-current database.
+      try {
+        const { resetCortexPool } = await import('../db/cortex.js');
+        const { PGLITE_DB_PATH } = await import('../db/pglite-adapter.js');
+        const { rm } = await import('node:fs/promises');
+        await resetCortexPool();
+        await rm(PGLITE_DB_PATH, { recursive: true, force: true });
+        dbRemoved = true;
+      } catch { /* best-effort; config wipe still proceeds */ }
+    } else {
+      try { tablesWiped = await wipeMemoryData(); } catch { /* DB may be unreachable; config wipe still proceeds */ }
+    }
   }
   resetConfig();
-  return { disconnected, tablesWiped, configWiped: true };
+  return { disconnected, tablesWiped, dbRemoved, configWiped: true };
 }

@@ -18,8 +18,16 @@ const ClientPG = _require('knex/lib/dialects/postgres/index.js');
 export const PGLITE_DB_PATH = process.env.SIGIL_PGLITE_PATH || SIGIL_DB_PATH;
 
 let pgliteInstance = null;
+let pgliteInstancePath = null;
 
 async function getPGlite(dbPath) {
+  // Re-open if the cached singleton is bound to a DIFFERENT path than requested
+  // — e.g. a reset wiped + recreated ~/.sigil/db within this same process. The
+  // old instance's WASM heap is then inconsistent with the backing files and
+  // aborts ("Aborted()") on the next query. Close it, then open the new path.
+  if (pgliteInstance && pgliteInstancePath !== dbPath) {
+    await destroyPGlite();
+  }
   if (!pgliteInstance) {
     const { PGlite } = await import('@electric-sql/pglite');
     // Every extension Sigil's migrations CREATE must be registered here, or
@@ -31,8 +39,24 @@ async function getPGlite(dbPath) {
     mkdirSync(dbPath, { recursive: true });
     pgliteInstance = new PGlite(`file://${dbPath}`, { extensions: { vector, pg_trgm } });
     await pgliteInstance.waitReady;
+    pgliteInstancePath = dbPath;
   }
   return pgliteInstance;
+}
+
+/**
+ * Close + clear the process-wide PGlite singleton. Safe to call when none is
+ * open. MUST run before removing the on-disk data dir (~/.sigil/db): a live WASM
+ * instance whose backing files vanish goes inconsistent and aborts the next
+ * query. Resolves once the engine is fully closed.
+ */
+export async function destroyPGlite() {
+  const inst = pgliteInstance;
+  pgliteInstance = null;
+  pgliteInstancePath = null;
+  if (inst) {
+    try { await inst.close(); } catch { /* already closed */ }
+  }
 }
 
 /**
@@ -112,9 +136,6 @@ export class ClientPGlite extends ClientPG {
   async destroy() {
     await super.destroy();
     if (this._injectedPglite) return;
-    if (pgliteInstance) {
-      await pgliteInstance.close();
-      pgliteInstance = null;
-    }
+    await destroyPGlite();
   }
 }

@@ -45,6 +45,24 @@ function getPool() {
   return pool;
 }
 
+/**
+ * Tear down the live pool and force the NEXT access to rebuild from current
+ * config. Required in the long-lived daemon: `cortexDb.destroy()` alone closes
+ * the knex pool but leaves `pool` pointing at the dead instance, so the lazy
+ * `if (pool) return pool` would keep handing back a closed handle. Nulling it
+ * lets a post-reset / post-reconfigure access build a fresh pool.
+ *
+ * For embedded mode this also releases the process-wide PGlite engine: knex's
+ * destroy() chains into ClientPGlite.destroy() → destroyPGlite(), closing the
+ * WASM instance so its `~/.sigil/db` directory can be safely removed.
+ */
+export async function resetCortexPool() {
+  if (!pool) return;
+  const dead = pool;
+  pool = null;
+  try { await dead.destroy(); } catch { /* already torn down */ }
+}
+
 // Transparent lazy handle: callable like a knex instance (cortexDb('fact')) and
 // exposes every knex method/property (cortexDb.raw, .transaction, .destroy,
 // .schema, …). The pool is created on first access. Functions are bound to the
