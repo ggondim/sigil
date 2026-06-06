@@ -1825,17 +1825,25 @@ Options:
   --dry-run         Report what would be repaired; write nothing
   --namespace=<ns>  Limit to one namespace
   --all-chunks      Re-embed every chunk (use after switching providers; chunks
-                    carry no model stamp, so NULL-only is the default)`);
+                    carry no model stamp, so NULL-only is the default)
+  --sequences       Re-sync serial sequences to MAX(id) — fixes a "duplicate key
+                    value violates ..._pkey" error on insert (no re-embedding)`);
     process.exit(0);
   }
 
   const dryRun = args.includes('--dry-run');
   const namespace = args.find((a) => a.startsWith('--namespace='))?.split('=')[1] || null;
   const allChunks = args.includes('--all-chunks');
+  const sequencesMode = args.includes('--sequences');
 
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
+    if (sequencesMode) {
+      const { data } = await client.call('repair.sequences', {});
+      console.log(`Repair complete — re-synced ${data.resynced} table sequence(s) to MAX(id).`);
+      return;
+    }
     const { data } = await client.call('repair.embeddings', { dryRun, namespace, allChunks });
     if (data.dryRun) {
       console.log(`Repair (dry run)${namespace ? ` [ns=${namespace}]` : ''} — target model: ${data.model}`);
@@ -2000,7 +2008,8 @@ Re-run 'sigil' afterwards to set up fresh.`);
   await removeClaudeMdImport();
 
   console.log('');
-  console.log('  Reset complete. Run `sigil` to set up again.');
+  console.log('  Reset complete. Run `sigil` to set up again, or reinstall with:');
+  console.log('    curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/sigil/master/install.sh | sh');
   console.log('');
   process.exit(0);
 }
