@@ -458,8 +458,23 @@ happen server-side; ensure auto-spawn from a hook doesn't itself race two daemon
 - ✅ **6.6 hardened further:** `resyncSequences` now also runs on **daemon boot** (embedded-only,
   in `probeDbHealth`) so a desync self-heals on every start — not just on provision/`repair`. Server
   Postgres is skipped (doesn't desync, may be shared).
-- 🔨 **B6.3** Phase C: `doctor` → `status` RPC; route/guard remaining cold direct-cortex verbs.
-- 🔨 **B6.4** Phase D: embedded single-process guard in `cortex.js getPool()`.
+- ✅ **B6.4 DONE (Phase D, pulled forward) — the guard.** `assertEmbeddedOpenable()` in
+  pglite-adapter's `getPGlite` (the `new PGlite` choke point): a non-daemon process that tries to
+  open the embedded engine while a daemon is running throws a clear `embedded_in_use` error
+  ("stop the daemon and retry") instead of aborting the WASM engine. The daemon marks itself
+  (`SIGIL_DAEMON_PROCESS=1`, set in daemon/index.js) and is exempt; no daemon running → direct open
+  allowed (provision/migrate/reset). One change protects ALL direct-cortex paths (cold verbs, the
+  llm-log writer, future code) from the 6.1 abort. Validated: `sigil export` with the daemon up →
+  clean error, not a crash.
+- 🟡 **B6.3 Phase C (doctor DONE; cold verbs fail-safe).** `doctor` no longer opens cortex — its DB
+  section routes through the daemon `status` RPC (health + counts) + `repair.embeddings --dry-run`
+  (corpus consistency); driver line stays config-only. Validated live (✓ DB driver / Stored data /
+  Embedding corpus, no abort). The other cold verbs (export/namespace/session/pod/maintain/migrate/
+  why) now FAIL-SAFE via the guard with a "stop the daemon" message instead of aborting — usable for
+  rare ops; routing each to work live (their own RPCs) is incremental follow-up.
+- 🔨 **B6.8 (NEW follow-up)** Route the `llm-log` writer through the daemon — any CLI process making
+  an LLM call currently writes the log via cortex directly (guard now makes it a best-effort no-op
+  instead of an abort). Low priority; the guard already made it safe.
 - 🔨 **B6.5** Phase E: daemon fast-path read search (defer LLM expand). (§8)
 - 🔨 **B6.6** Phase E: daemon-owned persistent LLM-response cache.
 - 🧪 **B6.7** Regression: an embedded-mode read-hook invocation against a running daemon must NOT
@@ -629,3 +644,61 @@ validation + `listX()`).
 
 ### Cross-cutting (every PR)
 - **X1** remove dead code as found · **X2** add the registry regression test when touching an axis.
+
+---
+
+## STEP 10 — Field report (Codex, v0.18.3): embedded durability + resilience
+
+> A real learner's install bricked after an unclean shutdown, and the recovery made it worse.
+> Six compounding defects. Cross-referenced against our sprints below. Several are already fixed
+> by the daemon-routing + guard work; the rest are added here.
+
+### Coverage vs our sprints
+- ✅ **Defect 2 (concurrent PGLite writers — the report's #1).** FIXED by the **Phase D guard**
+  (`assertEmbeddedOpenable`, #15): `sigil migrate` / any non-daemon process can't open the embedded
+  dir while the daemon holds it → `embedded_in_use` instead of a torn catalog. doctor DB label fixed.
+- 🟡 **Defect 4 (CPU/fan storm).** Mostly addressed by bounded hooks (Phase A/B: read 9s→skip-inject,
+  stop 20s→spool, session-end 25s) + read-hook LLM routing moved server-side. Gaps below (F5).
+- 🟡 **Defect 3 (wedged-but-alive).** `status` probes the DB + reports `db.healthy` ≠ liveness. Gap:
+  recycle the poisoned WASM (F4).
+- 🟡 **Defect 6 (diagnostics).** DB label fixed; doctor routed. Gaps below (F7).
+- 🔴 **Defect 1 (torn checkpoint + no recovery).** NOT covered — the actual data-loss bug. (F1–F3)
+- 🔴 **Defect 5 (unbounded error log).** NOT covered (append-only, no dedup/cap/reset). (F6)
+
+### New build items
+- 🔨 **F1 (Defect 1) Clean shutdown + durability.** Explicit `CHECKPOINT` before `pglite.close()` in
+  the daemon shutdown; ensure `sigil daemon stop`'s SIGKILL escalation (5s) can't interrupt the flush
+  (raise/decouple the window, or confirm close completed before exit). Periodic `CHECKPOINT` under
+  write load. Audit `relaxedDurability` (raises torn-checkpoint odds on NODEFS).
+- 🔨 **F2 (Defect 1) Snapshots / DR.** Periodic `pg.dumpDataDir()` snapshots under
+  `~/.sigil/snapshots/`; cheap for a small store. The restore source when an open is unrecoverable.
+- 🔨 **F3 (Defect 1) Non-destructive recovery.** `ensureUsableEmbeddedDir` currently `rm -rf`s a
+  corrupt dir (DATA LOSS) and only on provision. Instead: on an unrecoverable open, restore the
+  latest snapshot (F2) before wiping; run the heal on **daemon boot**, not just provision; explore a
+  bundled WASM `pg_resetwal` (coordinate upstream with electric-sql/pglite) to force-open a torn
+  cluster with bounded loss. Add a `sigil repair db` flow that drives this.
+- 🔨 **F4 (Defect 3) Recycle the poisoned WASM.** Wrap query execution: on `Aborted()` /
+  `WebAssembly.RuntimeError`, mark the PGlite instance poisoned, dispose it, lazily recreate a fresh
+  `PGlite`. Turns the in-memory-wedge subclass from a permanent outage into a blip (the on-disk
+  subclass still needs F1–F3). Make `sigil daemon status` report DB health, not just liveness.
+- 🔨 **F5 (Defect 4) Circuit breaker + concurrency cap.** After N consecutive hook DB failures,
+  cooldown + skip (don't keep retrying). Single-flight / cap concurrent `claude-cli` spawns so hook
+  invocations + their subprocesses can't pile up. Gate daemon auto-respawn on a health check + backoff
+  so a hook never revives the daemon into a known-abort loop.
+- 🔨 **F6 (Defect 5) Bounded, deduped logging.** Collapse repeated hook errors (count + window); cap
+  `.hook-errors.log` size. Make `llm_log` writes best-effort + rate-limited (never spam/stall the main
+  path). Reset the unacked counter on a clean `doctor` / explicit `--ack` (reflect "since last
+  healthy", not "ever").
+- 🔨 **F7 (Defect 6) Honest diagnostics.** `SIGIL_PGLITE_DEBUG=1` to surface the real `PANIC`/`FATAL`
+  behind `Aborted()`. doctor must distinguish "tables missing" from "0 docs" (a failing count reads as
+  a failure). Fix the `.env` false-positive (a complete `config.json` is healthy — don't warn). Point
+  an unreadable DB at `sigil repair db`, not the generic `sigil init`.
+
+### Priority (report's order, adjusted for what's already done)
+1. ✅ Single-writer enforcement (Defect 2) — DONE (guard).
+2. **F1** clean shutdown + durability (prevent the brick).
+3. **F2/F3** snapshots + non-destructive recovery (survive a brick without data loss).
+4. **F4** health-probe + recycle the WASM.
+5. **F5** circuit-broken, concurrency-capped hooks.
+6. **F6** bounded/deduped logging.
+7. **F7** honest diagnostics.
