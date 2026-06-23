@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock all external deps before importing hybrid
 vi.mock('../../ingestion/embedder.js', () => ({
@@ -71,6 +71,12 @@ vi.mock('./hybrid-sql.js', () => ({
   hybridSearchFacts: vi.fn(),
 }));
 
+// Local device id for owner-scoped read enforcement (P2). hybrid.js reads it
+// via getConfig().device?.id when no RPC caller device is present.
+vi.mock('../../setup/config-store.js', () => ({
+  getConfig: vi.fn().mockReturnValue({ device: { id: 'local-device-xyz' } }),
+}));
+
 // Synthesizer fires for every search call. Without this mock the real wrapper
 // spawns the configured LLM (Claude CLI / Anthropic API) — turns 1ms tests
 // into 7-10s tests and occasionally trips the default 10s timeout.
@@ -82,6 +88,7 @@ vi.mock('../../lib/llm.js', () => ({
 import { hybridSearchFacts } from './hybrid-sql.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { search } from './hybrid.js';
+import config from '../../config.js';
 
 const makeFactList = (ids) =>
   ids.map((id, i) => ({
@@ -223,5 +230,50 @@ describe('search — facade behavior', () => {
     const result = await search('test', { namespaces: ['default'], limit: 5 });
 
     expect(result.chunks).toEqual([]);
+  });
+});
+
+describe('search — owner-scoped read enforcement (P2) threading', () => {
+  const originalScope = config.privacy.scope;
+
+  afterEach(() => {
+    config.privacy.scope = originalScope;
+  });
+
+  it('threads the local device id + private kinds into hybrid-sql when scope=device', async () => {
+    config.privacy.scope = 'device';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5 });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.privateScopeEnabled).toBe(true);
+    expect(opts.currentDeviceId).toBe('local-device-xyz');
+    // Built-in private kinds resolved from the registry.
+    expect(opts.privateKinds).toEqual(expect.arrayContaining(['claude_session', 'person']));
+    // Shared/public kinds are NOT in the private set.
+    expect(opts.privateKinds).not.toContain('project');
+    expect(opts.privateKinds).not.toContain('vital');
+  });
+
+  it('prefers the RPC caller device id over the local config device id', async () => {
+    config.privacy.scope = 'device';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5, ctx: { device: { id: 'remote-device-1' } } });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.currentDeviceId).toBe('remote-device-1');
+  });
+
+  it('disables enforcement when scope=off (SIGIL_PRIVATE_SCOPE=off)', async () => {
+    config.privacy.scope = 'off';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5 });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.privateScopeEnabled).toBe(false);
+    expect(opts.currentDeviceId).toBeNull();
   });
 });

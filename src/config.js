@@ -167,6 +167,19 @@ const config = {
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
   },
 
+  privacy: {
+    // Read-time enforcement of pod-kind visibility (P2). Facts in a 'private'
+    // kind pod (claude_session, person) are owner-scoped: only returned to the
+    // device that created them. 'shared'/'public' kinds stay globally visible
+    // within the namespace.
+    //   'device' (default) — enforce owner-scoping using the local device id.
+    //   'off'              — disable enforcement (single-user installs / debug);
+    //                        all facts visible regardless of created_by_device_id.
+    // Legacy rows with created_by_device_id IS NULL (pre-provenance) are always
+    // visible — owner-scoping never hides pre-existing data.
+    scope: (env('SIGIL_PRIVATE_SCOPE', 'device') === 'off') ? 'off' : 'device',
+  },
+
   memory: {
     // AUDM dedup: skip if similarity >= this (paraphrase of same fact)
     skipThreshold: Number(process.env.MEMORY_SKIP_THRESHOLD) || 0.88,
