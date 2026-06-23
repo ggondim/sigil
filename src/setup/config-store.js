@@ -48,6 +48,10 @@ function defaults() {
     llm: { provider: null, model: null, apiKey: null, host: null },
     embedding: { provider: null, model: null, apiKey: null, host: null },
     identity: { name: null },
+    // Project-pod identity strategy: 'remote' (default, key on normalized git
+    // remote), 'path' (legacy, key on absolute root path), or 'explicit' (env /
+    // committed marker only, no path fallback). See config.js `project`.
+    project: { identity: null },
     setup: { complete: false, steps: {} },
   };
 }

@@ -167,6 +167,23 @@ const config = {
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
   },
 
+  // Project-pod identity strategy. Decouples a project pod's IDENTITY (used as
+  // its externalId) from the local filesystem path so two clones of the same
+  // repo at different paths resolve to the SAME shared project memory.
+  //   - 'remote'   (default): key on the normalized git remote.origin.url, with
+  //                fallbacks SIGIL_PROJECT_ID → remote → .sigil/project.json →
+  //                absolute root path.
+  //   - 'explicit': SIGIL_PROJECT_ID → remote → .sigil/project.json only; no
+  //                path fallback unless nothing else resolves.
+  //   - 'path'     (legacy): always key on the absolute project root path.
+  // Read live (getter) — same rationale as the blocks above.
+  project: {
+    get identity() {
+      const v = process.env.SIGIL_PROJECT_IDENTITY || store().project?.identity || 'remote';
+      return ['remote', 'path', 'explicit'].includes(v) ? v : 'remote';
+    },
+  },
+
   memory: {
     // AUDM dedup: skip if similarity >= this (paraphrase of same fact)
     skipThreshold: Number(process.env.MEMORY_SKIP_THRESHOLD) || 0.88,
