@@ -164,6 +164,14 @@ const config = {
   },
 
   defaults: {
+    // The install-wide fallback namespace (tier 4). The ACTIVE namespace for an
+    // operation is resolved per-project by resolveNamespace() in
+    // src/memory/namespace.js, with precedence: explicit --namespace >
+    // SIGIL_NAMESPACE env > committed `.sigil/namespace` marker at the repo
+    // root > this default. With none of the higher tiers set, the active
+    // namespace IS this value — identical to the historical single-namespace
+    // behavior. Consumers that resolve the active namespace should call
+    // resolveNamespace(), not read this directly.
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
   },
 

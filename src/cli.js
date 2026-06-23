@@ -1192,7 +1192,7 @@ Options:
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
-    const { data } = await client.call('listFacts', { namespace, category, limit });
+    const { data } = await client.call('listFacts', { namespace, category, limit, cwd: process.cwd() });
     if (!data.facts.length) {
       console.log('No facts found.');
     } else {
@@ -1314,7 +1314,7 @@ Examples:
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
-    const { data } = await client.call('remember', { facts, namespace });
+    const { data } = await client.call('remember', { facts, namespace, cwd: process.cwd() });
     const parts = [];
     if (data.added)        parts.push(`${data.added} new`);
     if (data.updated)      parts.push(`${data.updated} updated`);
