@@ -145,9 +145,18 @@ async function chat(input, { model, jsonMode = false } = {}) {
   // extraction, classifier routing, AUDM). Instead the prompt asks for JSON and
   // the caller's parseJson() extracts it from the result text (claude returns a
   // ```json fenced block, which parseJson handles).
-  // `--strict-mcp-config` with no `--mcp-config` loads ZERO MCP servers, so each
-  // headless LLM call doesn't boot the user's MCP stack (Notion, etc.) per call.
-  const args = ['-p', '--strict-mcp-config', '--model', cliModel, '--output-format', 'json'];
+  // Slim the headless Claude Code call. These steps are pure text->JSON (the full
+  // task prompt is in `input`, see promptJson), so the agentic scaffolding is dead
+  // weight. Measured per-call overhead: ~30.6K tokens -> ~2.4K with these flags.
+  //   --strict-mcp-config : no MCP servers (also breaks the hook fork-bomb path)
+  //   --tools ''          : drop built-in tool schemas (~22K tokens)
+  //   --system-prompt     : replace the agentic system prompt (~5.5K tokens)
+  const args = [
+    '-p', '--strict-mcp-config',
+    '--tools', '',
+    '--system-prompt', "You are a precise assistant. Follow the user's instructions exactly. When asked for JSON, output only valid JSON and nothing else.",
+    '--model', cliModel, '--output-format', 'json',
+  ];
 
   const { stdout, stderr, code } = await spawnClaude(args, input);
 
