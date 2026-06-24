@@ -86,7 +86,14 @@ function rawSpawnClaude(args, input) {
   const bin = resolveClaudeBin();
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Recursion guard: mark this headless invocation so Sigil's own hooks no-op
+    // inside it (see renderHookDispatcher in lib/clients/shim.js). Without it, the
+    // spawned `claude -p` inherits the global Claude Code hooks, which call back
+    // into Sigil -> daemon -> another `claude -p` -> exponential process explosion.
+    const proc = spawn(bin, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, SIGIL_DISABLE_HOOKS: '1' },
+    });
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
       reject(new Error(`claude CLI timed out after ${timeout}ms`));
@@ -138,7 +145,9 @@ async function chat(input, { model, jsonMode = false } = {}) {
   // extraction, classifier routing, AUDM). Instead the prompt asks for JSON and
   // the caller's parseJson() extracts it from the result text (claude returns a
   // ```json fenced block, which parseJson handles).
-  const args = ['-p', '--model', cliModel, '--output-format', 'json'];
+  // `--strict-mcp-config` with no `--mcp-config` loads ZERO MCP servers, so each
+  // headless LLM call doesn't boot the user's MCP stack (Notion, etc.) per call.
+  const args = ['-p', '--strict-mcp-config', '--model', cliModel, '--output-format', 'json'];
 
   const { stdout, stderr, code } = await spawnClaude(args, input);
 
