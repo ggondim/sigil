@@ -49,10 +49,20 @@ function buildVisibilityClause({ currentDeviceId, privateKinds, scopeEnabled = t
     return { visibilityClause: '', visibilityParams: [] };
   }
 
+  // NOTE: created_by_device_id is an INTEGER FK to device.id in production
+  // (see migration 20260601000002_add-fact-provenance), but currentDeviceId
+  // here is the caller's identity which can be the local install's UUID
+  // (config.json device.id, e.g. "f6ce8926-...") rather than an integer device
+  // PK. Binding that UUID against the integer column made Postgres try to
+  // coerce it to int and blow up ("invalid input syntax for type integer").
+  // Compare both sides as text so the predicate is type-safe regardless of
+  // whether the id is an integer device PK (RPC remote device → matches its
+  // own rows) or a UUID (local install → matches none, so every OTHER device's
+  // private fact is hidden while its own NULL-stamped facts stay visible).
   const visibilityClause = `
         AND NOT (
           created_by_device_id IS NOT NULL
-          AND created_by_device_id <> ?
+          AND created_by_device_id::text <> ?
           AND id = ANY(
             SELECT pm.member_id
             FROM pod_membership pm
@@ -62,7 +72,10 @@ function buildVisibilityClause({ currentDeviceId, privateKinds, scopeEnabled = t
           )
         )`;
 
-  return { visibilityClause, visibilityParams: [currentDeviceId, privateKinds] };
+  // Bind the device id as text so it pairs with the `created_by_device_id::text`
+  // comparison above — a JS number would otherwise be sent as an int param and
+  // re-introduce an int/text mismatch.
+  return { visibilityClause, visibilityParams: [String(currentDeviceId), privateKinds] };
 }
 
 export { CONFIDENCE_CASE, buildFactFilters, buildVisibilityClause };
