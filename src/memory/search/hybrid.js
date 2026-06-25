@@ -20,6 +20,7 @@ import '../pods/kinds/index.js'; // side-effect: register built-in kinds
 import { activeKinds, privateKindNames } from '../pods/registry.js';
 import { getConfig } from '../../setup/config-store.js';
 import { currentDeviceId as rpcDeviceId } from '../../daemon/request-context.js';
+import { currentOrigin } from '../provenance.js';
 import cortexDb from '../../db/cortex.js';
 
 // K=20 gives good score spread for our result set sizes (5-50).
@@ -365,20 +366,11 @@ function resolvePrivacyScope(ctx = {}) {
     return { enabled: false, currentDeviceId: null, privateKinds: [] };
   }
 
-  let currentDeviceId = null;
-  try {
-    currentDeviceId = rpcDeviceId();
-  } catch {
-    currentDeviceId = null;
-  }
-  if (!currentDeviceId) currentDeviceId = ctx?.device?.id ?? null;
-  if (!currentDeviceId) {
-    try {
-      currentDeviceId = getConfig().device?.id ?? null;
-    } catch {
-      currentDeviceId = null; // config unreadable — fail open to global
-    }
-  }
+  // P7: the ownership ORIGIN (paired device id, else local install UUID),
+  // resolved by the SAME helper the write side uses (currentOrigin) so reads
+  // filter on exactly what writes stamped. Kept in the `currentDeviceId` field
+  // for back-compat with the option threading into hybrid-sql.
+  const currentDeviceId = currentOrigin(ctx);
 
   return { enabled: true, currentDeviceId, privateKinds: privateKindNames() };
 }

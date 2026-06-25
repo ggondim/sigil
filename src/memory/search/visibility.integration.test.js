@@ -66,7 +66,7 @@ beforeAll(async () => {
       id BIGSERIAL PRIMARY KEY,
       content TEXT,
       status TEXT NOT NULL DEFAULT 'active',
-      created_by_device_id TEXT
+      created_by_origin TEXT
     );
     CREATE TABLE pod (
       id BIGSERIAL PRIMARY KEY,
@@ -94,7 +94,7 @@ beforeAll(async () => {
   //   4 — shared kind, owned by device A
   //   5 — shared kind, legacy (NULL device)
   await pg.exec(`
-    INSERT INTO fact (id, content, created_by_device_id) VALUES
+    INSERT INTO fact (id, content, created_by_origin) VALUES
       (1, 'A private session note',  '${DEVICE_A}'),
       (2, 'B private session note',  '${DEVICE_B}'),
       (3, 'legacy private note',     NULL),
@@ -143,7 +143,7 @@ describe('P2 owner-scoped read enforcement (visibility predicate)', () => {
     expect(b).toEqual(expect.arrayContaining([4, 5]));
   });
 
-  it('legacy private fact (created_by_device_id IS NULL) is visible to both devices', async () => {
+  it('legacy private fact (created_by_origin IS NULL) is visible to both devices', async () => {
     const a = await visibleIds({ currentDeviceId: DEVICE_A, scopeEnabled: true });
     const b = await visibleIds({ currentDeviceId: DEVICE_B, scopeEnabled: true });
     expect(a).toContain(3);
