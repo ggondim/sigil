@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock all external deps before importing hybrid
 vi.mock('../../ingestion/embedder.js', () => ({
@@ -71,6 +71,12 @@ vi.mock('./hybrid-sql.js', () => ({
   hybridSearchFacts: vi.fn(),
 }));
 
+// Local device id for owner-scoped read enforcement (P2). hybrid.js reads it
+// via getConfig().device?.id when no RPC caller device is present.
+vi.mock('../../setup/config-store.js', () => ({
+  getConfig: vi.fn().mockReturnValue({ device: { id: 'local-device-xyz' } }),
+}));
+
 // Synthesizer fires for every search call. Without this mock the real wrapper
 // spawns the configured LLM (Claude CLI / Anthropic API) — turns 1ms tests
 // into 7-10s tests and occasionally trips the default 10s timeout.
@@ -82,6 +88,7 @@ vi.mock('../../lib/llm.js', () => ({
 import { hybridSearchFacts } from './hybrid-sql.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { search } from './hybrid.js';
+import config from '../../config.js';
 
 const makeFactList = (ids) =>
   ids.map((id, i) => ({
@@ -223,5 +230,128 @@ describe('search — facade behavior', () => {
     const result = await search('test', { namespaces: ['default'], limit: 5 });
 
     expect(result.chunks).toEqual([]);
+  });
+});
+
+describe('search — owner-scoped read enforcement (P2) threading', () => {
+  const originalScope = config.privacy.scope;
+
+  afterEach(() => {
+    config.privacy.scope = originalScope;
+  });
+
+  it('threads the local device id + private kinds into hybrid-sql when scope=device', async () => {
+    config.privacy.scope = 'device';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5 });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.privateScopeEnabled).toBe(true);
+    expect(opts.currentDeviceId).toBe('local-device-xyz');
+    // Built-in private kinds resolved from the registry.
+    expect(opts.privateKinds).toEqual(expect.arrayContaining(['claude_session', 'person']));
+    // Shared/public kinds are NOT in the private set.
+    expect(opts.privateKinds).not.toContain('project');
+    expect(opts.privateKinds).not.toContain('vital');
+  });
+
+  it('prefers the RPC caller device id over the local config device id', async () => {
+    config.privacy.scope = 'device';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5, ctx: { device: { id: 'remote-device-1' } } });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.currentDeviceId).toBe('remote-device-1');
+  });
+
+  it('disables enforcement when scope=off (SIGIL_PRIVATE_SCOPE=off)', async () => {
+    config.privacy.scope = 'off';
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], limit: 5 });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.privateScopeEnabled).toBe(false);
+    expect(opts.currentDeviceId).toBeNull();
+  });
+});
+
+describe('search — author provenance filters (--agent / --device)', () => {
+  // Facts carry created_by_agent / created_by_device_id. The SQL layer applies
+  // the predicates (mocked here), and search() re-applies them as a post-filter
+  // so entity-linked facts that bypass the SQL still respect the filter.
+  const makeAuthoredFacts = () => ([
+    { ...makeFactList([1])[0], createdByAgent: 'claude-code', createdByDeviceId: 1 },
+    { ...makeFactList([2])[0], createdByAgent: 'cursor', createdByDeviceId: 1 },
+    { ...makeFactList([3])[0], createdByAgent: 'cursor', createdByDeviceId: 2 },
+    { ...makeFactList([4])[0], createdByAgent: 'cli', createdByDeviceId: null },
+  ]);
+
+  it('threads agent + deviceId into the hybrid-sql layer', async () => {
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'], agent: 'cursor', deviceId: 2 });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.agent).toBe('cursor');
+    expect(opts.deviceId).toBe(2);
+  });
+
+  it('no author flags ⟹ no agent/device predicate (back-compat)', async () => {
+    hybridSearchFacts.mockResolvedValue([]);
+
+    await search('test', { namespaces: ['default'] });
+
+    const opts = hybridSearchFacts.mock.calls[0][2];
+    expect(opts.agent).toBeNull();
+    expect(opts.deviceId).toBeNull();
+  });
+
+  it('--agent returns only that agent\'s facts', async () => {
+    hybridSearchFacts.mockResolvedValue(makeAuthoredFacts());
+
+    const result = await search('test', { namespaces: ['default'], agent: 'cursor' });
+
+    expect(result.facts.map((f) => f.id).sort()).toEqual([2, 3]);
+    expect(result.facts.every((f) => f.createdByAgent === 'cursor')).toBe(true);
+  });
+
+  it('--device returns only that device\'s facts', async () => {
+    hybridSearchFacts.mockResolvedValue(makeAuthoredFacts());
+
+    const result = await search('test', { namespaces: ['default'], deviceId: 1 });
+
+    expect(result.facts.map((f) => f.id).sort()).toEqual([1, 2]);
+  });
+
+  it('--agent + --device intersect (both predicates apply)', async () => {
+    hybridSearchFacts.mockResolvedValue(makeAuthoredFacts());
+
+    const result = await search('test', { namespaces: ['default'], agent: 'cursor', deviceId: 1 });
+
+    expect(result.facts.map((f) => f.id)).toEqual([2]);
+  });
+
+  it('post-filter drops entity-linked facts that bypass the SQL predicate', async () => {
+    // Simulate the entity-first path leaking a non-matching entity-linked fact
+    // into the result set (getFactsForEntity does not apply the SQL filter).
+    hybridSearchFacts.mockResolvedValue([
+      { ...makeFactList([7])[0], createdByAgent: 'cursor', createdByDeviceId: 1, source: 'entity' },
+      { ...makeFactList([8])[0], createdByAgent: 'cli', createdByDeviceId: 1, source: 'entity' },
+    ]);
+
+    const result = await search('test', { namespaces: ['default'], agent: 'cursor' });
+
+    expect(result.facts.map((f) => f.id)).toEqual([7]);
+  });
+
+  it('returns nothing when no fact matches the author filter', async () => {
+    hybridSearchFacts.mockResolvedValue(makeAuthoredFacts());
+
+    const result = await search('test', { namespaces: ['default'], agent: 'nobody' });
+
+    expect(result.facts).toEqual([]);
   });
 });

@@ -1051,68 +1051,6 @@ back a canonical entity so dedup churn doesn't lose their metadata.`);
   }
 }
 
-// ─── sigil project ───────────────────────────────────────────────────────────
-
-async function runProject(args) {
-  const sub = args[0];
-
-  if (!sub || args.includes('--help')) {
-    console.log(`sigil project — Maintenance for project pods
-
-Usage:
-  sigil project rekey [--dry-run]
-
-  rekey   Re-key legacy PATH-keyed project pods to their stable git-remote
-          identity (P1). For each project pod whose external_id is a local
-          filesystem path, re-read the repo's remote from its git_root and:
-            • re-key it in place if no remote-keyed pod exists yet, or
-            • MERGE it into the existing remote-keyed pod (moving facts /
-              documents, deduping) so the repo ends with exactly one pod.
-          Pods whose path is gone or has no git remote are left untouched.
-
-  --dry-run   Print the plan and write NOTHING. Recommended first.`);
-    process.exit(sub ? 0 : 1);
-  }
-
-  if (sub !== 'rekey') {
-    console.error(`Unknown subcommand: ${sub}`);
-    process.exit(1);
-  }
-
-  const dryRun = args.includes('--dry-run');
-  const cortexDb = (await import('./db/cortex.js')).default;
-
-  try {
-    const { rekeyLegacyProjectPods } = await import('./memory/pods/rekey.js');
-    const report = await rekeyLegacyProjectPods({ dryRun, db: cortexDb });
-
-    console.log(dryRun
-      ? 'sigil project rekey — DRY RUN (no writes)\n'
-      : 'sigil project rekey — applying\n');
-
-    for (const a of report.actions) {
-      if (a.action === 'skip') {
-        console.log(`  SKIP   ${a.name.padEnd(28)} ${a.from}\n         (${a.reason})`);
-      } else if (a.action === 'rekey') {
-        console.log(`  REKEY  ${a.name.padEnd(28)} ${a.from}\n         → ${a.to}`);
-      } else if (a.action === 'merge') {
-        console.log(`  MERGE  ${a.name.padEnd(28)} ${a.from}\n         → ${a.to}  (into ${a.targetUid})`);
-      }
-    }
-
-    console.log(`\n${report.planned} project pod${report.planned === 1 ? '' : 's'} examined: `
-      + `${report.rekeyed} ${dryRun ? 'would be re-keyed' : 're-keyed'}, `
-      + `${report.merged} ${dryRun ? 'would be merged' : 'merged'}, `
-      + `${report.skipped} skipped.`);
-
-    if (dryRun && (report.rekeyed > 0 || report.merged > 0)) {
-      console.log('\nRe-run without --dry-run to apply.');
-    }
-  } finally {
-    await cortexDb.destroy();
-  }
-}
-
 async function showPod(uid) {
   const podStore = await import('./memory/pods/store.js');
   const membership = await import('./memory/pods/membership.js');
@@ -1256,7 +1194,7 @@ Options:
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
-    const { data } = await client.call('listFacts', { namespace, category, limit });
+    const { data } = await client.call('listFacts', { namespace, category, limit, cwd: process.cwd() });
     if (!data.facts.length) {
       console.log('No facts found.');
     } else {
@@ -1378,7 +1316,7 @@ Examples:
   const { connectOrStartDaemon } = await import('./clients/auto-spawn.js');
   const client = await connectOrStartDaemon();
   try {
-    const { data } = await client.call('remember', { facts, namespace });
+    const { data } = await client.call('remember', { facts, namespace, cwd: process.cwd() });
     const parts = [];
     if (data.added)        parts.push(`${data.added} new`);
     if (data.updated)      parts.push(`${data.updated} updated`);
@@ -1657,6 +1595,8 @@ Usage:
 Options:
   --namespace=<ns>    Filter by namespace (comma-separated for multiple)
   --limit=<n>         Max results (default: 10)
+  --agent=<name>      Only facts written by this agent (e.g. claude-code, cli, cursor)
+  --device=<id|name>  Only facts written by this paired device (id or friendly name)
   --graph             Enable graph enhancement
   --route             Enable LLM query routing
   --synthesize        Enable LLM answer synthesis
@@ -1668,13 +1608,17 @@ Examples:
   sigil search "authentication flow"
   sigil search "deploy process" --namespace=engineering
   sigil search "API design" --limit=5
-  sigil search "that decision" --scope          # only this project's memory`);
+  sigil search "that decision" --scope          # only this project's memory
+  sigil search "config" --agent=cursor          # only what Cursor wrote
+  sigil search "config" --device=laptop-b       # only writes from device "laptop-b"`);
     process.exit(0);
   }
 
   const nsFlag = flags.find((f) => f.startsWith('--namespace='))?.split('=')[1];
   const namespaces = nsFlag ? nsFlag.split(',') : undefined;
   const limit = Number(flags.find((f) => f.startsWith('--limit='))?.split('=')[1] || 10);
+  const { parseSearchAuthorFlags } = await import('./cli-handlers/search-args.js');
+  const { agent, device } = parseSearchAuthorFlags(flags);
   const useGraph = flags.includes('--graph') && !flags.includes('--no-graph');
   const route = flags.includes('--route');
   const synthesize = flags.includes('--synthesize');
@@ -1690,7 +1634,7 @@ Examples:
     const podScope = flags.includes('--scope') ? 'auto' : 'global';
     const { data } = await client.call('search', {
       query, namespaces, limit, useGraph, route, synthesize, includeChunks,
-      podScope, cwd: process.cwd(),
+      agent, device, podScope, cwd: process.cwd(),
     });
 
     if (data.synthesized) console.log(data.synthesized);
@@ -1698,7 +1642,7 @@ Examples:
     if (data.facts.length) {
       console.log(`\nFacts (${data.facts.length}):`);
       for (const fact of data.facts) {
-        console.log(`  ${fact.content}${formatRelevance(fact)}`);
+        console.log(`  ${fact.content}${formatRelevance(fact)}${formatAuthor(fact)}`);
       }
     }
 
@@ -1738,6 +1682,29 @@ function formatRelevance(row) {
     return ` [${row.rrfScore}]`;
   }
   return '';
+}
+
+// Compact write-attribution suffix for a search hit: "· by <agent>@<device>".
+// Provenance has been stored on every fact (created_by_agent /
+// created_by_device_id) but was never shown — a shared brain should be
+// auditable. Device prefers the friendly name (device.name) the daemon
+// resolves; falls back to a short device id. Local writes (device null) show
+// just the agent. Returns '' when neither is known so legacy rows stay clean.
+// Dimmed only when stdout is a TTY so piped output stays plain.
+function formatAuthor(row) {
+  const agent = row?.agent ? String(row.agent) : null;
+  const device = row?.deviceName
+    ? String(row.deviceName)
+    : (row?.device != null ? `dev${row.device}` : null);
+
+  let who;
+  if (agent && device) who = `${agent}@${device}`;
+  else if (agent) who = agent;
+  else if (device) who = device;
+  else return '';
+
+  const text = `  · by ${who}`;
+  return process.stdout.isTTY ? `\x1b[2m${text}\x1b[0m` : text;
 }
 
 // ─── Context ─────────────────────────────────────────────────────────────────
@@ -2320,3 +2287,64 @@ function checkCommand(cmd) {
     return false;
   }
 }
+
+async function runProject(args) {
+  const sub = args[0];
+
+  if (!sub || args.includes('--help')) {
+    console.log(`sigil project — Maintenance for project pods
+
+Usage:
+  sigil project rekey [--dry-run]
+
+  rekey   Re-key legacy PATH-keyed project pods to their stable git-remote
+          identity (P1). For each project pod whose external_id is a local
+          filesystem path, re-read the repo's remote from its git_root and:
+            • re-key it in place if no remote-keyed pod exists yet, or
+            • MERGE it into the existing remote-keyed pod (moving facts /
+              documents, deduping) so the repo ends with exactly one pod.
+          Pods whose path is gone or has no git remote are left untouched.
+
+  --dry-run   Print the plan and write NOTHING. Recommended first.`);
+    process.exit(sub ? 0 : 1);
+  }
+
+  if (sub !== 'rekey') {
+    console.error(`Unknown subcommand: ${sub}`);
+    process.exit(1);
+  }
+
+  const dryRun = args.includes('--dry-run');
+  const cortexDb = (await import('./db/cortex.js')).default;
+
+  try {
+    const { rekeyLegacyProjectPods } = await import('./memory/pods/rekey.js');
+    const report = await rekeyLegacyProjectPods({ dryRun, db: cortexDb });
+
+    console.log(dryRun
+      ? 'sigil project rekey — DRY RUN (no writes)\n'
+      : 'sigil project rekey — applying\n');
+
+    for (const a of report.actions) {
+      if (a.action === 'skip') {
+        console.log(`  SKIP   ${a.name.padEnd(28)} ${a.from}\n         (${a.reason})`);
+      } else if (a.action === 'rekey') {
+        console.log(`  REKEY  ${a.name.padEnd(28)} ${a.from}\n         → ${a.to}`);
+      } else if (a.action === 'merge') {
+        console.log(`  MERGE  ${a.name.padEnd(28)} ${a.from}\n         → ${a.to}  (into ${a.targetUid})`);
+      }
+    }
+
+    console.log(`\n${report.planned} project pod${report.planned === 1 ? '' : 's'} examined: `
+      + `${report.rekeyed} ${dryRun ? 'would be re-keyed' : 're-keyed'}, `
+      + `${report.merged} ${dryRun ? 'would be merged' : 'merged'}, `
+      + `${report.skipped} skipped.`);
+
+    if (dryRun && (report.rekeyed > 0 || report.merged > 0)) {
+      console.log('\nRe-run without --dry-run to apply.');
+    }
+  } finally {
+    await cortexDb.destroy();
+  }
+}
+

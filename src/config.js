@@ -164,6 +164,14 @@ const config = {
   },
 
   defaults: {
+    // The install-wide fallback namespace (tier 4). The ACTIVE namespace for an
+    // operation is resolved per-project by resolveNamespace() in
+    // src/memory/namespace.js, with precedence: explicit --namespace >
+    // SIGIL_NAMESPACE env > committed `.sigil/namespace` marker at the repo
+    // root > this default. With none of the higher tiers set, the active
+    // namespace IS this value — identical to the historical single-namespace
+    // behavior. Consumers that resolve the active namespace should call
+    // resolveNamespace(), not read this directly.
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
   },
 
@@ -182,6 +190,19 @@ const config = {
       const v = process.env.SIGIL_PROJECT_IDENTITY || store().project?.identity || 'remote';
       return ['remote', 'path', 'explicit'].includes(v) ? v : 'remote';
     },
+  },
+
+  privacy: {
+    // Read-time enforcement of pod-kind visibility (P2). Facts in a 'private'
+    // kind pod (claude_session, person) are owner-scoped: only returned to the
+    // device that created them. 'shared'/'public' kinds stay globally visible
+    // within the namespace.
+    //   'device' (default) — enforce owner-scoping using the local device id.
+    //   'off'              — disable enforcement (single-user installs / debug);
+    //                        all facts visible regardless of created_by_device_id.
+    // Legacy rows with created_by_device_id IS NULL (pre-provenance) are always
+    // visible — owner-scoping never hides pre-existing data.
+    scope: (env('SIGIL_PRIVATE_SCOPE', 'device') === 'off') ? 'off' : 'device',
   },
 
   memory: {
