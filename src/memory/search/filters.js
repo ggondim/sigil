@@ -25,17 +25,17 @@ function buildFactFilters({ minConfidence = 'medium', pointInTime, categories })
   return { minRank, temporalClause, categoryClause, filterParams: params };
 }
 
-// Owner-scoped read enforcement (P2). Builds the WHERE-clause fragment that
-// hides 'private'-kind facts (claude_session, person) created by a DIFFERENT
-// device. The rule, in plain terms — a fact is HIDDEN only when ALL hold:
+// Owner-scoped read enforcement (P2, refined by P7). Builds the WHERE-clause
+// fragment that hides 'private'-kind facts (claude_session, person) created by a
+// DIFFERENT owner. The rule, in plain terms — a fact is HIDDEN only when ALL hold:
 //   1. it belongs to a pod whose kind visibility is 'private', AND
-//   2. its created_by_device_id is NOT NULL, AND
-//   3. that device id differs from the current device.
+//   2. its created_by_origin is NOT NULL, AND
+//   3. that origin differs from the current owner's origin.
 // Everything else stays visible:
 //   - shared/public-kind facts (project, playbook, vital) — never gated here.
 //   - facts not in any private pod — never gated.
-//   - legacy rows with created_by_device_id IS NULL (pre-provenance) — always
-//     visible to everyone; owner-scoping must not hide pre-existing data.
+//   - legacy rows with created_by_origin IS NULL (pre-P7) — always visible to
+//     everyone; owner-scoping must not hide pre-existing data.
 //
 // Returns '' (no filter) when enforcement is disabled, when there are no
 // private kinds registered, or when the current device id is unknown — in those
@@ -49,20 +49,18 @@ function buildVisibilityClause({ currentDeviceId, privateKinds, scopeEnabled = t
     return { visibilityClause: '', visibilityParams: [] };
   }
 
-  // NOTE: created_by_device_id is an INTEGER FK to device.id in production
-  // (see migration 20260601000002_add-fact-provenance), but currentDeviceId
-  // here is the caller's identity which can be the local install's UUID
-  // (config.json device.id, e.g. "f6ce8926-...") rather than an integer device
-  // PK. Binding that UUID against the integer column made Postgres try to
-  // coerce it to int and blow up ("invalid input syntax for type integer").
-  // Compare both sides as text so the predicate is type-safe regardless of
-  // whether the id is an integer device PK (RPC remote device → matches its
-  // own rows) or a UUID (local install → matches none, so every OTHER device's
-  // private fact is hidden while its own NULL-stamped facts stay visible).
+  // P7: scope on `created_by_origin` (TEXT), the stable ownership identity
+  // stamped on EVERY write (paired device id or local install UUID). This
+  // supersedes the original P2 predicate on `created_by_device_id` — an INTEGER
+  // FK only populated for paired devices, which left local CLI/hook writes
+  // NULL and therefore let two PEOPLE in one DB see each other's private facts.
+  // `created_by_origin` is plain text, so the compare is type-safe and the same
+  // value the writer stamped (currentOrigin) is what we filter against here.
+  // Legacy rows with created_by_origin IS NULL (pre-P7) stay visible to all.
   const visibilityClause = `
         AND NOT (
-          created_by_device_id IS NOT NULL
-          AND created_by_device_id::text <> ?
+          created_by_origin IS NOT NULL
+          AND created_by_origin <> ?
           AND id = ANY(
             SELECT pm.member_id
             FROM pod_membership pm
@@ -72,9 +70,8 @@ function buildVisibilityClause({ currentDeviceId, privateKinds, scopeEnabled = t
           )
         )`;
 
-  // Bind the device id as text so it pairs with the `created_by_device_id::text`
-  // comparison above — a JS number would otherwise be sent as an int param and
-  // re-introduce an int/text mismatch.
+  // `currentDeviceId` here carries the ownership ORIGIN (see resolvePrivacyScope
+  // → currentOrigin). Bound as text to match the TEXT column.
   return { visibilityClause, visibilityParams: [String(currentDeviceId), privateKinds] };
 }
 
