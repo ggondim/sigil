@@ -18,6 +18,7 @@ import cortexDb from '../db/cortex.js';
 import { fromSourceMetadata as resolvePodsFromMetadata } from '../memory/pods/resolver.js';
 import { maskSecrets } from '../hooks/secret-mask.js';
 import config from '../config.js';
+import { llmEnabled } from '../lib/llm/registry.js';
 import { getConfig } from '../setup/config-store.js';
 import { PROMPTS_DIR } from '../lib/paths.js';
 
@@ -96,13 +97,22 @@ async function ingestDocument({
   // Step 0: Classify input (cognitive layer)
   let classification = null;
   if (classify) {
-    process.stderr.write('[0/6] Classifying input...' + "\n");
-    classification = await classifyInput(content, { title: finalTitle });
-    process.stderr.write(`  Route: ${classification.route} — ${classification.reasoning}` + "\n");
+    if (await llmEnabled()) {
+      process.stderr.write('[0/6] Classifying input...' + "\n");
+      classification = await classifyInput(content, { title: finalTitle });
+      process.stderr.write(`  Route: ${classification.route} — ${classification.reasoning}` + "\n");
 
-    if (classification.route === 'noise') {
-      process.stderr.write('  Skipped — classified as noise.' + "\n");
-      return { documentId: null, title: finalTitle, skipped: true, route: 'noise' };
+      if (classification.route === 'noise') {
+        process.stderr.write('  Skipped — classified as noise.' + "\n");
+        return { documentId: null, title: finalTitle, skipped: true, route: 'noise' };
+      }
+    } else {
+      // LLM-less daemon (provider:'none'): no classifier/extractor available.
+      // Treat the input as ONE pre-extracted fact (the client agent — e.g. Claude
+      // in Cowork — already did the extraction) and route it through the thought
+      // fast-path (embed + store + pod-attach + dedup), skipping all LLM steps.
+      process.stderr.write('[0/6] LLM disabled — storing input as a literal fact (thought fast-path).' + "\n");
+      classification = { route: 'thought', reasoning: 'llm-disabled literal', facts: [{ content, category: 'note', confidence: 'medium', importance: 'supplementary' }] };
     }
   }
 

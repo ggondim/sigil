@@ -1,4 +1,5 @@
 import { promptJson } from '../../lib/llm.js';
+import { llmEnabled } from '../../lib/llm/registry.js';
 import { TtlCache } from '../../lib/cache.js';
 import config from '../../config.js';
 
@@ -18,6 +19,8 @@ const cache = new TtlCache({ maxSize: 100, ttlMs: 5 * 60 * 1000 });
  * This surfaces non-literally connected facts (e.g. "I don't prefer React").
  */
 async function expandQuery(query) {
+  // LLM-less daemon (provider:'none'): skip expansion, search on the raw query.
+  if (!(await llmEnabled())) return [query];
   const cached = cache.get(query);
   if (cached) return cached;
 
