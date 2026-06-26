@@ -5,6 +5,7 @@ import path from 'node:path';
 import cortexDb from '../../db/cortex.js';
 import { embedOrThrow } from '../../ingestion/embedder.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
+import { llmEnabled } from '../../lib/llm/registry.js';
 import { pgHalfvecColumn, pgHalfvecParam, pgVector } from '../../lib/vectors.js';
 import { maskSecrets } from '../../hooks/secret-mask.js';
 import config from '../../config.js';
@@ -112,13 +113,22 @@ async function saveFact({ content, category, confidence, importance, namespace, 
 }
 
 async function audmDecide(newContent, existingContent) {
+  // LLM-less daemon (provider:'none'): no judge available -> default ADD
+  // (conservative: keep both facts, never retire one without a verdict).
+  if (!(await llmEnabled())) return 'ADD';
   const systemPrompt = await readFile(AUDM_PROMPT_PATH, 'utf8');
 
   const input = `${systemPrompt}\n\n**EXISTING FACT:** ${existingContent}\n\n**NEW FACT:** ${newContent}`;
   // temperature: 0 — AUDM is a classification, not a creative call. A pinned
   // temperature makes verdicts reproducible run-to-run (the same fact pair must
   // always resolve the same way; otherwise stale-fact retirement is a coin toss).
-  const text = await llmPrompt(input, { model: config.llm.decisionModel, caller: 'audm', temperature: 0 });
+  let text;
+  try {
+    text = await llmPrompt(input, { model: config.llm.decisionModel, caller: 'audm', temperature: 0 });
+  } catch (err) {
+    console.error('[audm] LLM unavailable, defaulting to ADD:', err.message);
+    return 'ADD';
+  }
 
   const upper = text.trim().toUpperCase();
   if (upper.includes('UPDATE')) return 'UPDATE';

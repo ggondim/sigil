@@ -86,7 +86,10 @@ function isClaudeCliAvailable() {
 async function detectProvider() {
   if (detectedProvider) return detectedProvider;
 
-  // Explicit config always wins
+  // Explicit config always wins. 'none' = run with NO LLM (hosted/headless
+  // daemon; extraction, dedup and synthesis are delegated to the client agent).
+  // Return null so LLM-optional call sites degrade instead of probing/throwing.
+  if (config.llm.provider === 'none') return null;
   if (config.llm.provider) {
     detectedProvider = config.llm.provider;
     return detectedProvider;
@@ -139,6 +142,14 @@ async function detectEmbeddingProvider() {
   );
 }
 
+// True when an LLM provider is configured/available. False for provider:'none'
+// or when nothing resolves -- lets LLM-optional call sites (AUDM dedup, query
+// expansion, synthesis) degrade gracefully instead of throwing.
+async function llmEnabled() {
+  try { return (await detectProvider()) != null; }
+  catch { return false; }
+}
+
 // Reset detection cache (for testing)
 function resetDetection() {
   detectedProvider = null;
@@ -170,6 +181,7 @@ export {
   getEmbedder,
   resolveProviderAndModel,
   detectProvider,
+  llmEnabled,
   detectEmbeddingProvider,
   resetDetection,
   isOllamaReachable,

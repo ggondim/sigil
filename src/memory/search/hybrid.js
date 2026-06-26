@@ -16,6 +16,7 @@ import { extractEntitiesFromFacts, findRelatedFacts, rerank } from './graph-enha
 import { expandQuery } from './query-expander.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
+import { llmEnabled } from '../../lib/llm/registry.js';
 import '../pods/kinds/index.js'; // side-effect: register built-in kinds
 import { activeKinds, privateKindNames } from '../pods/registry.js';
 import { getConfig } from '../../setup/config-store.js';
@@ -130,7 +131,7 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
   // The synthesizer is also the must-miss signal: it returns "Not in retrieved memory."
   // when the top-K doesn't actually contain the answer, which is more reliable than any
   // similarity threshold.
-  if (synthesize) {
+  if (synthesize && await llmEnabled()) {
     try {
       result.synthesized = await synthesizeAnswer(query, result);
     } catch (err) {
