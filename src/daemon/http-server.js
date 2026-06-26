@@ -22,6 +22,7 @@ import { WebSocketServer } from 'ws';
 
 import { GUI_WEB_DIR_BUILT, GUI_WEB_DIR_DEV } from '../lib/paths.js';
 import { getGuiToken, isValidToken } from './gui-token.js';
+import { resolveTokenOrigin } from './mcp-tokens.js';
 import { wireInProcessDispatch, handleMcpRequest } from './mcp-http.js';
 import bus from './events.js';
 
@@ -153,6 +154,24 @@ async function route(req, res, { registry, webDir, log }) {
     return serveStatic(req, res, path.replace('/static/', ''), webDir);
   }
 
+  // MCP over Streamable HTTP -- self-authenticated so it can accept per-person
+  // tokens (SIGIL_MCP_TOKENS -> created_by_origin, P8) in addition to the local
+  // gui token. Stateless: a fresh server per request. Placed before the GUI-token
+  // gate so team tokens reach it.
+  if (req.method === 'POST' && path === '/mcp') {
+    const provided = extractToken(req);
+    const { matched, origin } = resolveTokenOrigin(provided);
+    let mcpOrigin = null;
+    if (matched) {
+      mcpOrigin = origin;
+    } else if (await checkAuth(req)) {
+      mcpOrigin = null; // local gui token -> origin from local config (back-compat)
+    } else {
+      return writeJson(res, 401, { ok: false, error: { code: 'auth', message: 'unauthorized' } });
+    }
+    return handleMcpRequest(req, res, mcpOrigin);
+  }
+
   // Auth required from here.
   const authed = await checkAuth(req);
   if (!authed) {
@@ -170,13 +189,6 @@ async function route(req, res, { registry, webDir, log }) {
     }
     const result = await registry.dispatch(body.method, body.params, { transport: 'http' });
     return writeJson(res, 200, result);
-  }
-
-  // MCP over Streamable HTTP. The SDK transport owns the response (it parses the
-  // JSON-RPC body off the still-unread request stream and writes the reply), so
-  // we hand it req/res directly. Stateless: a fresh server per request.
-  if (req.method === 'POST' && path === '/mcp') {
-    return handleMcpRequest(req, res);
   }
 
   writeJson(res, 404, { ok: false, error: { code: 'not_found', message: `${req.method} ${path}` } });
@@ -248,6 +260,17 @@ async function checkAuth(req) {
   const m = cookie.match(/(?:^|;\s*)sigil_gui=([0-9a-f]+)/i);
   if (m && (await isValidToken(m[1]))) return true;
   return false;
+}
+
+// Extract the raw bearer token (Authorization header preferred, cookie
+// fallback) for P8 per-person token resolution. Returns null when absent.
+function extractToken(req) {
+  const auth = req.headers['authorization'];
+  if (auth && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
+  const cookie = req.headers['cookie'] || '';
+  const m = cookie.match(/(?:^|;\s*)sigil_gui=([0-9a-f]+)/i);
+  if (m) return m[1];
+  return null;
 }
 
 async function readJsonBody(req) {

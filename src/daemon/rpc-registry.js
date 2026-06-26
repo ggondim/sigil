@@ -41,7 +41,7 @@ export function createRegistry() {
     const { runWithRequestContext } = await import('./request-context.js');
     try {
       const data = await runWithRequestContext(
-        { device: ctx.device || null, transport: ctx.transport || null, agent: ctx.agent || null },
+        { device: ctx.device || null, transport: ctx.transport || null, agent: ctx.agent || null, origin: ctx.origin || null },
         () => fn(params ?? {}, ctx),
       );
       return { ok: true, data };

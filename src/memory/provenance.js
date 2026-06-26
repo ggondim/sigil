@@ -15,9 +15,16 @@
  * resolves (fail-open: writes leave it NULL → globally visible, never hidden).
  */
 import { getConfig } from '../setup/config-store.js';
-import { currentDeviceId as rpcDeviceId } from '../daemon/request-context.js';
+import { currentDeviceId as rpcDeviceId, currentRequestOrigin as rpcOrigin } from '../daemon/request-context.js';
 
 export function currentOrigin(ctx = {}) {
+  // P8: an explicit per-request origin (hosted /mcp bearer-token identity) wins.
+  // It is a TEXT origin, independent of the integer device id, so a shared hosted
+  // daemon can attribute each caller without polluting created_by_device_id.
+  try {
+    const o = rpcOrigin();
+    if (o != null) return String(o);
+  } catch { /* no request context */ }
   let id = null;
   try {
     id = rpcDeviceId();

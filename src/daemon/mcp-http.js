@@ -18,10 +18,19 @@
  * (no socket loopback) via setInProcessDispatch().
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 import { createMcpServer } from '../mcp/build-server.js';
 import { setInProcessDispatch } from '../mcp/daemon-call.js';
+
+// P8: per-request ownership origin (resolved from the caller's bearer token in
+// http-server's /mcp route). Held in ALS so the in-process dispatch can stamp it
+// into the request-context without threading it through the MCP SDK.
+const originALS = new AsyncLocalStorage();
+function runWithMcpOrigin(origin, fn) { return originALS.run(origin ?? null, fn); }
+function currentMcpOrigin() { return originALS.getStore() ?? null; }
 
 let wired = false;
 
@@ -30,7 +39,10 @@ let wired = false;
 export function wireInProcessDispatch(registry) {
   if (wired) return;
   setInProcessDispatch(async (method, params) => {
-    const r = await registry.dispatch(method, params ?? {}, { transport: 'mcp-http', agent: 'mcp' });
+    // P8: attribute the call to the per-person origin the /mcp route resolved
+    // from the bearer token (null => fall back to local-config device.id).
+    const origin = currentMcpOrigin();
+    const r = await registry.dispatch(method, params ?? {}, { transport: 'mcp-http', agent: 'mcp', origin });
     if (!r || r.ok === false) {
       const err = r?.error;
       throw new Error(typeof err === 'string' ? err : (err?.message || `rpc method '${method}' failed`));
@@ -42,7 +54,7 @@ export function wireInProcessDispatch(registry) {
 
 // Handle one POST /mcp request. Creates a per-request stateless server+transport
 // and lets the SDK parse the body off the still-unread request stream.
-export async function handleMcpRequest(req, res) {
+export async function handleMcpRequest(req, res, origin = null) {
   const server = createMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
@@ -52,6 +64,10 @@ export async function handleMcpRequest(req, res) {
     server.close().catch(() => {});
   });
 
-  await server.connect(transport);
-  await transport.handleRequest(req, res);
+  // Run the whole request (incl. tool dispatch) inside the origin ALS so P8
+  // attribution reaches the fact store + search visibility filter.
+  await runWithMcpOrigin(origin, async () => {
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+  });
 }
