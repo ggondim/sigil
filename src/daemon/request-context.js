@@ -29,6 +29,12 @@ export function currentDeviceId() {
   return als.getStore()?.device?.id ?? null;
 }
 
+// P8: explicit per-request ownership origin (TEXT), set from the hosted /mcp
+// bearer token. Independent of the integer device id above.
+export function currentRequestOrigin() {
+  return als.getStore()?.origin ?? null;
+}
+
 export function currentAgent() {
   // ALS (per-request, set by the daemon dispatch from the socket envelope) is
   // authoritative. Fall back to SIGIL_AGENT for IN-PROCESS direct callers that
