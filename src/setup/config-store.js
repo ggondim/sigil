@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { SIGIL_CONFIG_PATH, SIGIL_ENV_PATH } from '../lib/paths.js';
 import { EMBEDDING_DIM } from '../lib/constants.js';
 
-export const CONFIG_SCHEMA_VERSION = 1;
+export const CONFIG_SCHEMA_VERSION = 2;
 
 const DB_MODES = ['embedded', 'local', 'docker', 'url'];
 const STEP_STATUSES = ['pending', 'active', 'done', 'error'];
@@ -45,9 +45,48 @@ function defaults() {
       user: 'sigil_app',
       password: null,
     },
-    llm: { provider: null, model: null, apiKey: null, host: null },
-    embedding: { provider: null, model: null, apiKey: null, host: null },
+    // llm: provider identity (set by onboarding) + tuning knobs and the
+    // managed-session engine. config.json is the sole source of truth — these
+    // were env-only before (LLM_*, SIGIL_MANAGED_*, SIGIL_MAX_CLAUDE_PROCS).
+    llm: {
+      provider: null, model: null, apiKey: null, host: null,
+      cliPath: '',
+      extractionModel: '', decisionModel: '', entityModel: '',
+      maxRetries: 3, cliTimeout: 120000, requestTimeout: 60000, maxClaudeProcs: 4,
+      openrouterBaseUrl: '', openrouterReferer: 'https://github.com/Anmol-Srv/sigil', openrouterTitle: 'Sigil',
+      managedSession: {
+        enabled: false, poolSize: 1, tokenBudget: 60000,
+        taskTimeoutMs: 120000, firstTaskTimeoutMs: 10000, healthProbeMs: 15000,
+        clearBetweenTasks: true,
+      },
+    },
+    embedding: {
+      provider: null, model: null, apiKey: null, host: null,
+      openrouterBaseUrl: '', openrouterReferer: 'https://github.com/Anmol-Srv/sigil', openrouterTitle: 'Sigil',
+    },
     identity: { name: null },
+    // Infra/tuning — prepopulated here (defaults track the code, merged on read)
+    // so config.json is self-sufficient and no env file is consulted.
+    http: { enabled: true, host: '127.0.0.1', port: 7777 },
+    network: { mode: 'solo', enabled: false, masterNodeId: null },
+    defaults: { namespace: 'default' },
+    memory: {
+      skipThreshold: 0.88, ambiguousThreshold: 0.78, supersedeThreshold: 0.72,
+      supersedeScanLimit: 8, minFactSimilarity: 0.45, injectionFloor: 0.6,
+    },
+    search: { synthesize: true, synthesizeModel: '' },
+    ingest: { eagerExtract: true, extractRelations: true, graphGleanRounds: 0 },
+    output: {
+      storage: 'local', dir: './output',
+      s3: { endpoint: '', bucket: '', region: 'us-east-1', accessKey: '', secretKey: '', publicUrl: '' },
+    },
+    hebbian: {
+      entity: {
+        enabled: true, eta: 1, cap: 50, halfLifeDays: 30, minEffective: 0.5,
+        rrfWeight: 0.3, maxWriteEntities: 12, expandPerSeed: 3,
+      },
+    },
+    preferences: { noUpdateCheck: false },
     setup: { complete: false, steps: {} },
   };
 }
@@ -156,8 +195,11 @@ function validateSection(section, values) {
 // Existing installs configured ~/.sigil/.env. Rather than strand them on a clean
 // break, import that file into config.json ONCE, then rename it so it's skipped
 // thereafter. A power user can later drop a fresh .env to update settings; it's
-// re-imported on the next boot. Only the onboarding-managed keys are mapped;
-// tuning flags (MEMORY_*, ports) remain plain env vars.
+// re-imported on the next boot. We map the settings whose silent loss would
+// actually break a daemon (db, llm, embedding, network, http, managed-session) so
+// an existing .env-configured install upgrades losslessly. Pure tuning knobs
+// (MEMORY_* thresholds, per-task model overrides) are NOT carried — they fall
+// back to the (identical) code defaults; re-set them in the GUI/config if needed.
 
 function parseEnvFile(path) {
   if (!existsSync(path)) return null;
@@ -186,6 +228,10 @@ function envToPatches(e) {
     if (e.SIGIL_DB_NAME) db.name = e.SIGIL_DB_NAME;
     if (e.SIGIL_DB_USER) db.user = e.SIGIL_DB_USER;
     if (e.SIGIL_DB_PASSWORD) db.password = e.SIGIL_DB_PASSWORD;
+  } else if (e.SIGIL_DB_MODE && DB_MODES.includes(e.SIGIL_DB_MODE)) {
+    // Bare SIGIL_DB_MODE=embedded (the zero-config escape hatch) with no
+    // url/host — without this the daemon would boot with mode=null and throw.
+    db.mode = e.SIGIL_DB_MODE;
   }
   if (Object.keys(db).length) patches.database = db;
 
@@ -207,6 +253,30 @@ function envToPatches(e) {
     if (e.EMBEDDING_PROVIDER === 'ollama' && e.OLLAMA_HOST) emb.host = e.OLLAMA_HOST;
     patches.embedding = emb;
   }
+
+  // Managed-session engine (opt-in power feature). Carry the toggle so an
+  // .env-enabled warm pool doesn't silently fall back to one-shot on upgrade.
+  if (e.SIGIL_MANAGED_SESSION !== undefined) {
+    patches.llm = patches.llm || {};
+    patches.llm.managedSession = { enabled: e.SIGIL_MANAGED_SESSION === 'true' };
+  }
+
+  // Network (multi-device). Without this a .env-configured follower/master
+  // silently reverts to solo — Iroh never starts and sync stops dead.
+  const net = {};
+  if (e.SIGIL_MODE) net.mode = e.SIGIL_MODE;
+  if (e.SIGIL_NETWORK_ENABLED !== undefined) net.enabled = e.SIGIL_NETWORK_ENABLED !== 'false';
+  else if (e.SIGIL_MODE && e.SIGIL_MODE !== 'solo') net.enabled = true; // legacy derive-from-mode
+  if (e.SIGIL_MASTER_NODE_ID) net.masterNodeId = e.SIGIL_MASTER_NODE_ID;
+  if (Object.keys(net).length) patches.network = net;
+
+  // HTTP server (custom port/host/disabled) — a bookmarked GUI URL / reverse
+  // proxy on a non-default port would otherwise break after upgrade.
+  const http = {};
+  if (e.SIGIL_HTTP_PORT) http.port = Number(e.SIGIL_HTTP_PORT) || 7777;
+  if (e.SIGIL_HTTP_HOST) http.host = e.SIGIL_HTTP_HOST;
+  if (e.SIGIL_HTTP_ENABLED !== undefined) http.enabled = e.SIGIL_HTTP_ENABLED !== 'false';
+  if (Object.keys(http).length) patches.http = http;
 
   if (e.SIGIL_SETUP_COMPLETE === 'true') patches.setup = { complete: true };
   return patches;
@@ -242,9 +312,17 @@ function migrateEnvIfPresent() {
 
 // ── public API ───────────────────────────────────────────────────────────────
 
-/** Load (migrate legacy .env → read → migrate schema → prune → merge defaults). */
-export function loadConfig() {
-  migrateEnvIfPresent();
+/**
+ * Load (migrate legacy .env → read → migrate schema → prune → merge defaults).
+ *
+ * `migrateEnv: false` skips the one-time ~/.sigil/.env → config.json import +
+ * rename. knexfile.js uses this: importing it for a connection string must not
+ * consume the user's .env as a module-load side effect (a failed `npm run
+ * migrate` would otherwise have already renamed it). The daemon/CLI run the full
+ * migration on their own first load.
+ */
+export function loadConfig({ migrateEnv = true } = {}) {
+  if (migrateEnv) migrateEnvIfPresent();
   let raw = readRaw();
   const migrated = runMigrations(raw);
   // Persist a migration only if it actually changed the version on disk.
@@ -277,6 +355,22 @@ function resetStaleActiveSteps() {
 /** The current merged snapshot (loads on first access). */
 export function getConfig() {
   return cache || loadConfig();
+}
+
+// ── test seam ────────────────────────────────────────────────────────────────
+// config.json is the sole source of truth (no env override), so tests can no
+// longer configure the daemon/embedder/LLM by setting process.env. They seed the
+// in-memory cache instead. `__setTestConfig` overlays a partial onto the CURRENT
+// cache (or code defaults on first call) — never the developer's real config.json
+// on disk, so it stays hermetic AND additive across calls. It also avoids
+// triggering loadConfig()'s one-time .env migration on a dev machine.
+// `__resetTestConfig` clears it. Test-only — prod never calls these.
+export function __setTestConfig(partial = {}) {
+  cache = deepMerge(cache ?? defaults(), partial);
+  return cache;
+}
+export function __resetTestConfig() {
+  cache = null;
 }
 
 /**

@@ -1,13 +1,14 @@
 /**
- * DB driver selection.
+ * DB driver selection — driven entirely by config.json (config.db.*); no env.
  *
- *   - If db.mode === 'embedded' (or SIGIL_DB_MODE=embedded), use the in-process
- *     PGlite engine — a full Postgres 17 + pgvector compiled to WASM, no server,
- *     no Docker, no prerequisites. Data lives at ~/.sigil/db.
- *   - Else if SIGIL_DATABASE_URL or DATABASE_URL is set, use the URL driver
- *     (Neon, Supabase, RDS, Render, Railway, self-hosted, etc.).
- *   - Otherwise, use the local-postgres driver (back-compat with the
- *     SIGIL_DB_HOST / PORT / NAME / USER / PASSWORD env vars).
+ *   - config.db.mode === 'embedded' → the in-process PGlite engine (a full
+ *     Postgres 17 + pgvector compiled to WASM, no server, no Docker). Data at
+ *     ~/.sigil/db.
+ *   - Else if config.db.url is set → the URL driver (Neon, Supabase, RDS,
+ *     Render, Railway, self-hosted, etc.).
+ *   - Else if config.db.mode === 'local' → the local-postgres driver from the
+ *     stored host/port/name/user/password.
+ *   - Otherwise → throw notConfiguredError() (setup never finished).
  *
  * Returns a descriptor: { kind, provider, connection, client }. `connection` is
  * a pg-shape object for the URL/local drivers, or { pglitePath } for embedded.
@@ -40,14 +41,14 @@ export function selectDriver(config) {
       client: 'pg',
     };
   }
-  // Field-based local Postgres — ONLY when the user EXPLICITLY chose it: setup
-  // persisted mode 'local', or legacy SIGIL_DB_* env vars are present. A null/
-  // unknown mode with no URL and no env means setup never finished — and
-  // building a local driver here would silently point config.db's defaults
-  // (localhost:5432, user sigil_app) at whatever foreign Postgres owns that
-  // port, producing a baffling auth error against someone else's database
-  // instead of an honest "Sigil isn't set up". Fail loud instead.
-  if (mode === 'local' || hasExplicitLocalEnv()) {
+  // Field-based local Postgres — ONLY when the user EXPLICITLY chose it (setup
+  // persisted mode 'local'). A null/unknown mode with no URL means setup never
+  // finished — and building a local driver here would silently point config.db's
+  // defaults (localhost:5432, user sigil_app) at whatever foreign Postgres owns
+  // that port, producing a baffling auth error against someone else's database
+  // instead of an honest "Sigil isn't set up". Fail loud instead. (config.json
+  // is the sole source of truth — the legacy SIGIL_DB_* env escape hatch is gone.)
+  if (mode === 'local') {
     return {
       kind: 'local',
       provider: 'local',
@@ -56,19 +57,6 @@ export function selectDriver(config) {
     };
   }
   throw notConfiguredError();
-}
-
-// Legacy/dev escape hatch: discrete connection env vars select the local driver
-// even without a persisted mode (the original Sigil behavior). SIGIL_DB_MODE is
-// already folded into config.db.mode, so it's covered by the mode check above.
-function hasExplicitLocalEnv() {
-  return Boolean(
-    process.env.SIGIL_DB_HOST
-    || process.env.SIGIL_DB_PORT
-    || process.env.SIGIL_DB_NAME
-    || process.env.SIGIL_DB_USER
-    || process.env.SIGIL_DB_PASSWORD,
-  );
 }
 
 function notConfiguredError() {
