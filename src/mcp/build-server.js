@@ -23,6 +23,7 @@ import { registerStatusTool } from './tools/status.js';
 import { registerIngestTool } from './tools/ingest.js';
 import { registerRememberTool } from './tools/remember.js';
 import { registerListPodsTool } from './tools/list-pods.js';
+import { registerListFactsTool } from './tools/list-facts.js';
 import { registerGetPodTool } from './tools/get-pod.js';
 import { registerPrimeTool } from './tools/prime.js';
 
@@ -49,6 +50,7 @@ export function createMcpServer() {
 
   // Discovery
   registerListPodsTool(server);
+  registerListFactsTool(server);
 
   // Operations
   registerStatusTool(server);
