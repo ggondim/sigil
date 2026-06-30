@@ -12,7 +12,10 @@ Use when: the user states a durable preference, decision, constraint, or factual
 Pass each distinct fact as its own array element — don't concatenate unrelated facts into one string.
 Facts are written under the agent provenance "mcp" and survive across sessions.`,
     {
-      facts: z.array(z.string()).min(1).describe('One or more self-contained facts to remember. Each element is a separate fact.'),
+      facts: z.array(z.union([
+        z.string(),
+        z.object({ content: z.string(), category: z.string().optional(), importance: z.enum(['vital', 'supplementary']).optional() }),
+      ])).min(1).describe('Facts to remember — cada item é uma string OU { content, category?, importance? }. category: decision|convention|architecture|business_rule|workflow|domain_knowledge|key_insight|issue|metric|action_item|preference|opinion|personal|experience. importance: vital|supplementary.'),
       namespace: z.string().optional().describe('Target namespace. Defaults to the config default namespace.'),
       project: z.string().optional().describe('Project identity = the git remote (e.g. "github.com/3gr4m/the-coffee-proprias"). Attaches the facts to that project POD — use it so memory is pod-scoped (recommended).'),
     },
