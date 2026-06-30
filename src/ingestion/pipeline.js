@@ -74,6 +74,7 @@ async function ingestDocument({
   // unchanged.
   podUids = [],
   resolvePodsFrom = null,
+  factOverrides = null,
 }) {
   // Gate first: never start a write the embedder can't finish (silent-loss guard).
   assertEmbeddingReady();
@@ -112,7 +113,7 @@ async function ingestDocument({
       // in Cowork — already did the extraction) and route it through the thought
       // fast-path (embed + store + pod-attach + dedup), skipping all LLM steps.
       process.stderr.write('[0/6] LLM disabled — storing input as a literal fact (thought fast-path).' + "\n");
-      classification = { route: 'thought', reasoning: 'llm-disabled literal', facts: [{ content, category: 'note', confidence: 'medium', importance: 'supplementary' }] };
+      classification = { route: 'thought', reasoning: 'llm-disabled literal', facts: [{ content, category: factOverrides?.category || 'note', confidence: 'medium', importance: factOverrides?.importance || 'supplementary' }] };
     }
   }
 
