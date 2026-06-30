@@ -20,6 +20,15 @@ export function registerRemember(registry) {
     // `.sigil/namespace` marker (via params.cwd) > install default.
     const namespace = resolveNamespace({ cwd: params.cwd || null, explicit: params.namespace });
 
+    // P11: attach to the project pod when a project identity is given (hosted/MCP,
+    // no cwd). The git remote resolves the SAME remote-keyed pod as Claude Code.
+    let podUids = [];
+    if (params.project) {
+      const { ensureProjectPodByIdentity } = await import('../../memory/pods/kinds/project.js');
+      const pod = await ensureProjectPodByIdentity(params.project, namespace);
+      if (pod) podUids = [pod.uid];
+    }
+
     let added = 0;
     let updated = 0;
     let alreadyKnown = 0;
@@ -27,7 +36,7 @@ export function registerRemember(registry) {
     const inputs = []; // per-input causal trace
 
     for (const text of facts) {
-      const result = await ingestDocument({ content: text, namespace, classify: true });
+      const result = await ingestDocument({ content: text, namespace, classify: true, podUids });
       if (result.skipped || result.route === 'noise') {
         alreadyKnown++;
         inputs.push({ input: String(text).slice(0, 240), route: result.route ?? null, skipped: true, verdicts: result.facts?.verdicts || [] });

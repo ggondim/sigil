@@ -97,6 +97,27 @@ export async function ensureProjectPod({ cwd, namespace = null }) {
   return pod;
 }
 
+// P11: ensure a project pod for an EXPLICIT identity (a git remote URL or an
+// already-normalized id), WITHOUT a cwd. Used by the hosted server / MCP where
+// there is no project working dir — the caller passes the project's git remote so
+// writes attach to the SAME remote-keyed pod that Claude Code resolves locally.
+export async function ensureProjectPodByIdentity(identityOrRemote, namespace = null) {
+  if (!identityOrRemote) return null;
+  const identity = normalizeGitRemote(identityOrRemote) || String(identityOrRemote).trim();
+  if (!identity) return null;
+  const ns = namespace || config.defaults.namespace;
+  const name = identity.split('/').filter(Boolean).pop() || identity;
+  const { pod } = await podStore.upsertPod({
+    podType: POD_TYPE,
+    externalId: identity,
+    name,
+    namespace: ns,
+    attrs: { display_name: name, discovered_at: new Date().toISOString(), source: 'hosted-mcp' },
+    startedAt: new Date(),
+  });
+  return pod;
+}
+
 // Derive the project root from a working directory: git toplevel if
 // the cwd is inside a repo, otherwise the cwd itself. Pure / synchronous /
 // safe to call from any code path.
