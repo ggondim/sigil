@@ -18,9 +18,10 @@ Use when: adding documents to the knowledge base, ingesting files, URLs, or raw 
       sourceType: z.string().optional().describe('Source type label (e.g., docs, code, notes). Auto-detected from format.'),
       skipFacts: z.boolean().optional().default(false).describe('Skip fact extraction (faster, chunks only)'),
       skipEntities: z.boolean().optional().default(false).describe('Skip entity linking'),
+      project: z.string().optional().describe('Project identity = the git remote. Attaches the doc + facts to that project POD (recommended; pod-scoped memory).'),
     },
-    async ({ content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities }) => {
-      const result = await daemonCall('ingestDoc', { content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities });
+    async ({ content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities, project }) => {
+      const result = await daemonCall('ingestDoc', { content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities, project });
 
       const text = result.skipped
         ? `Document "${result.title}" already up to date — skipped.`

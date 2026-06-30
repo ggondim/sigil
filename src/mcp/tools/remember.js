@@ -14,9 +14,10 @@ Facts are written under the agent provenance "mcp" and survive across sessions.`
     {
       facts: z.array(z.string()).min(1).describe('One or more self-contained facts to remember. Each element is a separate fact.'),
       namespace: z.string().optional().describe('Target namespace. Defaults to the config default namespace.'),
+      project: z.string().optional().describe('Project identity = the git remote (e.g. "github.com/3gr4m/the-coffee-proprias"). Attaches the facts to that project POD — use it so memory is pod-scoped (recommended).'),
     },
-    async ({ facts, namespace }) => {
-      const data = await daemonCall('remember', { facts, namespace });
+    async ({ facts, namespace, project }) => {
+      const data = await daemonCall('remember', { facts, namespace, project });
 
       const parts = [];
       if (data.added)        parts.push(`${data.added} new`);

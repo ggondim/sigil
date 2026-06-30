@@ -24,12 +24,19 @@ async function doIngest(params) {
   const { ingestDocument } = await import('../../ingestion/pipeline.js');
   const { resolveSource } = await import('../../ingestion/resolve-source.js');
 
-  const { content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities, metadata } = params;
+  const { content, filePath, url, title, namespace, sourceType, skipFacts, skipEntities, metadata, project } = params;
   const source = await resolveSource({ content, filePath, url, title, sourceType });
   if (!source) {
     const err = new Error('ingestDoc: provide content, filePath, or url');
     err.code = 'invalid_params';
     throw err;
+  }
+
+  let podUids = [];
+  if (project) {
+    const { ensureProjectPodByIdentity } = await import('../../memory/pods/kinds/project.js');
+    const pod = await ensureProjectPodByIdentity(project, namespace);
+    if (pod) podUids = [pod.uid];
   }
 
   const result = await ingestDocument({
@@ -42,6 +49,7 @@ async function doIngest(params) {
     metadata: metadata || source.metadata,
     skipFacts,
     skipEntities,
+    podUids,
   });
 
   const response = {
