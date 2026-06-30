@@ -9,7 +9,19 @@ export function registerListFacts(registry) {
     const category = params.category || undefined;
     const limit = Number.isFinite(params.limit) ? params.limit : 20;
 
-    const facts = await listFacts({ namespace, category, limit });
+    // P12: pod-scoped listing. `project` (git remote) resolves the project pod
+    // (read-only — never creates) so the listing is the COMPLETE pod, not the
+    // whole namespace.
+    let podUids = null;
+    if (params.project) {
+      const podStore = await import('../../memory/pods/store.js');
+      const { normalizeGitRemote } = await import('../../memory/pods/kinds/project.js');
+      const externalId = normalizeGitRemote(params.project) || String(params.project).trim();
+      const pod = await podStore.findByExternalId({ podType: 'project', externalId, namespace });
+      podUids = pod ? [pod.uid] : ['__no-such-pod__'];
+    }
+
+    const facts = await listFacts({ namespace, category, limit, podUids });
     return {
       namespace,
       category: category || null,

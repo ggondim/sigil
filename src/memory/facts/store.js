@@ -365,7 +365,7 @@ async function getHotFacts(namespace, { limit = 10, since } = {}) {
   return query;
 }
 
-async function listFacts({ namespace, limit = 50, offset = 0, category } = {}) {
+async function listFacts({ namespace, limit = 50, offset = 0, category, podUids = null } = {}) {
   const query = cortexDb('fact')
     .where({ status: 'active' })
     .select('id', 'uid', 'content', 'category', 'confidence', 'importance', 'createdAt', 'namespace')
@@ -375,6 +375,14 @@ async function listFacts({ namespace, limit = 50, offset = 0, category } = {}) {
 
   if (namespace) query.where({ namespace });
   if (category) query.where({ category });
+  // Pod-scoped listing (P12): restrict to facts that are members of the given pods.
+  if (Array.isArray(podUids) && podUids.length) {
+    query.whereIn('id', cortexDb('pod_membership as pm')
+      .join('pod as p', 'p.id', 'pm.pod_id')
+      .where('pm.member_type', 'fact')
+      .whereIn('p.uid', podUids)
+      .select('pm.member_id'));
+  }
   return query;
 }
 
