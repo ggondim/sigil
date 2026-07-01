@@ -3,9 +3,10 @@
  *
  * Identity (externalId) is decoupled from the local path so two clones of
  * the same repo at different paths share one project pod. Precedence
- * (deriveProjectIdentity): SIGIL_PROJECT_ID env → normalized git remote
- * (default) → committed `.sigil/project.json` { id } → absolute root path
- * (legacy fallback). Strategy is configurable via `project.identity`
+ * (deriveProjectIdentity): SIGIL_PROJECT_ID env → committed
+ * `.sigil/project.json` { id } (override — beats the remote) → normalized git
+ * remote (default) → absolute root path (legacy fallback). Strategy is
+ * configurable via `project.identity`
  * (remote | path | explicit). The root_path / git_root / display_name attrs
  * still hold the LOCAL path info for display. Multi-active — opening Claude
  * Code in two different projects activates two project pods simultaneously.
@@ -130,8 +131,10 @@ export function deriveProjectRoot(cwd) {
 // decoupled from the local path so clones at different paths share one pod.
 // Precedence, gated by `project.identity` strategy:
 //   1. SIGIL_PROJECT_ID env  — explicit escape hatch (always wins).
-//   2. normalized git remote — the default (skipped when strategy='path').
-//   3. .sigil/project.json { id } — committed marker fallback.
+//   2. .sigil/project.json { id } — committed OVERRIDE. Beats the git remote so
+//      that N repos with DIFFERENT remotes (a parent workspace + sub-repos) can
+//      be pinned to ONE shared project pod. Opt-in — no marker ⇒ falls through.
+//   3. normalized git remote — the default when no marker (skipped under 'path').
 //   4. absolute project root path — legacy fallback (skipped under 'explicit'
 //      unless nothing above resolved). Pure / synchronous / never throws.
 export function deriveProjectIdentity(cwd) {
@@ -143,14 +146,17 @@ export function deriveProjectIdentity(cwd) {
   // 'path' strategy short-circuits straight to the legacy path identity.
   if (strategy === 'path') return deriveProjectRoot(cwd);
 
-  const remote = normalizeGitRemote(detectGitRemote(cwd));
-  if (remote) return remote;
-
+  // A committed marker is a DELIBERATE statement of pod membership; it outranks
+  // the incidental git remote (below), which is what lets sibling repos with
+  // distinct remotes converge on one pod.
   const marker = readProjectMarker(deriveProjectRoot(cwd));
   if (marker) return marker;
 
-  // 'explicit' resolved nothing usable above; fall back to path only as a
-  // last resort (an unkeyed pod is worse than a path-keyed one).
+  const remote = normalizeGitRemote(detectGitRemote(cwd));
+  if (remote) return remote;
+
+  // Nothing explicit resolved; fall back to path as a last resort (an unkeyed
+  // pod is worse than a path-keyed one).
   return deriveProjectRoot(cwd);
 }
 
