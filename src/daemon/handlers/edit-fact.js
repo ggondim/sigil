@@ -10,7 +10,9 @@
  */
 import { ALL_CATEGORIES } from '../../memory/facts/categories.js';
 
-const VALID_CATEGORIES = Object.keys(ALL_CATEGORIES);
+// 'note' is a real stored category (the LLM-less hosted path stamps it), so it
+// must be accepted here even though it isn't in the classifier's taxonomy.
+const VALID_CATEGORIES = [...Object.keys(ALL_CATEGORIES), 'note'];
 const VALID_IMPORTANCE = ['vital', 'supplementary'];
 const VALID_CONFIDENCE = ['high', 'medium', 'low'];
 
@@ -21,9 +23,9 @@ export function registerEditFact(registry) {
     const { embedOrThrow } = await import('../../ingestion/embedder.js');
     const factStore = await import('../../memory/facts/store.js');
 
-    const idArg = String(params.id ?? '').trim();
+    const idArg = String(params.id ?? params.uid ?? '').trim();
     if (!idArg) {
-      const e = new Error('editFact: params.id required');
+      const e = new Error('editFact: params.id or params.uid required');
       e.code = 'invalid_params';
       throw e;
     }

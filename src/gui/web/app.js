@@ -268,6 +268,7 @@ async function kbSelectFact(uid) {
   try {
     const ctx = await rpc('getFactContext', { uid });
     if (ctx.notFound) { pane.innerHTML = `<div class="kb-detail-pad"><div class="empty">Fact not found.</div></div>`; return; }
+    kb.selectedFact = ctx.fact;
     pane.innerHTML = kbRenderFactDetail(ctx);
   } catch (err) {
     pane.innerHTML = `<div class="kb-detail-pad"><div class="empty">Couldn’t load detail: ${escape(err.message)}</div></div>`;
@@ -307,7 +308,10 @@ function kbRenderFactDetail(ctx) {
   return `<div class="kb-detail-pad">
     <div class="kb-detail-head">
       <div class="kb-badges">${badges.join('')}</div>
-      <button class="btn ghost small kb-forget" data-uid="${escape(f.uid)}" type="button" title="Forget this fact">Forget</button>
+      <div class="kb-detail-actions">
+        <button class="btn ghost small kb-edit" data-uid="${escape(f.uid)}" type="button" title="Edit / reclassify this fact">Edit</button>
+        <button class="btn ghost small kb-forget" data-uid="${escape(f.uid)}" type="button" title="Forget this fact">Forget</button>
+      </div>
     </div>
     <p class="kb-fact-body">${escape(f.content)}</p>
     ${metaBlock}${docs}${ents}${rels}
@@ -328,6 +332,66 @@ async function kbForgetFact(uid) {
     kbLoadStats();
   } catch (err) {
     toast({ variant: 'error', message: `Couldn’t forget fact: ${err.message}` });
+  }
+}
+
+// ── Fact editing (reclassify / edit content) ────────────────────────
+// 'note' is the LLM-less default; the rest mirror the classifier taxonomy.
+const KB_CATEGORIES = ['note', 'preference', 'opinion', 'personal', 'experience',
+  'business_rule', 'workflow', 'architecture', 'convention', 'decision',
+  'domain_knowledge', 'key_insight', 'metric', 'issue', 'action_item'];
+
+function kbOptions(values, current) {
+  return values.map((v) => `<option value="${escape(v)}"${v === current ? ' selected' : ''}>${escape(titleCase(v))}</option>`).join('');
+}
+
+function kbRenderFactEditor(f) {
+  return `<div class="kb-detail-pad">
+    <div class="kb-detail-head"><div class="kb-badges"><span class="badge warn">Editing</span></div></div>
+    <label class="kb-edit-label" for="kb-edit-content">Content</label>
+    <textarea id="kb-edit-content" class="kb-edit-content" rows="4">${escape(f.content)}</textarea>
+    <div class="kb-edit-grid">
+      <label>Category<select class="kb-edit-cat">${kbOptions(KB_CATEGORIES, f.category)}</select></label>
+      <label>Importance<select class="kb-edit-imp">${kbOptions(['vital', 'supplementary'], f.importance)}</select></label>
+      <label>Confidence<select class="kb-edit-conf">${kbOptions(['high', 'medium', 'low'], f.confidence)}</select></label>
+    </div>
+    <div class="kb-edit-actions">
+      <button class="btn small kb-edit-save" data-uid="${escape(f.uid)}" type="button">Save</button>
+      <button class="btn ghost small kb-edit-cancel" data-uid="${escape(f.uid)}" type="button">Cancel</button>
+    </div>
+    <p class="kb-edit-hint">Editing the content re-embeds the fact (search stays in sync). Category / importance / confidence is a cheap update.</p>
+  </div>`;
+}
+
+function kbEditFact(uid) {
+  const f = kb.selectedFact;
+  if (!f || f.uid !== uid) return;
+  $('#kb-fact-detail').innerHTML = kbRenderFactEditor(f);
+  $('#kb-edit-content')?.focus();
+}
+
+async function kbSaveFact(uid) {
+  const pane = $('#kb-fact-detail');
+  const content = pane.querySelector('.kb-edit-content')?.value ?? '';
+  const category = pane.querySelector('.kb-edit-cat')?.value;
+  const importance = pane.querySelector('.kb-edit-imp')?.value;
+  const confidence = pane.querySelector('.kb-edit-conf')?.value;
+  const btn = pane.querySelector('.kb-edit-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const res = await rpc('editFact', { uid, content, category, importance, confidence });
+    toast({ variant: 'success', message: res.reembedded ? 'Saved — fact re-embedded.' : 'Saved.' });
+    const patch = { content: res.content, category: res.category, importance: res.importance, confidence: res.confidence };
+    const idx = kb.facts.findIndex((x) => x.uid === uid);
+    if (idx >= 0) kb.facts[idx] = { ...kb.facts[idx], ...patch };
+    kb.selectedFact = { ...kb.selectedFact, ...patch };
+    kbRenderFactFilters();
+    kbRenderFacts();
+    await kbSelectFact(uid);
+    kbLoadStats();
+  } catch (err) {
+    toast({ variant: 'error', message: `Couldn’t save: ${err.message}` });
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
   }
 }
 
@@ -588,6 +652,9 @@ $('#kb-fact-list')?.addEventListener('click', (e) => {
   const row = e.target.closest('.kb-row'); if (row) kbSelectFact(row.dataset.uid);
 });
 $('#kb-fact-detail')?.addEventListener('click', (e) => {
+  const edit = e.target.closest('.kb-edit'); if (edit) { kbEditFact(edit.dataset.uid); return; }
+  const save = e.target.closest('.kb-edit-save'); if (save) { kbSaveFact(save.dataset.uid); return; }
+  const cancel = e.target.closest('.kb-edit-cancel'); if (cancel) { kbSelectFact(cancel.dataset.uid); return; }
   const forget = e.target.closest('.kb-forget'); if (forget) { kbForgetFact(forget.dataset.uid); return; }
   const ent = e.target.closest('[data-entity-id]');
   if (ent) { kbSetTab('entities'); kbSelectEntity(ent.dataset.entityId); }
