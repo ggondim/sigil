@@ -4,7 +4,8 @@
 // to its toplevel, a non-git directory resolves to itself (never throws, never
 // returns empty — a silent [] here is what collapsed search to global).
 // deriveProjectIdentity is the pod externalId, decoupled from the path so two
-// clones at different paths share one pod (env → remote → marker → path). All
+// clones at different paths share one pod (env → marker → remote → path). The
+// committed marker OUTRANKS the remote so sibling repos can share one pod. All
 // pure / synchronous, so this needs no DB or mocks.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -101,6 +102,24 @@ describe('deriveProjectIdentity', () => {
     mkdirSync(join(dir, '.sigil'));
     writeFileSync(join(dir, '.sigil', 'project.json'), JSON.stringify({ id: 'marker-id' }));
     expect(deriveProjectIdentity(dir)).toBe('marker-id');
+  });
+
+  it('the .sigil/project.json marker OUTRANKS the git remote (sibling-repo pinning)', () => {
+    // A real git repo WITH a remote AND a committed marker: the marker must win
+    // so two repos with different remotes can be pinned to one shared pod.
+    const dir = mkdtempSync(join(tmpdir(), 'sigil-marker-vs-remote-'));
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:owner/other-repo.git'], { cwd: dir });
+    mkdirSync(join(dir, '.sigil'));
+    writeFileSync(join(dir, '.sigil', 'project.json'), JSON.stringify({ id: 'github.com/3gr4m/the-coffee-proprias' }));
+    expect(deriveProjectIdentity(dir)).toBe('github.com/3gr4m/the-coffee-proprias');
+  });
+
+  it('uses the git remote when there is no marker', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sigil-remote-only-'));
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:owner/some-repo.git'], { cwd: dir });
+    expect(deriveProjectIdentity(dir)).toBe('github.com/owner/some-repo');
   });
 
   it('falls back to the absolute path when there is no remote and no marker', () => {
