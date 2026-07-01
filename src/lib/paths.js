@@ -83,6 +83,11 @@ export const SIGIL_DB_PATH = join(SIGIL_HOME, 'db');
 export const SIGIL_SNAPSHOTS_DIR = join(SIGIL_HOME, 'snapshots');
 export const SIGIL_MD_PATH = join(SIGIL_HOME, 'CLAUDE.md');
 export const SIGIL_SCHEMAS_DIR = join(SIGIL_HOME, 'schemas');
+// Prompt overlay. A file dropped here (e.g. ~/.sigil/prompts/default-extraction.md)
+// OVERRIDES the packaged prompt of the same name — so an instance can customize
+// extraction / classification / synthesis behavior WITHOUT editing the package.
+// Resolved at call time by src/lib/prompts.js (resolvePromptPath).
+export const SIGIL_PROMPTS_DIR = join(SIGIL_HOME, 'prompts');
 export const SIGIL_HOOK_ERRORS_LOG = join(SIGIL_HOME, '.hook-errors.log');
 export const SIGIL_LAST_CLEAN_DOCTOR = join(SIGIL_HOME, '.last-clean-doctor');
 export const SIGIL_ACTIVE_SESSION_CURSOR = join(SIGIL_HOME, '.active-session.json');

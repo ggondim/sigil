@@ -10,9 +10,9 @@ import { pgHalfvecColumn, pgHalfvecParam, pgVector } from '../../lib/vectors.js'
 import { maskSecrets } from '../../hooks/secret-mask.js';
 import config from '../../config.js';
 import { currentOrigin } from '../provenance.js';
-import { PROMPTS_DIR } from '../../lib/paths.js';
+import { loadPrompt } from '../../lib/prompts.js';
 
-const AUDM_PROMPT_PATH = path.join(PROMPTS_DIR, 'audm-decision.md');
+const AUDM_PROMPT_FILE = 'audm-decision.md';
 
 // Paraphrased content with nomic-embed-text typically lands 0.75-0.88.
 const SKIP_THRESHOLD = config.memory.skipThreshold;
@@ -116,7 +116,7 @@ async function audmDecide(newContent, existingContent) {
   // LLM-less daemon (provider:'none'): no judge available -> default ADD
   // (conservative: keep both facts, never retire one without a verdict).
   if (!(await llmEnabled())) return 'ADD';
-  const systemPrompt = await readFile(AUDM_PROMPT_PATH, 'utf8');
+  const systemPrompt = await loadPrompt(AUDM_PROMPT_FILE);
 
   const input = `${systemPrompt}\n\n**EXISTING FACT:** ${existingContent}\n\n**NEW FACT:** ${newContent}`;
   // temperature: 0 — AUDM is a classification, not a creative call. A pinned

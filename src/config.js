@@ -178,6 +178,11 @@ const config = {
     // behavior. Consumers that resolve the active namespace should call
     // resolveNamespace(), not read this directly.
     namespace: process.env.DEFAULT_NAMESPACE || 'default',
+    // Instance-wide fallback LANGUAGE for extracted facts. The ACTIVE language
+    // is resolved per-project from the project pod's attrs.language (set via the
+    // GUI/CLI), falling back to this. Empty = no language constraint (model's
+    // default). Same shape as `namespace`: pod attr > this default.
+    language: process.env.SIGIL_LANGUAGE || '',
   },
 
   // Project-pod identity strategy. Decouples a project pod's IDENTITY (used as

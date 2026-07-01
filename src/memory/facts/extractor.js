@@ -3,6 +3,7 @@ import { chunk as batchChunk } from 'lodash-es';
 
 import { promptJson } from '../../lib/llm.js';
 import config from '../../config.js';
+import { languageDirective } from '../../lib/prompts.js';
 
 const CONCURRENCY = 5;
 
@@ -61,10 +62,10 @@ async function extractFactsFromChunk(chunk, systemPrompt, categories) {
  * Extract facts from each chunk independently, in parallel batches.
  * Uses section heading + contextual prefix for richer per-chunk context.
  */
-async function extractFactsFromChunks(chunks, { promptPath, categories }) {
+async function extractFactsFromChunks(chunks, { promptPath, categories, language }) {
   if (!chunks.length) return [];
 
-  const systemPrompt = await readFile(promptPath, 'utf8');
+  const systemPrompt = (await readFile(promptPath, 'utf8')) + languageDirective(language);
   const batches = batchChunk(chunks, CONCURRENCY);
   const allFacts = [];
 

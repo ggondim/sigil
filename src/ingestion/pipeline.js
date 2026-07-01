@@ -21,9 +21,24 @@ import { maskSecrets } from '../hooks/secret-mask.js';
 import config from '../config.js';
 import { llmEnabled } from '../lib/llm/registry.js';
 import { getConfig } from '../setup/config-store.js';
-import { PROMPTS_DIR } from '../lib/paths.js';
+import { resolvePromptPath } from '../lib/prompts.js';
 
-const DEFAULT_PROMPT_PATH = join(PROMPTS_DIR, 'default-extraction.md');
+// Resolve the active fact LANGUAGE from the pods this write attaches to: the
+// project pod's attrs.language wins, else the instance default. Empty ⇒ no
+// constraint. Reads podUids (hooks attach the durable project pod), so a
+// per-project language set on the pod localizes extraction without touching
+// prompts. Non-fatal on any lookup error.
+async function resolveIngestLanguage(podUids) {
+  for (const uid of podUids || []) {
+    try {
+      const pod = await podStore.findByUid(uid);
+      if (!pod) continue;
+      const attrs = typeof pod.attrs === 'string' ? JSON.parse(pod.attrs) : (pod.attrs || {});
+      if (attrs?.language) return attrs.language;
+    } catch { /* fall through to default */ }
+  }
+  return config.defaults.language || '';
+}
 
 // Refuse to ingest when setup never finished the Embeddings step. Without a
 // working embedder, chunks/facts get no vector — the write either fails deep in
@@ -93,7 +108,8 @@ async function ingestDocument({
 
   const ns = namespace || config.defaults.namespace;
   const cats = categories || Object.keys(DEFAULT_CATEGORIES);
-  const prompt = promptPath || DEFAULT_PROMPT_PATH;
+  const prompt = promptPath || resolvePromptPath('default-extraction.md');
+  const language = await resolveIngestLanguage(podUids);
   let finalTitle = title || sourcePath;
 
   // Step 0: Classify input (cognitive layer)
@@ -101,7 +117,7 @@ async function ingestDocument({
   if (classify) {
     if (await llmEnabled()) {
       process.stderr.write('[0/6] Classifying input...' + "\n");
-      classification = await classifyInput(content, { title: finalTitle });
+      classification = await classifyInput(content, { title: finalTitle, language });
       process.stderr.write(`  Route: ${classification.route} — ${classification.reasoning}` + "\n");
 
       if (classification.route === 'noise') {
@@ -241,7 +257,7 @@ async function ingestDocument({
     let factEmbeddings = [];
     if (!skipFacts && config.ingest.eagerExtract) {
       process.stderr.write('[4/6] Extracting facts...' + "\n");
-      rawFacts = await extractFactsFromChunks(chunks, { promptPath: prompt, categories: cats });
+      rawFacts = await extractFactsFromChunks(chunks, { promptPath: prompt, categories: cats, language });
       process.stderr.write(`  ${rawFacts.length} facts extracted from ${chunks.length} chunks` + "\n");
       if (rawFacts.length) factEmbeddings = await embedBatchOrThrow(rawFacts.map((f) => f.content));
     } else if (!config.ingest.eagerExtract) {

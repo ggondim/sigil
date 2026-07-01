@@ -4,15 +4,15 @@ import { join } from 'node:path';
 import { promptJson } from '../../lib/llm.js';
 import config from '../../config.js';
 import { ALL_CATEGORIES } from '../facts/categories.js';
-import { PROMPTS_DIR } from '../../lib/paths.js';
+import { loadPrompt, languageDirective } from '../../lib/prompts.js';
 
-const PROMPT_PATH = join(PROMPTS_DIR, 'input-classifier.md');
+const PROMPT_FILE = 'input-classifier.md';
 
 const NOISE_MIN_LENGTH = 3;
 const DOCUMENT_MIN_LENGTH = 2000;
 const VALID_ROUTES = ['thought', 'knowledge', 'noise'];
 
-async function classifyInput(content, { title } = {}) {
+async function classifyInput(content, { title, language } = {}) {
   // Heuristic fast-paths — skip LLM for obvious cases
   if (!content?.trim() || content.trim().length < NOISE_MIN_LENGTH) {
     return { route: 'noise', facts: [], entities: [], reasoning: 'Empty or too short' };
@@ -23,7 +23,7 @@ async function classifyInput(content, { title } = {}) {
   }
 
   // LLM classification for short-to-medium content
-  const systemPrompt = await readFile(PROMPT_PATH, 'utf8');
+  const systemPrompt = (await loadPrompt(PROMPT_FILE)) + languageDirective(language);
 
   const input = `${systemPrompt}
 

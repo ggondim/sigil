@@ -22,6 +22,7 @@ import { registerIngestDoc } from './ingest-doc.js';
 import { registerListFacts } from './list-facts.js';
 import { registerGraphSnapshot } from './graph-snapshot.js';
 import { registerForgetFact } from './forget-fact.js';
+import { registerEditFact } from './edit-fact.js';
 import { registerRefreshContext } from './refresh-context.js';
 import { registerTestDbConnection } from './test-db-connection.js';
 import { registerRunMigrations } from './run-migrations.js';
@@ -55,6 +56,7 @@ export function registerAll(registry, { startedAt }) {
   registerListFacts(registry);
   registerGraphSnapshot(registry);
   registerForgetFact(registry);
+  registerEditFact(registry);
   registerRefreshContext(registry);
   registerTestDbConnection(registry);
   registerRunMigrations(registry);

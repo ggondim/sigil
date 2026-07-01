@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { promptJson } from '../../lib/llm.js';
 import { TtlCache } from '../../lib/cache.js';
 import config from '../../config.js';
-import { PROMPTS_DIR } from '../../lib/paths.js';
+import { loadPrompt } from '../../lib/prompts.js';
 
-const PROMPT_PATH = join(PROMPTS_DIR, 'query-router.md');
+const PROMPT_FILE = 'query-router.md';
 
 const cache = new TtlCache({ maxSize: 200, ttlMs: 10 * 60 * 1000 });
 
@@ -41,7 +41,7 @@ async function routeQuery(query) {
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  const systemPrompt = await readFile(PROMPT_PATH, 'utf8');
+  const systemPrompt = await loadPrompt(PROMPT_FILE);
 
   const input = `${systemPrompt}
 

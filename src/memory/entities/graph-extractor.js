@@ -3,11 +3,11 @@ import path from 'node:path';
 
 import { promptJson } from '../../lib/llm.js';
 import config from '../../config.js';
-import { PROMPTS_DIR } from '../../lib/paths.js';
+import { loadPrompt } from '../../lib/prompts.js';
 import { resolveEntity, resolveEntityList } from './resolver.js';
 import { createRelation } from './relations.js';
 
-const GRAPH_PROMPT = path.join(PROMPTS_DIR, 'graph-extraction.md');
+const GRAPH_PROMPT_FILE = 'graph-extraction.md';
 const GLEAN_MIN_FACTS = 5;
 
 // Schema-constrained output shape (OpenAI/OpenRouter json_schema). Forces the
@@ -138,7 +138,7 @@ async function extractGraph(factObjects) {
   const factsText = factObjects.map((f) => `- ${f.content}`).filter(Boolean).join('\n');
   if (!factsText) return { entities: [], relationships: [] };
 
-  const systemPrompt = await readFile(GRAPH_PROMPT, 'utf8');
+  const systemPrompt = await loadPrompt(GRAPH_PROMPT_FILE);
   const basePrompt = `${systemPrompt}\n\n---\n\n**Facts:**\n${factsText}`;
 
   const first = parseGraph(await promptJson(basePrompt, { model: config.llm.entityModel, caller: 'graph-extractor', schema: GRAPH_SCHEMA }));
