@@ -59,22 +59,44 @@ const CLI_MODEL_MAP = {
   'claude-opus-4-6': 'opus',
 };
 
+// Fork-bomb blast-radius ceiling (defense-in-depth layer): a hard cap on how
+// many headless `claude -p` processes the daemon will ever have in flight at
+// once. Legit parallel extraction peaks around CONCURRENCY(5) + a couple; a
+// runaway recursion reaches this cap near-instantly and is refused, so the
+// daemon itself can never fan out an unbounded swarm regardless of what any
+// hook/shim does. Override via SIGIL_MAX_CLI_CONCURRENCY.
+const MAX_INFLIGHT_CLAUDE = Number(process.env.SIGIL_MAX_CLI_CONCURRENCY) || 12;
+let inFlightClaude = 0;
+
 function spawnClaude(args, input) {
   const timeout = config.llm.cliTimeout || 120_000;
 
   const bin = resolveClaudeBin();
 
   return new Promise((resolve, reject) => {
-    // Recursion guard (fork-bomb fix 2026-06-24): mark this headless invocation
-    // so Sigil's own hooks (sigil-hook) no-op inside it. Without this, the spawned
-    // `claude -p` inherits the global hooks, which call back into Sigil -> daemon ->
-    // another `claude -p` -> exponential process explosion.
+    // L5 ceiling: refuse to spawn past the cap. A per-chunk extraction rejected
+    // here is caught by the extractor and just drops that chunk (non-fatal);
+    // under a recursion it stops the swarm cold.
+    if (inFlightClaude >= MAX_INFLIGHT_CLAUDE) {
+      reject(new Error(`claude CLI concurrency cap (${MAX_INFLIGHT_CLAUDE}) reached — refusing spawn (fork-bomb ceiling)`));
+      return;
+    }
+    // Recursion guard (fork-bomb fix): mark this headless invocation so Sigil's
+    // own hooks (sigil-hook) no-op inside it (L2), AND run with
+    // `--setting-sources project` (L1, in args) so the user-scope hooks aren't
+    // even loaded. Without these, the spawned `claude -p` would inherit the
+    // global hooks, which call back into Sigil -> daemon -> another `claude -p`
+    // -> exponential process explosion.
+    inFlightClaude++;
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; inFlightClaude--; } };
     const proc = spawn(bin, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, SIGIL_DISABLE_HOOKS: '1' },
     });
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
+      done();
       reject(new Error(`claude CLI timed out after ${timeout}ms`));
     }, timeout);
 
@@ -85,6 +107,7 @@ function spawnClaude(args, input) {
     proc.stderr.on('data', (d) => { stderr += d; });
     proc.on('error', (err) => {
       clearTimeout(timer);
+      done();
       if (err.code === 'ENOENT') {
         // Almost always a stripped-PATH daemon that can't see where `claude`
         // is installed. Point the user at the fix instead of a bare ENOENT.
@@ -100,6 +123,7 @@ function spawnClaude(args, input) {
     });
     proc.on('close', (code) => {
       clearTimeout(timer);
+      done();
       resolve({ stdout, stderr, code });
     });
 
@@ -121,11 +145,16 @@ async function chat(input, { model, jsonMode = false } = {}) {
   // Slim the headless Claude Code call. These steps are pure text->JSON (the full
   // task prompt is in `input`, see promptJson), so the agentic scaffolding is dead
   // weight. Measured per-call overhead: ~30.6K tokens -> ~2.4K with these flags.
+  //   --setting-sources project : L1 fork-bomb root fix — do NOT load the
+  //         user-scope settings, so this headless Claude never registers the
+  //         user's sigil-hooks and cannot re-enter Sigil. Keeps the OAuth
+  //         subscription (unlike --bare, which forces ANTHROPIC_API_KEY). Also
+  //         ~5x faster (skips user settings/plugin/hook load).
   //   --strict-mcp-config : no MCP servers (also breaks the hook fork-bomb path)
   //   --tools ''          : drop built-in tool schemas (~22K tokens)
   //   --system-prompt     : replace the agentic system prompt (~5.5K tokens)
   const args = [
-    '-p', '--strict-mcp-config',
+    '-p', '--setting-sources', 'project', '--strict-mcp-config',
     '--tools', '',
     '--system-prompt', "You are a precise assistant. Follow the user's instructions exactly. When asked for JSON, output only valid JSON and nothing else.",
     '--model', cliModel, '--output-format', 'json',
