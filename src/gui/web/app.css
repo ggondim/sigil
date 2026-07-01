@@ -1684,3 +1684,28 @@ footer .footer-inner {
 @media (max-width: 920px) {
   .graph-stage { height: calc(100vh - var(--header-h) - 260px); }
 }
+
+
+/* ── Fact editor (reclassify / edit content) ─────────────────────── */
+.kb-detail-actions { display: flex; gap: var(--s-2); }
+.kb-edit-label { display: block; font-size: var(--t-sm); color: var(--fg-3); margin: var(--s-3) 0 var(--s-1); }
+.kb-edit-content {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 88px;
+  padding: var(--s-2) var(--s-3); border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg-surface-2); color: var(--fg);
+  font-size: var(--t-base); line-height: var(--lh);
+}
+.kb-edit-content:focus { outline: var(--focus-ring); border-color: var(--accent); }
+.kb-edit-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--s-2); margin-top: var(--s-3); }
+.kb-edit-grid label {
+  display: flex; flex-direction: column; gap: var(--s-1);
+  font-size: var(--t-xs); color: var(--fg-3); text-transform: uppercase; letter-spacing: .04em;
+}
+.kb-edit-grid select {
+  padding: var(--s-1) var(--s-2); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-surface-2); color: var(--fg); font-size: var(--t-sm);
+  text-transform: none; letter-spacing: 0;
+}
+.kb-edit-actions { display: flex; gap: var(--s-2); margin-top: var(--s-4); }
+.kb-edit-hint { margin-top: var(--s-3); font-size: var(--t-xs); color: var(--fg-4); line-height: var(--lh); }
+@media (max-width: 560px) { .kb-edit-grid { grid-template-columns: 1fr; } }
