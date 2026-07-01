@@ -3,14 +3,14 @@ import { join } from 'node:path';
 
 import { promptJson } from '../lib/llm.js';
 import config from '../config.js';
-import { PROMPTS_DIR } from '../lib/paths.js';
+import { loadPrompt } from '../lib/prompts.js';
 
-const PROMPT_PATH = join(PROMPTS_DIR, 'chunk-context.md');
+const PROMPT_FILE = 'chunk-context.md';
 
 async function contextualizeChunks(chunks, documentText, { title }) {
   if (!chunks.length) return chunks;
 
-  const systemPrompt = await readFile(PROMPT_PATH, 'utf8');
+  const systemPrompt = await loadPrompt(PROMPT_FILE);
 
   const excerpts = chunks.map((c, i) => `Chunk ${i + 1}: ${c.content.slice(0, 350)}`);
 

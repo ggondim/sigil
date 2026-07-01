@@ -166,6 +166,9 @@ const config = {
   // 'solo' | 'master' | 'follower' | 'lite-follower'. `enabled` is stored
   // explicitly now (was derived from mode via env); `sigil join` sets both.
   get network() { return store().network; },
+  // defaults.namespace + defaults.language (install-wide fallbacks). ACTIVE
+  // namespace/language resolved per-project (resolveNamespace() / project
+  // pod attrs.language); only tier-4 fallback. SSOT: store owns them.
   get defaults() { return store().defaults; },
   // AUDM dedup/supersession + search floors. See config-store defaults() for the
   // tuned values; change via patchConfig('memory', {...}) or the GUI.
