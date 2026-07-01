@@ -37,6 +37,7 @@ export function registerGetFactContext(registry) {
         content: fact.content,
         category: fact.category ?? null,
         confidence: fact.confidence ?? null,
+        importance: fact.importance ?? null,
         status: fact.status ?? null,
         sourceSection: fact.sourceSection ?? null,
       },

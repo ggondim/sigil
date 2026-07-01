@@ -342,6 +342,7 @@ function kbRenderFactDetail(ctx) {
   const badges = [];
   if (f.confidence) badges.push(`<span class="badge ${confidenceClass(f.confidence)}">${escape(f.confidence)} confidence</span>`);
   if (f.category) badges.push(`<span class="badge">${escape(titleCase(f.category))}</span>`);
+  if (f.importance) badges.push(`<span class="badge${f.importance === 'vital' ? ' warn' : ''}">${escape(f.importance)}</span>`);
   if (f.status) badges.push(`<span class="badge ${f.status === 'active' ? 'ok' : 'warn'}">${escape(f.status)}</span>`);
 
   const meta = [];
