@@ -66,6 +66,20 @@ describe('writeLauncherShim', () => {
     const out2 = execFileSync(shim.HOOK_SHIM_PATH, [], { encoding: 'utf8' });
     expect(out2).toBe('');
   });
+
+  it('recursion guard: SIGIL_DISABLE_HOOKS short-circuits the hook (fork-bomb fix)', () => {
+    // The guard line must be emitted into the generated shim...
+    const src = readFileSync(shim.HOOK_SHIM_PATH, 'utf8');
+    expect(src).toContain('SIGIL_DISABLE_HOOKS');
+    // ...and functionally: with the flag set (as the daemon sets it on its own
+    // `claude -p` spawn), even a valid hook name exits 0 with no work — so a
+    // headless Claude can't re-enter Sigil -> daemon -> claude -p (fork-bomb).
+    const out = execFileSync(shim.HOOK_SHIM_PATH, ['stop'], {
+      encoding: 'utf8',
+      env: { ...process.env, SIGIL_DISABLE_HOOKS: '1' },
+    });
+    expect(out).toBe('');
+  });
 });
 
 describe('claude-code install uses the stable shim, never a baked package path', () => {
