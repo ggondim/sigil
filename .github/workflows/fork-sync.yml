@@ -1,0 +1,39 @@
+name: fork-sync
+
+# Forward integration do upstream (Anmol-Srv/sigil) no fork. Roda DENTRO do fork.
+# report (default): avança master (ff) + detecta conflitos + abre/atualiza issue [upstream-sync].
+# apply: além disso, rebaseia as feats limpas e reconstrói a ggondim.
+# Usa o GITHUB_TOKEN embutido (sem PAT): push no próprio repo + issues + leitura pública do upstream.
+
+on:
+  schedule:
+    - cron: '23 7 * * *'   # diário ~07:23 UTC (minuto fora do :00)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report | apply'
+        type: choice
+        default: report
+        options: [report, apply]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Forward integration
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: ${{ github.event.inputs.mode || 'report' }}
+          SIGIL_ENV: ci
+          FORK: ${{ github.repository }}
+          UPSTREAM: Anmol-Srv/sigil
+        run: bash scripts/fork-sync.sh

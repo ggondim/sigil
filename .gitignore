@@ -34,3 +34,9 @@ test/reliability/.last-run.json
 
 # local benchmarking lane — untracked (downloaded datasets + per-run output)
 benchmarks/
+
+# --- workspace/autoducks (setup local, não vai pro upstream) ---
+PENDING.md
+.claude/settings.local.json
+.playwright-mcp/
+.agent-fork-state

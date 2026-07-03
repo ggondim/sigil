@@ -1,0 +1,67 @@
+name: 'Autoducks LLM - Claude'
+description: 'Invoke Claude via claude-code-action for autoducks agents'
+
+inputs:
+  prompt_file:
+    description: 'Path to the agent prompt markdown file'
+    required: true
+  allowed_tools:
+    description: 'Comma-separated list of tools the agent can use'
+    required: true
+  model:
+    description: 'Claude model to use'
+    required: false
+    default: 'claude-sonnet-4-6'
+  reasoning:
+    description: 'Reasoning level (off, low, medium, high, max)'
+    required: false
+    default: 'high'
+  max_turns:
+    description: 'Maximum number of agentic turns'
+    required: false
+    default: '50'
+  timeout_minutes:
+    description: 'Timeout in minutes'
+    required: false
+    default: '60'
+  anthropic_api_key:
+    description: 'Anthropic API key (used if claude_code_oauth_token not set)'
+    required: false
+    default: ''
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Read prompt
+      id: prompt
+      shell: bash
+      env:
+        REASONING: ${{ inputs.reasoning }}
+      run: |
+        case "$REASONING" in
+          off)    THINK_PHRASE="" ;;
+          low)    THINK_PHRASE="Think before writing." ;;
+          medium) THINK_PHRASE="Think hard before writing." ;;
+          high)   THINK_PHRASE="Think very hard before writing." ;;
+          max)    THINK_PHRASE="Ultrathink — take extensive time to reason before writing." ;;
+          *)      THINK_PHRASE="Think very hard before writing." ;;
+        esac
+        PROMPT=$(cat "${{ inputs.prompt_file }}")
+        PROMPT="${PROMPT//\{\{THINK_PHRASE\}\}/$THINK_PHRASE}"
+        {
+          echo "content<<PROMPT_EOF"
+          echo "$PROMPT"
+          echo "PROMPT_EOF"
+        } >> "$GITHUB_OUTPUT"
+    - name: Run Claude agent
+      uses: anthropics/claude-code-action@v1
+      with:
+        prompt: ${{ steps.prompt.outputs.content }}
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        allowed_bots: '*'
+        claude_args: "--model ${{ inputs.model }} --max-turns ${{ inputs.max_turns }} --allowedTools '${{ inputs.allowed_tools }}'"
