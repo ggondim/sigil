@@ -86,7 +86,14 @@ function rawSpawnClaude(args, input) {
   const bin = resolveClaudeBin();
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Recursion guard: mark this headless invocation so Sigil's own hooks no-op
+    // inside it (see renderHookDispatcher in lib/clients/shim.js). Without it, the
+    // spawned `claude -p` inherits the global Claude Code hooks, which call back
+    // into Sigil -> daemon -> another `claude -p` -> exponential process explosion.
+    const proc = spawn(bin, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, SIGIL_DISABLE_HOOKS: '1' },
+    });
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
       reject(new Error(`claude CLI timed out after ${timeout}ms`));
@@ -138,7 +145,18 @@ async function chat(input, { model, jsonMode = false } = {}) {
   // extraction, classifier routing, AUDM). Instead the prompt asks for JSON and
   // the caller's parseJson() extracts it from the result text (claude returns a
   // ```json fenced block, which parseJson handles).
-  const args = ['-p', '--model', cliModel, '--output-format', 'json'];
+  // Slim the headless Claude Code call. These steps are pure text->JSON (the full
+  // task prompt is in `input`, see promptJson), so the agentic scaffolding is dead
+  // weight. Measured per-call overhead: ~30.6K tokens -> ~2.4K with these flags.
+  //   --strict-mcp-config : no MCP servers (also breaks the hook fork-bomb path)
+  //   --tools ''          : drop built-in tool schemas (~22K tokens)
+  //   --system-prompt     : replace the agentic system prompt (~5.5K tokens)
+  const args = [
+    '-p', '--strict-mcp-config',
+    '--tools', '',
+    '--system-prompt', "You are a precise assistant. Follow the user's instructions exactly. When asked for JSON, output only valid JSON and nothing else.",
+    '--model', cliModel, '--output-format', 'json',
+  ];
 
   const { stdout, stderr, code } = await spawnClaude(args, input);
 
