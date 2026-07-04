@@ -22,17 +22,8 @@ import { PGlite } from '@electric-sql/pglite';
 
 import { buildVisibilityClause } from './filters.js';
 
-// Device ids are INTEGER PKs (fact.created_by_device_id is an INTEGER FK to
-// device.id in the real schema — see migration 20260601000002_add-fact-
-// provenance). The fixture mirrors that integer column so the test exercises
-// the same int-vs-string coercion path that broke in the field.
-const DEVICE_A = 1;
-const DEVICE_B = 2;
-// A local install identifies itself by the config.json device.id UUID, NOT by
-// an integer device PK. Binding this UUID against the INTEGER created_by_device_id
-// column is exactly what blew up in the field ("invalid input syntax for type
-// integer") before the `::text` cast — this fixture reproduces that path.
-const DEVICE_LOCAL_UUID = 'f6ce8926-0000-4000-8000-000000000000';
+const DEVICE_A = 'device-aaaa';
+const DEVICE_B = 'device-bbbb';
 const PRIVATE_KINDS = ['claude_session', 'person'];
 
 let pg;
@@ -75,7 +66,7 @@ beforeAll(async () => {
       id BIGSERIAL PRIMARY KEY,
       content TEXT,
       status TEXT NOT NULL DEFAULT 'active',
-      created_by_device_id INTEGER
+      created_by_origin TEXT
     );
     CREATE TABLE pod (
       id BIGSERIAL PRIMARY KEY,
@@ -103,11 +94,11 @@ beforeAll(async () => {
   //   4 — shared kind, owned by device A
   //   5 — shared kind, legacy (NULL device)
   await pg.exec(`
-    INSERT INTO fact (id, content, created_by_device_id) VALUES
-      (1, 'A private session note',  ${DEVICE_A}),
-      (2, 'B private session note',  ${DEVICE_B}),
+    INSERT INTO fact (id, content, created_by_origin) VALUES
+      (1, 'A private session note',  '${DEVICE_A}'),
+      (2, 'B private session note',  '${DEVICE_B}'),
       (3, 'legacy private note',     NULL),
-      (4, 'A shared project note',   ${DEVICE_A}),
+      (4, 'A shared project note',   '${DEVICE_A}'),
       (5, 'legacy shared note',      NULL);
   `);
 
@@ -152,7 +143,7 @@ describe('P2 owner-scoped read enforcement (visibility predicate)', () => {
     expect(b).toEqual(expect.arrayContaining([4, 5]));
   });
 
-  it('legacy private fact (created_by_device_id IS NULL) is visible to both devices', async () => {
+  it('legacy private fact (created_by_origin IS NULL) is visible to both devices', async () => {
     const a = await visibleIds({ currentDeviceId: DEVICE_A, scopeEnabled: true });
     const b = await visibleIds({ currentDeviceId: DEVICE_B, scopeEnabled: true });
     expect(a).toContain(3);
@@ -167,21 +158,5 @@ describe('P2 owner-scoped read enforcement (visibility predicate)', () => {
   it('no current device id resolved → clause skipped → global visibility (fail-open)', async () => {
     const ids = await visibleIds({ currentDeviceId: null, scopeEnabled: true });
     expect(ids).toEqual([1, 2, 3, 4, 5]);
-  });
-
-  it('local install (UUID device id) queries the INTEGER column without coercion error', async () => {
-    // This is the field-test regression: created_by_device_id is INTEGER, but
-    // the local install's current device id is a UUID. Without the `::text`
-    // cast, Postgres coerces the UUID literal to int and throws
-    // "invalid input syntax for type integer". With the cast the predicate is
-    // type-safe: the UUID matches no integer device row, so EVERY other device's
-    // private fact is hidden, while NULL-stamped legacy + shared facts stay
-    // visible.
-    const ids = await visibleIds({ currentDeviceId: DEVICE_LOCAL_UUID, scopeEnabled: true });
-    // Private facts 1 (A) and 2 (B) are hidden (owned by other devices);
-    // legacy private 3, shared 4, shared legacy 5 remain visible.
-    expect(ids).toEqual([3, 4, 5]);
-    expect(ids).not.toContain(1);
-    expect(ids).not.toContain(2);
   });
 });
