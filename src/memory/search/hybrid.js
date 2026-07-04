@@ -18,16 +18,18 @@ import { extractEntitiesFromFacts, findRelatedFacts, rerank } from './graph-enha
 import { expandQuery } from './query-expander.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { prompt as llmPrompt } from '../../lib/llm.js';
+import { llmEnabled } from '../../lib/llm/registry.js';
 import '../pods/kinds/index.js'; // side-effect: register built-in kinds
 import { activeKinds, privateKindNames } from '../pods/registry.js';
 import { getConfig } from '../../setup/config-store.js';
 import { currentDeviceId as rpcDeviceId } from '../../daemon/request-context.js';
+import { currentOrigin } from '../provenance.js';
 import cortexDb from '../../db/cortex.js';
 
 // Entity detection only for short, name-like queries — not full sentences
 const MAX_ENTITY_QUERY_LENGTH = 60;
 
-async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime, expand = false, route = true, categories, synthesize = config.search.synthesize, podScope = null, applyFloor = true, ctx = {} } = {}) {
+async function search(query, { namespaces, limit = 5, minConfidence = 'medium', useGraph = false, includeChunks = false, pointInTime, expand = false, route = true, categories, synthesize = config.search.synthesize, podScope = null, applyFloor = true, agent = null, deviceId = null, ctx = {} } = {}) {
   const _t0 = Date.now();
   if (!isSearchableQuery(query)) {
     const empty = emptySearchResult();
@@ -66,9 +68,23 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
 
   let result;
   if (matchedEntity) {
-    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, privacy });
+    result = await entityFirstSearch(matchedEntity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, agent, deviceId, privacy });
   } else {
-    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories, podIds, privacy });
+    result = await standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand, categories, podIds, agent, deviceId, privacy });
+  }
+
+  // Author provenance filter (opt-in). The hybrid SQL already applies these
+  // predicates, but the entity-first path also pulls entity-LINKED facts via
+  // getFactsForEntity(), which bypasses that SQL. Re-apply here so --agent /
+  // --device filter consistently regardless of retrieval path. No filter
+  // requested ⟹ untouched (identical to today).
+  if ((agent || deviceId != null) && Array.isArray(result.facts)) {
+    const wantDevice = deviceId == null ? null : Number(deviceId);
+    result.facts = result.facts.filter((f) => {
+      if (agent && f.createdByAgent !== agent) return false;
+      if (wantDevice != null && Number(f.createdByDeviceId) !== wantDevice) return false;
+      return true;
+    });
   }
 
   // Precision-first relevance floor. For auto-injection paths (hooks /
@@ -109,7 +125,7 @@ async function search(query, { namespaces, limit = 5, minConfidence = 'medium', 
   // The synthesizer is also the must-miss signal: it returns "Not in retrieved memory."
   // when the top-K doesn't actually contain the answer, which is more reliable than any
   // similarity threshold.
-  if (synthesize) {
+  if (synthesize && await llmEnabled()) {
     try {
       result.synthesized = await synthesizeAnswer(query, result);
     } catch (err) {
@@ -345,20 +361,11 @@ function resolvePrivacyScope(ctx = {}) {
     return { enabled: false, currentDeviceId: null, privateKinds: [] };
   }
 
-  let currentDeviceId = null;
-  try {
-    currentDeviceId = rpcDeviceId();
-  } catch {
-    currentDeviceId = null;
-  }
-  if (!currentDeviceId) currentDeviceId = ctx?.device?.id ?? null;
-  if (!currentDeviceId) {
-    try {
-      currentDeviceId = getConfig().device?.id ?? null;
-    } catch {
-      currentDeviceId = null; // config unreadable — fail open to global
-    }
-  }
+  // P7: the ownership ORIGIN (paired device id, else local install UUID),
+  // resolved by the SAME helper the write side uses (currentOrigin) so reads
+  // filter on exactly what writes stamped. Kept in the `currentDeviceId` field
+  // for back-compat with the option threading into hybrid-sql.
+  const currentDeviceId = currentOrigin(ctx);
 
   return { enabled: true, currentDeviceId, privateKinds: privateKindNames() };
 }
@@ -395,7 +402,7 @@ async function detectEntity(query, namespaces) {
 // search for "Sigil" can't see fact text that still says "Smara." Running
 // a parallel search for each alias and merging the result sets lets those
 // historical facts surface — without rewriting fact text.
-async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, privacy }) {
+async function entityFirstSearch(entity, query, { namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, agent, deviceId, privacy }) {
   const queryVariants = buildAliasQueryVariants(query, entity);
 
   const variantEmbeddings = await embedBatch(queryVariants, { inputType: 'query' });
@@ -405,7 +412,7 @@ async function entityFirstSearch(entity, query, { namespaces, limit, minConfiden
     listRelationsForEntity(entity.id, { limit: 15 }),
     ...queryVariants.map((q, i) => coreHybridSearch(q, {
       queryEmbedding: variantEmbeddings[i],
-      namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, privacy,
+      namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, agent, deviceId, privacy,
     })),
   ]);
 
@@ -514,12 +521,12 @@ function buildAliasQueryVariants(query, entity) {
 }
 
 // No entity match: expand query into variants, search all in parallel, merge
-async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories, podIds, privacy }) {
+async function standardSearch(query, { namespaces, limit, minConfidence, useGraph, includeChunks, pointInTime, expand = false, categories, podIds, agent, deviceId, privacy }) {
   const queries = expand ? await expandQuery(query) : [query];
   const embeddings = await embedBatch(queries, { inputType: 'query' });
 
   const results = await Promise.all(
-    queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, privacy })),
+    queries.map((q, i) => coreHybridSearch(q, { queryEmbedding: embeddings[i], namespaces, limit, minConfidence, includeChunks, pointInTime, categories, podIds, agent, deviceId, privacy })),
   );
 
   let facts = multiQueryMerge(results.map((r) => r.facts), limit);
@@ -678,11 +685,11 @@ function multiQueryMerge(resultSets, limit) {
 // Core vector+keyword hybrid with RRF merge.
 // Facts use single-SQL-query RRF (see hybrid-sql.js). Chunks stay on the
 // two-query + JS-merge path since they have no category/confidence filters.
-async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories, podIds, privacy }) {
+async function coreHybridSearch(query, { queryEmbedding: precomputed, namespaces, limit, minConfidence, includeChunks = false, pointInTime, categories, podIds, agent, deviceId, privacy }) {
   const queryEmbedding = precomputed || await embed(query, { inputType: 'query' });
 
   const factsPromise = hybridSearchFacts(query, queryEmbedding, {
-    namespaces, limit, minConfidence, pointInTime, categories, podIds, ...privacyOptions(privacy),
+    namespaces, limit, minConfidence, pointInTime, categories, podIds, agent, deviceId, ...privacyOptions(privacy),
   });
 
   const chunkPromises = includeChunks
