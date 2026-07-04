@@ -59,6 +59,11 @@ const config = {
     // this so they can never drift (see src/lib/constants.js).
     get dimensions() { return EMBEDDING_DIM; },
     get ollamaHost() { return (store().embedding.provider === 'ollama' ? store().embedding.host : '') || 'http://localhost:11434'; },
+    // Optional auth for an Ollama endpoint behind a reverse proxy (e.g. Traefik
+    // basicAuth / a bearer gateway). Value is "user:pass" (-> Basic), a token
+    // (-> Bearer), or a verbatim "Basic …"/"Bearer …" header. Empty = no auth
+    // (local Ollama). See embedders/ollama.js.
+    get ollamaAuth() { return embKey('ollama'); },
     get openaiApiKey() { return embKey('openai'); },
     get voyageApiKey() { return embKey('voyage'); },
     // OpenRouter as an embedding gateway. Models are namespaced (e.g.
@@ -166,7 +171,36 @@ const config = {
   // 'solo' | 'master' | 'follower' | 'lite-follower'. `enabled` is stored
   // explicitly now (was derived from mode via env); `sigil join` sets both.
   get network() { return store().network; },
+  // defaults.namespace + defaults.language (install-wide fallbacks). The ACTIVE
+  // namespace/language are resolved per-project (resolveNamespace() / project
+  // pod attrs.language); these are only the tier-4 fallback. SSOT: store owns them.
   get defaults() { return store().defaults; },
+
+  // Project-pod identity strategy. Decouples a project pod's IDENTITY (used as
+  // its externalId) from the local filesystem path so two clones of the same
+  // repo at different paths resolve to the SAME shared project memory.
+  //   - 'remote'   (default): key on the normalized git remote.origin.url.
+  //   - 'explicit': SIGIL_PROJECT_ID → remote → .sigil/project.json only.
+  //   - 'path'     (legacy): always key on the absolute project root path.
+  // SSOT getter — validates the stored value, falling back to 'remote'.
+  project: {
+    get identity() {
+      const v = store().project?.identity || 'remote';
+      return ['remote', 'path', 'explicit'].includes(v) ? v : 'remote';
+    },
+  },
+
+  privacy: {
+    // Read-time enforcement of pod-kind visibility (P2). Facts in a 'private'
+    // kind pod (claude_session, person) are owner-scoped: only returned to the
+    // device that created them. 'shared'/'public' kinds stay globally visible.
+    //   'device' (default) — enforce owner-scoping using the local device id.
+    //   'off'              — disable enforcement (single-user installs / debug).
+    // Legacy rows with created_by_device_id IS NULL are always visible.
+    // SSOT getter — anything other than 'off' means 'device'.
+    get scope() { return store().privacy?.scope === 'off' ? 'off' : 'device'; },
+  },
+
   // AUDM dedup/supersession + search floors. See config-store defaults() for the
   // tuned values; change via patchConfig('memory', {...}) or the GUI.
   get memory() { return store().memory; },
@@ -175,9 +209,6 @@ const config = {
   get hebbian() { return store().hebbian; },
   // User preferences (noUpdateCheck, …) — was SIGIL_NO_UPDATE_CHECK env.
   get preferences() { return store().preferences; },
-  // Project-pod identity strategy (P1): 'remote' (git remote), 'path' (legacy
-  // absolute root), or 'explicit'. config.json owns it; resolveProjectId() applies it.
-  get project() { return store().project; },
 };
 
 export default config;
