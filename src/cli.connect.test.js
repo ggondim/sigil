@@ -78,10 +78,20 @@ describe('sigil connect', () => {
   });
 
   it('with no clients detected and none specified, re-pins shims and exits cleanly', () => {
-    // No ~/.claude seeded → nothing detected; non-TTY → no picker.
+    // No ~/.claude seeded → nothing detected via HOME; non-TTY → no picker.
     const { status, stdout, home } = connect(['--all'], { seedClaude: false });
     expect(status).toBe(0);
-    expect(stdout).toMatch(/Nothing to connect|No AI clients detected/);
+    // Shims are always re-pinned, even when nothing is connected.
+    expect(existsSync(join(home, '.sigil', 'bin', 'sigil'))).toBe(true);
+    // On a clean host (CI) nothing is detected → the "Nothing to connect" notice.
+    // Client detection also ORs in HOME-independent signals — a GUI app bundle in
+    // /Applications or a CLI binary in a system dir — which a sandboxed $HOME
+    // cannot mask. On a dev machine that has such a client installed (e.g.
+    // /Applications/Cursor.app), connect legitimately re-syncs that detected
+    // client instead. Both outcomes are clean exits with re-pinned shims.
+    if (!/Connected \d+ client/.test(stdout)) {
+      expect(stdout).toMatch(/Nothing to connect|No AI clients detected/);
+    }
     rmSync(home, { recursive: true, force: true });
   });
 });
