@@ -30,10 +30,11 @@ const PROVIDERS = [
 export const id = 'embedding';
 export const title = 'Embeddings';
 
-// Resolve the Ollama host the embedder will actually use.
+// Resolve the Ollama host the embedder will actually use. config.json is the
+// source of truth (no env override) — mirrors config.embedding.ollamaHost.
 function ollamaHost() {
   const cfg = getConfig();
-  return process.env.OLLAMA_HOST || cfg.embedding?.host || 'http://localhost:11434';
+  return cfg.embedding?.host || 'http://localhost:11434';
 }
 
 export function listProviders() {
@@ -168,9 +169,8 @@ export async function apply(input, emit = () => {}) {
   } catch (err) {
     if (err instanceof StepError) throw err;
     // Classify provider/key/model failures honestly.
-    const { diagnoseError } = await import('../../db/setup.js');
-    const d = diagnoseError(err);
-    throw new StepError({ message: d.humanMessage, hint: d.fixHint, kind: d.kind });
+    const { fromError } = await import('../db/shared.js');
+    throw fromError(err);
   }
 }
 

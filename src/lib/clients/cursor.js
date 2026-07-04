@@ -23,20 +23,15 @@
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { PKG_ROOT } from '../paths.js';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
-import { MCP_SHIM_PATH, writeLauncherShim } from './shim.js';
+import { MCP_SHIM_PATH, writeLauncherShim, resolveServerPath } from './shim.js';
 
 const CURSOR_HOME = join(homedir(), '.cursor');
 const CURSOR_MCP_PATH = join(CURSOR_HOME, 'mcp.json');
 const CURSOR_RULES_PATH = join(CURSOR_HOME, 'rules', 'sigil.mdc');
-
-// Package root — same trick claude-code.js uses to find dist/ vs src/.
-const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 
 const meta = {
   id: 'cursor',
@@ -50,11 +45,6 @@ async function detect() {
 
 // Pick the MCP server file Cursor should spawn. dist/server.js if the
 // package was built (real installs); src/server.js otherwise (dev).
-function resolveServerPath() {
-  const distServer = join(PKG_DIR, 'dist', 'server.js');
-  const srcServer = join(PKG_DIR, 'src', 'server.js');
-  return existsSync(distServer) ? distServer : srcServer;
-}
 
 // Merge the sigil entry into ~/.cursor/mcp.json. Preserves any other MCP
 // servers the user has configured; replaces a stale sigil entry if present.

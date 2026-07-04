@@ -1,31 +1,19 @@
 #!/usr/bin/env node
 
-import { resolve, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { execSync as _execSync } from 'node:child_process';
-import { config as dotenvConfig } from 'dotenv';
 
 // Package root — works whether run from project dir or globally installed
 const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 let PKG_VERSION = '0.0.0';
 try { PKG_VERSION = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')).version; } catch { /* ignore */ }
 
-// Env precedence: shell env > project .env > global ~/.sigil/.env.
-// dotenv's default behavior (no `override`) never overwrites existing
-// process.env keys, so loading project FIRST gives it priority over
-// global, and shell-set values (e.g. `DEFAULT_NAMESPACE=demo sigil ...`)
-// always win because they're set before either dotenv call runs.
-const projectEnv = resolve(process.cwd(), '.env');
-const globalEnv = join(homedir(), '.sigil', '.env');
-
-if (existsSync(projectEnv)) {
-  dotenvConfig({ path: projectEnv, quiet: true });
-}
-if (existsSync(globalEnv) && globalEnv !== projectEnv) {
-  dotenvConfig({ path: globalEnv, quiet: true });
-}
+// No .env loading: config.json is the single source of truth (loaded lazily by
+// config.js → config-store). A legacy ~/.sigil/.env is imported into config.json
+// once, on first load, then renamed .migrated (see config-store.migrateEnvIfPresent).
 
 // Agent provenance: CLI-originated writes are tagged 'cli'. The socket client
 // forwards this in each request envelope so the daemon stamps created_by_agent.
@@ -41,6 +29,7 @@ Usage:
 
 Commands:
   init                     Interactive setup wizard (DB, LLM, embeddings, agents)
+  update [--check]         Update Sigil from the git release branch
   connect [--clients ...]  Re-pin launcher shims + re-sync AI client configs (fix stale paths)
   uninstall [--dry-run]    Remove Sigil's entries from selected AI clients
   doctor                   Diagnose Sigil setup (DB, LLM, embeddings, hooks)
@@ -190,11 +179,17 @@ const commands = {
   register: runRegister,
   why: runWhy,
   kind: runKind,
+  update: runUpdateVerb,
   daemon: runDaemonVerb,
   service: runServiceVerb,
   pair: runPairVerb,
   join: runJoinVerb,
 };
+
+async function runUpdateVerb(args) {
+  const { runUpdate } = await import('./cli-handlers/update.js');
+  return runUpdate(args);
+}
 
 async function runDaemonVerb(args) {
   const { runDaemon } = await import('./cli-handlers/daemon.js');
@@ -239,6 +234,23 @@ if (command !== 'doctor' && command !== 'export' && command !== 'register') {
       process.stderr.write(`⚠ Sigil: ${count} unacked hook issue${count > 1 ? 's' : ''} — run \`sigil doctor\` for details\n`);
     }
   } catch { /* never let the warning break the command */ }
+
+  // Surface a pending git update (flag set by the daemon's background staleness
+  // check). Suppressed for `update` itself — it has its own richer output.
+  if (command !== 'update') {
+    try {
+      const { existsSync, readFileSync } = await import('node:fs');
+      const { SIGIL_UPDATE_FLAG } = await import('./lib/paths.js');
+      if (existsSync(SIGIL_UPDATE_FLAG)) {
+        let detail = '';
+        try {
+          const f = JSON.parse(readFileSync(SIGIL_UPDATE_FLAG, 'utf8'));
+          if (f.local && f.remote) detail = ` (${f.local} → ${f.remote})`;
+        } catch { /* flag may be empty — fine */ }
+        process.stderr.write(`⬆ Sigil update available${detail} — run \`sigil update\`\n`);
+      }
+    } catch { /* never let the warning break the command */ }
+  }
 }
 
 try {
@@ -595,6 +607,26 @@ running the checks — use when you've seen them and don't want a full pass.`);
     }
   } catch (err) {
     log('warn', 'Config validation', `unable to run: ${err.message}`);
+  }
+
+  // Install integrity (S2): the launcher shims, the running daemon, and the git
+  // install at ~/.sigil/app must all agree. A skew here is the silent
+  // precondition behind the dueling-install corruption (two daemons / two PGlite
+  // versions over one single-process DB), so surface it as a hard fail with the
+  // one-command fix. Skipped for dev/source runs with no installed git copy.
+  try {
+    const { checkInstallIntegrity } = await import('./lib/install-state.js');
+    const r = checkInstallIntegrity();
+    if (r.applicable && r.ok) {
+      log('ok', 'Install integrity', `shims + daemon aligned with git install (v${r.canonical.version})`);
+    } else if (r.applicable) {
+      for (const issue of r.issues) {
+        log('fail', 'Install integrity', issue.message);
+        console.log(`    fix: ${issue.fix}`);
+      }
+    }
+  } catch (err) {
+    log('warn', 'Install integrity', `unable to check: ${err.message}`);
   }
 
   // Database — the driver path is config-only (no DB touch); health + counts come
@@ -1833,6 +1865,19 @@ Usage:
     console.log(`  Entities:   ${data.entities.documents} documents, ${data.entities.people} people, ${data.entities.topics} topics`);
     console.log(`  Relations:  ${data.relations}`);
     console.log(`  Pods:       ${podSummary}`);
+    // Live agent-process gauges. The Claude-procs line is the hard cap that
+    // prevents the 1600-session blowup — show it whenever the daemon reports it.
+    if (data.claudeProcs) {
+      const { active, waiting, limit } = data.claudeProcs;
+      console.log(`  Claude procs: ${active}/${limit} active${waiting ? `, ${waiting} queued` : ''}`);
+    }
+    if (data.managedSession?.enabled) {
+      const ms = data.managedSession;
+      const byState = (ms.workers || []).reduce((a, w) => { a[w.state] = (a[w.state] || 0) + 1; return a; }, {});
+      const stateSummary = Object.entries(byState).map(([s, n]) => `${n} ${s}`).join(', ') || 'none';
+      const queued = Object.values(ms.queued || {}).reduce((a, n) => a + n, 0);
+      console.log(`  Managed session: ${(ms.workers || []).length} workers (${stateSummary}), ${queued} queued, ${ms.pending} pending`);
+    }
     if (data.hebbian) {
       const avg = data.hebbian.avgStrength ? data.hebbian.avgStrength.toFixed(2) : '0';
       const max = data.hebbian.maxStrength ? data.hebbian.maxStrength.toFixed(2) : '0';
@@ -2116,6 +2161,7 @@ async function removeClaudeMdImport() {
     join(home, '.cortex', 'CLAUDE.md'),
   ];
 
+  const { escapeRegex } = await import('./lib/text.js');
   let after = before;
   for (const p of importPaths) {
     const re = new RegExp(`^@${escapeRegex(p)}\\s*\\n?`, 'gm');
@@ -2125,10 +2171,6 @@ async function removeClaudeMdImport() {
   if (after === before) return false;
   await fs.writeFile(claudeMdPath, after, 'utf8');
   return true;
-}
-
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 

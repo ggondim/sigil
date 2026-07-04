@@ -89,6 +89,10 @@ export const SIGIL_SCHEMAS_DIR = join(SIGIL_HOME, 'schemas');
 // Resolved at call time by src/lib/prompts.js (resolvePromptPath).
 export const SIGIL_PROMPTS_DIR = join(SIGIL_HOME, 'prompts');
 export const SIGIL_HOOK_ERRORS_LOG = join(SIGIL_HOME, '.hook-errors.log');
+// Set by the daemon's background staleness check when the git clone is behind
+// the release branch; read by the CLI preamble to surface "update available".
+// Removed by `sigil update` once the clone is fast-forwarded.
+export const SIGIL_UPDATE_FLAG = join(SIGIL_HOME, '.update-available');
 export const SIGIL_LAST_CLEAN_DOCTOR = join(SIGIL_HOME, '.last-clean-doctor');
 export const SIGIL_ACTIVE_SESSION_CURSOR = join(SIGIL_HOME, '.active-session.json');
 export const SIGIL_STOP_CURSOR = join(SIGIL_HOME, '.stop-cursor.json');

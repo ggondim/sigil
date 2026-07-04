@@ -18,25 +18,20 @@
  *     re-run and leaving everything outside the markers untouched.
  */
 
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { PKG_ROOT } from '../paths.js';
 
 import TOML from '@iarna/toml';
 
 import { safeWrite } from '../safe-write.js';
 import { detectInstalled } from './detect.js';
 import { buildSharedInstructions } from './instructions.js';
-import { MCP_SHIM_PATH, writeLauncherShim } from './shim.js';
+import { MCP_SHIM_PATH, writeLauncherShim, resolveServerPath } from './shim.js';
 
 const CODEX_HOME = join(homedir(), '.codex');
 const CODEX_CONFIG_PATH = join(CODEX_HOME, 'config.toml');
 const CODEX_AGENTS_PATH = join(CODEX_HOME, 'AGENTS.md');
-
-// Package root — same trick the other client modules use to find dist/ vs src/.
-const PKG_DIR = PKG_ROOT; // bundle-safe package root (see claude-code.js)
 
 const BEGIN_MARKER = '<!-- BEGIN sigil -->';
 const END_MARKER = '<!-- END sigil -->';
@@ -51,11 +46,6 @@ async function detect() {
   return detectInstalled({ dirs: [CODEX_HOME], bins: ['codex'] });
 }
 
-function resolveServerPath() {
-  const distServer = join(PKG_DIR, 'dist', 'server.js');
-  const srcServer = join(PKG_DIR, 'src', 'server.js');
-  return existsSync(distServer) ? distServer : srcServer;
-}
 
 // Read existing TOML if present, set mcp_servers.sigil, write back.
 // NOTE: @iarna/toml strips ALL comments on round-trip — only key/value data

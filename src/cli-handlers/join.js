@@ -14,10 +14,8 @@
  * automatically when --addresses isn't given.
  */
 import { hostname } from 'node:os';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
-import { PKG_ROOT } from '../lib/paths.js';
+import { getSigilVersion } from '../lib/version.js';
 import { parseFlags } from './flags.js';
 
 const HELP = `sigil join — pair this device with a Sigil master
@@ -49,15 +47,16 @@ export async function runJoin(args) {
   const relayUrl = flags.relay || undefined;
   const lite = Boolean(flags.lite);
 
-  // We must boot Iroh on this side to dial. Force network on if it's not
-  // already configured.
-  if (process.env.SIGIL_MODE === undefined || process.env.SIGIL_MODE === 'solo') {
-    process.env.SIGIL_MODE = lite ? 'lite-follower' : 'follower';
-    process.env.SIGIL_NETWORK_ENABLED = 'true';
+  // We must boot Iroh on this side to dial. Persist network-on to config.json
+  // (the source of truth) if it's not already configured — no env mutation.
+  const { default: cfg } = await import('../config.js');
+  if (!cfg.network.mode || cfg.network.mode === 'solo') {
+    const { patchConfig } = await import('../setup/config-store.js');
+    patchConfig('network', { mode: lite ? 'lite-follower' : 'follower', enabled: true });
   }
 
   const { joinMaster } = await import('../net/pairing.js');
-  const version = readVersion();
+  const version = getSigilVersion();
 
   console.log(`[sigil] joining master ${masterNodeId.slice(0, 12)}…`);
   const result = await joinMaster({
@@ -124,9 +123,4 @@ export async function runJoin(args) {
   } catch (err) {
     console.error(`(warning: failed to persist mode to .env: ${err.message})`);
   }
-}
-
-function readVersion() {
-  try { return JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version; }
-  catch { return 'unknown'; }
 }

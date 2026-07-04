@@ -1,13 +1,22 @@
 import { getConfig } from './setup/config-store.js';
 import { EMBEDDING_DIM } from './lib/constants.js';
 
-const env = (key, fallback) => process.env[key] ?? fallback;
-
-// Device-local config (config.json). Precedence everywhere below is
-// `process.env  ||  config-store  ||  hard default` — so an explicit env var
-// still wins (dev / tests / CI), but with no env set the saved config.json
-// drives, instead of a stale ~/.sigil/.env. Tuning flags (MEMORY_*, ports, …)
-// stay env-only; only onboarding-managed sections read the store.
+// config.json (the config-store) is the SINGLE SOURCE OF TRUTH for ALL
+// configuration — database, llm, embedding, plus every infra/tuning section
+// (http, network, memory, search, ingest, output, hebbian, managed-session).
+// Getters read the store ONLY; no env var is ever consulted for config, so a
+// stray global (e.g. LLM_PROVIDER=openai) can never override what onboarding
+// saved. Defaults live in code (config-store defaults()) and merge on read
+// (§7.2 of docs/building-core-system-cli-apps.md), so the on-disk file stays
+// sparse, defaults track the code, and every store section always has all fields.
+//
+// The ONLY env that remains is true bootstrap / runtime / process-identity that
+// physically cannot live in config.json: HOME (locates config.json itself),
+// SIGIL_DAEMON_PROCESS / SIGIL_AGENT / SIGIL_WORKER_ID / SIGIL_SOURCE / SIGIL_SUPERVISED
+// (per-process identity + IPC), SIGIL_PGLITE_PATH (launch/test DB-path redirect),
+// SIGIL_BRANCH (release-lane selector, set by install.sh), and OS/debug flags
+// (SHELL, DISPLAY, SIGIL_DEBUG). Per-invocation CLI flags may still override
+// transiently — they're explicit one-shot intent, not a file.
 const store = () => getConfig();
 // The setup steps store ONE apiKey/model per chosen provider; expose it only
 // through the matching provider's getter so detection + the provider module
@@ -16,98 +25,79 @@ const llmKey = (provider) => (store().llm.provider === provider ? store().llm.ap
 const llmModel = (provider) => (store().llm.provider === provider ? store().llm.model || '' : '');
 const embKey = (provider) => (store().embedding.provider === provider ? store().embedding.apiKey || '' : '');
 
-const dbType = env('SIGIL_DB_TYPE', 'postgres');
-if (dbType !== 'postgres') {
-  throw new Error(
-    `SIGIL_DB_TYPE=${dbType} is no longer supported. Sigil 0.10.0+ is Postgres-only.\n`
-    + 'PGlite was deprecated; existing PGlite data at ~/.sigil/db is preserved but unreachable from this version.\n'
-    + 'Set SIGIL_DB_TYPE=postgres in ~/.sigil/.env and configure SIGIL_DB_HOST / PORT / NAME / USER / PASSWORD.\n'
-    + 'Run `sigil init` for an interactive setup.',
-  );
-}
-
 const config = {
-  // Env-derived getters (not frozen values): the GUI/CLI rewrite ~/.sigil/.env
-  // mid-session (e.g. the onboarding DB step) and then dotenv-override
-  // process.env. Plain values would freeze at the daemon's boot-time env, so a
-  // freshly-configured database wouldn't be seen until restart — and the
-  // dim-conflict check (inspectEmbeddingCompat → selectDriver(config)) would
-  // probe the stale DB. Getters read process.env at access time. Same fix
-  // class as the `embedding` block below.
+  // Live getters off the store (not frozen values): the GUI/CLI patch config.json
+  // mid-session (e.g. the onboarding DB step), so a freshly-configured database is
+  // seen without a restart — and the dim-conflict check (inspectEmbeddingCompat →
+  // selectDriver(config)) never probes a stale DB. Reads the store at access time.
   db: {
     type: 'postgres',
     // Persistence mode: 'embedded' (in-process PGlite, zero prerequisites),
     // 'local'/'docker' (discrete host/port fields), or 'url' (connection
-    // string). Read live so a mid-session onboarding switch is picked up.
-    // Env escape hatch: SIGIL_DB_MODE=embedded forces the embedded engine.
-    get mode() { return process.env.SIGIL_DB_MODE || store().database.mode || null; },
+    // string). Read live from the store so a mid-session onboarding switch is
+    // picked up without a restart.
+    get mode() { return store().database.mode ?? null; },
     // Connection URL takes precedence when set. Recognized providers
     // (Neon, Supabase, RDS, Render, Railway, CockroachDB) get sensible
     // SSL defaults automatically; override with ?sslmode=... in the URL.
-    get url() { return (process.env.SIGIL_DATABASE_URL || process.env.DATABASE_URL) || store().database.url || null; },
-    get host() { return process.env.SIGIL_DB_HOST || store().database.host || 'localhost'; },
-    get port() { return Number(process.env.SIGIL_DB_PORT || store().database.port || 5432); },
-    get database() { return process.env.SIGIL_DB_NAME || store().database.name || 'sigil'; },
-    get user() { return process.env.SIGIL_DB_USER || store().database.user || 'sigil_app'; },
-    get password() { return process.env.SIGIL_DB_PASSWORD || store().database.password || ''; },
+    get url() { return store().database.url ?? null; },
+    get host() { return store().database.host ?? 'localhost'; },
+    get port() { return Number(store().database.port ?? 5432); },
+    get database() { return store().database.name ?? 'sigil'; },
+    get user() { return store().database.user ?? 'sigil_app'; },
+    get password() { return store().database.password ?? ''; },
   },
 
-  // Env-derived getters (not frozen values): `sigil init` writes a fresh
-  // ~/.sigil/.env and then dotenv-overrides process.env AFTER this module has
-  // already been imported (registry.js pulls config in during provider
-  // selection). Plain values would freeze at the pre-init env — e.g. picking
-  // OpenAI@1024 but still embedding at the old 768 default. Getters read
-  // process.env at access time, so the post-override env wins. The embed path
-  // reads these live via `{...config.embedding}`, so truncation dimensions and
-  // keys reflect what init just wrote.
+  // Live getters off the store: `sigil init`/the GUI patch config.json during
+  // provider selection, so reads reflect what was just written (e.g. picking
+  // OpenAI updates the model/key immediately). The embed path reads these live
+  // via `{...config.embedding}`.
   embedding: {
-    get provider() { return process.env.EMBEDDING_PROVIDER || store().embedding.provider || ''; },
-    get model() { return process.env.EMBEDDING_MODEL || store().embedding.model || 'mxbai-embed-large'; },
+    get provider() { return store().embedding.provider ?? ''; },
+    get model() { return store().embedding.model ?? 'mxbai-embed-large'; },
     // Fixed, non-configurable: the DB schema and every provider are pinned to
     // this so they can never drift (see src/lib/constants.js).
     get dimensions() { return EMBEDDING_DIM; },
-    get ollamaHost() { return process.env.OLLAMA_HOST || (store().embedding.provider === 'ollama' ? store().embedding.host : '') || 'http://localhost:11434'; },
+    get ollamaHost() { return (store().embedding.provider === 'ollama' ? store().embedding.host : '') || 'http://localhost:11434'; },
     // Optional auth for an Ollama endpoint behind a reverse proxy (e.g. Traefik
     // basicAuth / a bearer gateway). Value is "user:pass" (-> Basic), a token
     // (-> Bearer), or a verbatim "Basic …"/"Bearer …" header. Empty = no auth
     // (local Ollama). See embedders/ollama.js.
-    get ollamaAuth() { return process.env.OLLAMA_EMBED_AUTH || embKey('ollama'); },
-    get openaiApiKey() { return process.env.OPENAI_API_KEY || embKey('openai'); },
-    get voyageApiKey() { return process.env.VOYAGE_API_KEY || embKey('voyage'); },
+    get ollamaAuth() { return embKey('ollama'); },
+    get openaiApiKey() { return embKey('openai'); },
+    get voyageApiKey() { return embKey('voyage'); },
     // OpenRouter as an embedding gateway. Models are namespaced (e.g.
     // "openai/text-embedding-3-large", "voyageai/voyage-3-large").
     // Reuses the chat-side referer/title for app attribution.
-    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || embKey('openrouter'); },
-    openrouterBaseUrl: process.env.EMBEDDING_OPENROUTER_BASE_URL || process.env.LLM_OPENROUTER_BASE_URL || '',
-    openrouterReferer: process.env.EMBEDDING_OPENROUTER_REFERER || process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil',
-    openrouterTitle: process.env.EMBEDDING_OPENROUTER_TITLE || process.env.LLM_OPENROUTER_TITLE || 'Sigil',
+    get openrouterApiKey() { return embKey('openrouter'); },
+    get openrouterBaseUrl() { return store().embedding.openrouterBaseUrl ?? ''; },
+    get openrouterReferer() { return store().embedding.openrouterReferer ?? 'https://github.com/Anmol-Srv/sigil'; },
+    get openrouterTitle() { return store().embedding.openrouterTitle ?? 'Sigil'; },
   },
 
-  // Env-derived getters — same rationale as `embedding` above. The onboarding
-  // wizard writes ~/.sigil/.env mid-session and reloads process.env, so plain
-  // values would freeze at boot-time env and `testLlm` would test the old
-  // provider instead of the one the user just picked.
+  // Live getters off the store — same rationale as `embedding` above, so
+  // `testLlm` tests the provider the user just picked, not a boot-time snapshot.
   llm: {
-    get provider() { return process.env.LLM_PROVIDER || store().llm.provider || ''; },
+    get provider() { return store().llm.provider ?? ''; },
 
     // OpenAI
-    get openaiApiKey() { return process.env.OPENAI_API_KEY || llmKey('openai'); },
-    get openaiModel() { return process.env.LLM_OPENAI_MODEL || llmModel('openai') || 'gpt-4o-mini'; },
+    get openaiApiKey() { return llmKey('openai'); },
+    get openaiModel() { return llmModel('openai') || 'gpt-4o-mini'; },
 
     // Ollama
-    get ollamaHost() { return process.env.LLM_OLLAMA_HOST || process.env.OLLAMA_HOST || (store().llm.provider === 'ollama' ? store().llm.host : '') || 'http://localhost:11434'; },
-    get ollamaModel() { return process.env.LLM_OLLAMA_MODEL || llmModel('ollama') || 'qwen2.5:7b'; },
+    get ollamaHost() { return (store().llm.provider === 'ollama' ? store().llm.host : '') || 'http://localhost:11434'; },
+    get ollamaModel() { return llmModel('ollama') || 'qwen2.5:7b'; },
 
     // Claude CLI (dev — uses your Claude Code subscription)
-    get cliModel() { return process.env.LLM_CLI_MODEL || llmModel('claude-cli') || 'haiku'; },
+    get cliModel() { return llmModel('claude-cli') || 'haiku'; },
     // Explicit path to the `claude` binary. Optional — when unset the
     // provider auto-resolves it (see providers/claude-cli.js). Needed when
     // the daemon runs under launchd/systemd with a stripped PATH that can't
     // see ~/.local/bin or the nvm bin dir where `claude` lives.
-    get cliPath() { return process.env.LLM_CLI_PATH || ''; },
+    get cliPath() { return store().llm.cliPath ?? ''; },
 
     // Anthropic
-    get apiKey() { return process.env.ANTHROPIC_API_KEY || llmKey('anthropic'); },
+    get apiKey() { return llmKey('anthropic'); },
 
     // OpenRouter — OpenAI-compatible gateway; one key, namespaced models
     // like "anthropic/claude-sonnet-latest", "openai/gpt-mini-latest", etc.
@@ -116,88 +106,86 @@ const config = {
     // JSON output, ~500ms typical latency. Beats Claude Haiku 2× on cost
     // and 5× on context while matching reasoning + JSON reliability for
     // Sigil's call types (extraction, AUDM, classifier, router, synthesis).
-    get openrouterApiKey() { return process.env.OPENROUTER_API_KEY || llmKey('openrouter'); },
-    get openrouterModel() { return process.env.LLM_OPENROUTER_MODEL || llmModel('openrouter') || 'google/gemini-flash-latest'; },
-    get openrouterBaseUrl() { return process.env.LLM_OPENROUTER_BASE_URL || ''; },
-    get openrouterReferer() { return process.env.LLM_OPENROUTER_REFERER || 'https://github.com/Anmol-Srv/sigil'; },
-    get openrouterTitle() { return process.env.LLM_OPENROUTER_TITLE || 'Sigil'; },
+    get openrouterApiKey() { return llmKey('openrouter'); },
+    get openrouterModel() { return llmModel('openrouter') || 'google/gemini-flash-latest'; },
+    get openrouterBaseUrl() { return store().llm.openrouterBaseUrl ?? ''; },
+    get openrouterReferer() { return store().llm.openrouterReferer ?? 'https://github.com/Anmol-Srv/sigil'; },
+    get openrouterTitle() { return store().llm.openrouterTitle ?? 'Sigil'; },
 
     // Per-task model overrides (use provider-specific model names)
-    get extractionModel() { return process.env.LLM_EXTRACTION_MODEL || ''; },
-    get decisionModel() { return process.env.LLM_DECISION_MODEL || ''; },
-    get entityModel() { return process.env.LLM_ENTITY_MODEL || ''; },
+    get extractionModel() { return store().llm.extractionModel ?? ''; },
+    get decisionModel() { return store().llm.decisionModel ?? ''; },
+    get entityModel() { return store().llm.entityModel ?? ''; },
 
-    get maxRetries() { return Number(process.env.LLM_MAX_RETRIES) || 3; },
-    get cliTimeout() { return Number(process.env.LLM_CLI_TIMEOUT) || 120000; },
+    get maxRetries() { return Number(store().llm.maxRetries ?? 3) || 3; },
+    get cliTimeout() { return Number(store().llm.cliTimeout ?? 120000) || 120000; },
+    // Hard ceiling on CONCURRENT `claude` CLI processes spawned by THIS process.
+    // The blowup this caps: a user once hit 1600+ live `claude` sessions when an
+    // ingest fan-out (and fallback storms) spawned one process per call with no
+    // bound — pinning RAM/tokens. Every `claude` spawn (one-shot path, managed-
+    // session fallback, hook classify) routes through one semaphore, so excess
+    // calls QUEUE instead of forking. Per-process: the daemon is the process that
+    // fans out, so its singleton gate is what matters; short-lived hooks spawn ≤1
+    // anyway. Default 4 keeps throughput while making the 1600 case impossible.
+    get maxClaudeProcs() { return Math.max(1, Number(store().llm.maxClaudeProcs ?? 4) || 4); },
+
+    // Managed-session engine (warm tmux workers; see src/lib/llm/session/).
+    // Opt-in in v1: a NEW subsystem, so default OFF — when disabled the
+    // managed-session provider transparently uses the one-shot claude-cli path,
+    // so nothing breaks. Enable to amortize agentic cold-start across many
+    // ingest calls. Only meaningful on a host with `tmux` and the `claude` CLI.
+    managedSession: {
+      get enabled() { return store().llm.managedSession?.enabled === true; },
+      // Workers per source type. 1 = strictly serial per engine (matches the
+      // "one session per source type" model); raise to lift the serial-latency
+      // ceiling. Bounded RAM = poolSize × live agent processes per type.
+      get poolSize() { return Math.max(1, Number(store().llm.managedSession?.poolSize ?? 1) || 1); },
+      // Recycle a worker once it has processed ~this many tokens (the "context
+      // cap" / budget-window reset). Caps cross-task context bleed + memory creep.
+      get tokenBudget() { return Number(store().llm.managedSession?.tokenBudget ?? 60000) || 60000; },
+      // Dead-man timeout per task → one-shot fallback + recycle.
+      get taskTimeoutMs() { return Number(store().llm.managedSession?.taskTimeoutMs ?? 120000) || 120000; },
+      // Boot handshake window: how long to wait for a freshly-spawned worker's
+      // first get_task before re-nudging once, then recycling. Keeps a lost
+      // cold-boot keystroke to a short retry instead of a full dead-man timeout.
+      get firstTaskTimeoutMs() { return Number(store().llm.managedSession?.firstTaskTimeoutMs ?? 10000) || 10000; },
+      // How often the daemon sweeps BUSY workers for a wedged interactive dialog
+      // (catches a stuck auth/trust prompt before its dead-man timeout fires).
+      get healthProbeMs() { return Number(store().llm.managedSession?.healthProbeMs ?? 15000) || 15000; },
+      // Escape hatch: /clear between tasks (default on). false → prompt-ordering only.
+      get clearBetweenTasks() { return store().llm.managedSession?.clearBetweenTasks !== false; },
+    },
     // HTTP request timeout for network LLM providers/embedders (OpenAI,
     // OpenRouter, Voyage). Without it a hung connection blocks the daemon or a
     // hook indefinitely. 60s leaves headroom for large JSON completions while
     // still bounding a dead socket. Local Ollama generation uses cliTimeout
     // (it can legitimately run longer); claude-cli uses cliTimeout too.
-    get requestTimeout() { return Number(process.env.LLM_REQUEST_TIMEOUT) || 60000; },
+    get requestTimeout() { return Number(store().llm.requestTimeout ?? 60000) || 60000; },
   },
 
-  output: {
-    storage: process.env.OUTPUT_STORAGE || 'local',
-    dir: process.env.OUTPUT_DIR || './output',
-    s3: {
-      endpoint: process.env.S3_ENDPOINT || '',
-      bucket: process.env.S3_BUCKET || '',
-      region: process.env.S3_REGION || 'us-east-1',
-      accessKey: process.env.S3_ACCESS_KEY || '',
-      secretKey: process.env.S3_SECRET_KEY || '',
-      publicUrl: process.env.S3_PUBLIC_URL || '',
-    },
-  },
-
-  http: {
-    enabled: env('SIGIL_HTTP_ENABLED', 'true') !== 'false',
-    host: env('SIGIL_HTTP_HOST', '127.0.0.1'),
-    port: Number(env('SIGIL_HTTP_PORT', 7777)),
-  },
-
-  network: {
-    // 'solo'   — no Iroh, single-device install (default).
-    // 'master' — owns canonical DB, accepts paired devices.
-    // 'follower' — paired with a master, syncs over Iroh.
-    // 'lite-follower' — no local DB, every read/write proxied to master.
-    mode: env('SIGIL_MODE', 'solo'),
-    enabled: env('SIGIL_NETWORK_ENABLED', null) === null
-      ? env('SIGIL_MODE', 'solo') !== 'solo'
-      : env('SIGIL_NETWORK_ENABLED', 'false') !== 'false',
-    masterNodeId: env('SIGIL_MASTER_NODE_ID', '') || null,
-  },
-
-  defaults: {
-    // The install-wide fallback namespace (tier 4). The ACTIVE namespace for an
-    // operation is resolved per-project by resolveNamespace() in
-    // src/memory/namespace.js, with precedence: explicit --namespace >
-    // SIGIL_NAMESPACE env > committed `.sigil/namespace` marker at the repo
-    // root > this default. With none of the higher tiers set, the active
-    // namespace IS this value — identical to the historical single-namespace
-    // behavior. Consumers that resolve the active namespace should call
-    // resolveNamespace(), not read this directly.
-    namespace: process.env.DEFAULT_NAMESPACE || 'default',
-    // Instance-wide fallback LANGUAGE for extracted facts. The ACTIVE language
-    // is resolved per-project from the project pod's attrs.language (set via the
-    // GUI/CLI), falling back to this. Empty = no language constraint (model's
-    // default). Same shape as `namespace`: pod attr > this default.
-    language: process.env.SIGIL_LANGUAGE || '',
-  },
+  // The sections below are infra/tuning. config.json owns them (defaults merged
+  // on read by getConfig), so each getter just returns its store section — no
+  // env. Mutable knobs change live via patchConfig without a daemon restart.
+  get output() { return store().output; },
+  get http() { return store().http; },
+  // 'solo' | 'master' | 'follower' | 'lite-follower'. `enabled` is stored
+  // explicitly now (was derived from mode via env); `sigil join` sets both.
+  get network() { return store().network; },
+  // defaults.namespace + defaults.language (install-wide fallbacks). The ACTIVE
+  // namespace/language are resolved per-project (resolveNamespace() / project
+  // pod attrs.language); these are only the tier-4 fallback. SSOT: store owns them.
+  get defaults() { return store().defaults; },
 
   // Project-pod identity strategy. Decouples a project pod's IDENTITY (used as
   // its externalId) from the local filesystem path so two clones of the same
   // repo at different paths resolve to the SAME shared project memory.
-  //   - 'remote'   (default): key on the normalized git remote.origin.url, with
-  //                fallbacks SIGIL_PROJECT_ID → remote → .sigil/project.json →
-  //                absolute root path.
-  //   - 'explicit': SIGIL_PROJECT_ID → remote → .sigil/project.json only; no
-  //                path fallback unless nothing else resolves.
+  //   - 'remote'   (default): key on the normalized git remote.origin.url.
+  //   - 'explicit': SIGIL_PROJECT_ID → remote → .sigil/project.json only.
   //   - 'path'     (legacy): always key on the absolute project root path.
-  // Read live (getter) — same rationale as the blocks above.
+  // SSOT getter — validates the stored value, falling back to 'remote'.
   project: {
     get identity() {
-      const v = process.env.SIGIL_PROJECT_IDENTITY || store().project?.identity || 'remote';
+      const v = store().project?.identity || 'remote';
       return ['remote', 'path', 'explicit'].includes(v) ? v : 'remote';
     },
   },
@@ -205,109 +193,22 @@ const config = {
   privacy: {
     // Read-time enforcement of pod-kind visibility (P2). Facts in a 'private'
     // kind pod (claude_session, person) are owner-scoped: only returned to the
-    // device that created them. 'shared'/'public' kinds stay globally visible
-    // within the namespace.
+    // device that created them. 'shared'/'public' kinds stay globally visible.
     //   'device' (default) — enforce owner-scoping using the local device id.
-    //   'off'              — disable enforcement (single-user installs / debug);
-    //                        all facts visible regardless of created_by_device_id.
-    // Legacy rows with created_by_device_id IS NULL (pre-provenance) are always
-    // visible — owner-scoping never hides pre-existing data.
-    scope: (env('SIGIL_PRIVATE_SCOPE', 'device') === 'off') ? 'off' : 'device',
+    //   'off'              — disable enforcement (single-user installs / debug).
+    // Legacy rows with created_by_device_id IS NULL are always visible.
+    // SSOT getter — anything other than 'off' means 'device'.
+    get scope() { return store().privacy?.scope === 'off' ? 'off' : 'device'; },
   },
 
-  memory: {
-    // AUDM dedup: skip if similarity >= this (paraphrase of same fact)
-    skipThreshold: Number(process.env.MEMORY_SKIP_THRESHOLD) || 0.88,
-    // AUDM dedup: ask LLM if similarity >= this (possibly related).
-    // 0.78 floor — measured during eval that 0.65 fired the LLM judge on
-    // ~5x as many candidate pairs as actually warranted disambiguation.
-    // Cuts ingest LLM cost by ~40% with no measurable quality drop.
-    // Override per-deployment via MEMORY_AMBIGUOUS_THRESHOLD.
-    ambiguousThreshold: Number(process.env.MEMORY_AMBIGUOUS_THRESHOLD) || 0.78,
-    // AUDM supersession scan: when retiring stale facts (UPDATE/CONTRADICT), cast
-    // a WIDER net than dedup. A real-world change ("migrated to Postgres") spawns
-    // several stale facts phrased about different facets whose embedding
-    // similarity to the new fact sits below the 0.78 dedup floor (measured: 0.74–
-    // 0.78 for genuine contradictions). The deterministic AUDM judge gates
-    // precision, so embedding only needs recall here. Lower than ambiguousThreshold
-    // on purpose; raise toward 0.78 to cut ingest LLM cost, lower to catch more
-    // facet-shifted contradictions. Override via MEMORY_SUPERSEDE_THRESHOLD.
-    supersedeThreshold: Number(process.env.MEMORY_SUPERSEDE_THRESHOLD) || 0.72,
-    // Max neighbors examined per new fact during the supersession scan (bounds
-    // the worst-case LLM calls per ingested fact).
-    supersedeScanLimit: Number(process.env.MEMORY_SUPERSEDE_SCAN_LIMIT) || 8,
-    // Search: discard results below this cosine similarity floor
-    minFactSimilarity: Number(process.env.MEMORY_MIN_FACT_SIMILARITY) || 0.45,
-    // Injection floor (precision-first): for AUTO-injection paths (hooks /
-    // hot-context), drop any fact whose absolute cosine similarity to the
-    // query is below this. Higher than minFactSimilarity on purpose — when we
-    // inject memory unprompted, "empty but honest" beats "full but off-topic"
-    // (one irrelevant injection teaches the user to ignore all of them).
-    // Explicit human search (CLI/MCP) passes applyFloor:false to bypass.
-    // Tune from the Activity log's per-search dropped-count. Cosine, not the
-    // normalized rrfScore (which is relative-to-best and always keeps the top
-    // result even for an off-topic query).
-    injectionFloor: Number(process.env.MEMORY_INJECTION_FLOOR) || 0.6,
-  },
-
-  search: {
-    // After hybrid retrieval, run an LLM pass over the top-K results to synthesize a coherent
-    // answer that cites which items it used. Lifts hit@1 by ~9 points and gives the system a
-    // natural way to refuse out-of-corpus queries ("Not in retrieved memory.") instead of
-    // producing confidently-wrong answers from tangentially related facts.
-    // Trade: +~$0.00015 and +~2.2s per search. Set SIGIL_SYNTHESIZE=false to disable.
-    synthesize: env('SIGIL_SYNTHESIZE', 'true') !== 'false',
-    // Model for the synthesis pass — defaults to LLM_EXTRACTION_MODEL.
-    synthesizeModel: env('SIGIL_SYNTH_MODEL', ''),
-  },
-
-  ingest: {
-    // false → skip per-chunk fact extraction during ingest (Ogham-style lazy mode).
-    // Trades ~17× cheaper writes for ~4 points of hit@1 on narrow queries.
-    eagerExtract: env('SIGIL_EAGER_EXTRACT', 'true') !== 'false',
-    // Semantic relationship extraction. Entities AND relationships are pulled in
-    // ONE fused graph-extraction call (the GraphRAG/LightRAG pattern), then
-    // predicates are canonicalized in a local, LLM-free pass. This turns the
-    // structurally-present but semantically-empty graph into a real knowledge
-    // graph without adding an LLM round-trip over the prior entity-only stage.
-    // Set SIGIL_EXTRACT_RELATIONS=false to fall back to entity-only linking.
-    extractRelations: env('SIGIL_EXTRACT_RELATIONS', 'true') !== 'false',
-    // Gleaning: after the first graph extraction, re-ask the model "what did you
-    // miss?" this many times to recover recall a single pass loses (GraphRAG's
-    // trick). Defaults OFF: schema-constrained structured output already recovers
-    // most of the recall gleaning targeted, and each round is a full extra
-    // graph-extraction call — not worth doubling ingest latency by default. Set
-    // SIGIL_GRAPH_GLEAN_ROUNDS=1+ to trade latency for recall. Only fires for
-    // fact-dense documents (≥5 facts) so short inputs never pay for it.
-    graphGleanRounds: Number(env('SIGIL_GRAPH_GLEAN_ROUNDS', 0)),
-  },
-
-  hebbian: {
-    // Entity-level co-retrieval edges. Sibling of the fact-level signal, but
-    // built over entities so it survives paraphrase + AUDM fact splits and
-    // sharpens the existing graph traversal in search.
-    entity: {
-      enabled: env('SIGIL_HEBBIAN_ENTITY_ENABLED', null, 'true') !== 'false',
-      // Per-event increment on co-retrieval.
-      eta: Number(env('SIGIL_HEBBIAN_ENTITY_ETA', null, 1)),
-      // Hard cap on stored strength — prevents hot pairs from dominating.
-      cap: Number(env('SIGIL_HEBBIAN_ENTITY_CAP', null, 50)),
-      // Lazy exponential decay applied on read.
-      halfLifeDays: Number(env('SIGIL_HEBBIAN_ENTITY_HALF_LIFE_DAYS', null, 30)),
-      // Minimum decayed strength to surface in getCoRetrievedEntities.
-      minEffective: Number(env('SIGIL_HEBBIAN_ENTITY_MIN_EFFECTIVE', null, 0.5)),
-      // Blend weight when adding co-retrieval as a third signal in rrfMerge.
-      // The boost is normalized to [0,1] across the candidate set, then
-      // multiplied by this weight and added to the candidate's RRF score.
-      rrfWeight: Number(env('SIGIL_HEBBIAN_ENTITY_RRF_WEIGHT', null, 0.3)),
-      // Max entities pulled from the top-K result set for write-side
-      // strengthening. O(K²) writes, so kept small.
-      maxWriteEntities: Number(env('SIGIL_HEBBIAN_ENTITY_MAX_WRITE', null, 12)),
-      // When useGraph is on, pull up to this many co-retrieved neighbors per
-      // seed entity to expand the related-fact search.
-      expandPerSeed: Number(env('SIGIL_HEBBIAN_ENTITY_EXPAND_PER_SEED', null, 3)),
-    },
-  },
+  // AUDM dedup/supersession + search floors. See config-store defaults() for the
+  // tuned values; change via patchConfig('memory', {...}) or the GUI.
+  get memory() { return store().memory; },
+  get search() { return store().search; },
+  get ingest() { return store().ingest; },
+  get hebbian() { return store().hebbian; },
+  // User preferences (noUpdateCheck, …) — was SIGIL_NO_UPDATE_CHECK env.
+  get preferences() { return store().preferences; },
 };
 
 export default config;

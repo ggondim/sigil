@@ -61,18 +61,31 @@ function renderKv(node, entries) {
   node.innerHTML = entries.map(([k, v]) => `<div class="row"><div class="k">${escape(k)}</div><div class="v">${escape(v)}</div></div>`).join('');
 }
 
-const validRoutes = ['health', 'kb', 'graph', 'devices', 'activity', 'setup', 'settings', 'methods'];
+const validRoutes = ['health', 'kb', 'graph', 'agents', 'devices', 'activity', 'engine', 'setup', 'settings', 'methods'];
+const ROUTE_TITLES = {
+  health: 'Home', kb: 'Knowledge Base', graph: 'Graph', agents: 'Agents', devices: 'Devices',
+  activity: 'Activity', engine: 'Engine', setup: 'Database', settings: 'Settings', methods: 'RPC methods',
+};
 function setRoute(name) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
-  $$('nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
+  $$('nav a').forEach((a) => {
+    const on = a.dataset.route === name;
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+  const h1 = $('#route-title');
+  if (h1) h1.textContent = ROUTE_TITLES[name] || 'Sigil';
   window.location.hash = name;
   if (name === 'health')   refreshHealth();
   if (name === 'kb')       refreshKb();
   if (name === 'graph')    initGraphView();
   if (name === 'methods')  refreshMethods();
-  if (name === 'settings') { refreshEnv(); refreshSettingsClients(); }
+  if (name === 'settings') refreshEnv();
+  if (name === 'agents')   refreshAgents();
   if (name === 'devices')  refreshDevices();
   if (name === 'activity') { ensureActivityWs(); loadTraces(); }
+  if (name === 'engine')   startEnginePolling(); else stopEnginePolling();
 }
 function routeFromHash() {
   const r = (window.location.hash || '#health').slice(1);
@@ -82,28 +95,28 @@ window.addEventListener('hashchange', () => setRoute(routeFromHash()));
 $$('nav a').forEach((a) => {
   a.addEventListener('click', (e) => { e.preventDefault(); setRoute(a.dataset.route); });
 });
+$('#home-refresh')?.addEventListener('click', refreshHealth);
+$('#agents-refresh')?.addEventListener('click', refreshAgents);
+
+const fmtNum = (x) => (typeof x === 'number' ? x.toLocaleString() : '—');
 
 async function refreshHealth() {
   try {
-    const [ping, nodeInfo, mode] = await Promise.all([
+    const [ping, nodeInfo, mode, status] = await Promise.all([
       rpc('ping'),
       rpc('nodeInfo').catch(() => ({ enabled: false })),
       rpc('mode').catch(() => ({})),
+      rpc('status', {}).catch(() => ({})),
     ]);
-    $('#hc-pid').textContent = `pid ${ping.pid}`;
-    $('#hc-uptime').textContent = `up ${formatUptime(ping.uptimeMs)} · ${ping.node}`;
-    $('#hc-mode').textContent = mode.mode || '—';
-    $('#hc-driver').textContent = mode.memoryClient ? `memory client: ${mode.memoryClient}` : '—';
-    if (nodeInfo.enabled && nodeInfo.nodeId) {
-      $('#hc-nodeid').textContent = nodeInfo.nodeId.slice(0, 12) + '…';
-      $('#hc-nodeid').title = nodeInfo.nodeId;
-      $('#hc-relay').textContent = nodeInfo.relayUrl ? new URL(nodeInfo.relayUrl).hostname : 'no relay';
-    } else {
-      $('#hc-nodeid').textContent = '—';
-      $('#hc-relay').textContent = 'Iroh disabled';
-    }
+
+    // ── stat strip: memory as the hero (real counts from status) ──
+    const ents = (status.entities?.documents || 0) + (status.entities?.people || 0) + (status.entities?.topics || 0);
+    $('#hm-facts').textContent = fmtNum(status.facts);
+    $('#hm-entities').textContent = fmtNum(ents);
+    $('#hm-relations').textContent = fmtNum(status.relations);
     $('#brand-badge').textContent = mode.mode || 'solo';
 
+    // ── diagnostics drawer: the daemon plumbing, demoted ──
     const rows = [
       ['daemon pid', ping.pid], ['version', ping.version], ['node.js', ping.node],
       ['uptime', formatUptime(ping.uptimeMs)], ['mode', mode.mode || '—'],
@@ -114,6 +127,8 @@ async function refreshHealth() {
       rows.push(['this nodeId', nodeInfo.nodeId || nodeInfo.error || '—']);
       if (nodeInfo.relayUrl) rows.push(['relay', nodeInfo.relayUrl]);
       if (nodeInfo.addresses?.length) rows.push(['addresses', nodeInfo.addresses.join(', ')]);
+    } else {
+      rows.push(['identity', 'Iroh disabled']);
     }
     renderKv($('#health-pane'), rows);
 
@@ -122,6 +137,54 @@ async function refreshHealth() {
 
     setConn('ok', 'connected');
   } catch (err) { setConn('err', err.message); }
+
+  // recall health + recent activity are independent of the daemon ping;
+  // load them in one fetch so one failing doesn't blank the other.
+  loadHomeActivity();
+}
+
+// One trace.list call feeds both the recall metrics and the activity feed.
+// Recall hit-rate, avg results, and median latency are computed CLIENT-SIDE
+// from the search traces in the recent window — no backend metric needed.
+// A "hit" is any search whose ranking returned ≥1 fact (detail.ranking.facts).
+async function loadHomeActivity() {
+  let traces;
+  try { ({ traces } = await rpc('trace.list', { limit: 50 })); } catch { return; }
+
+  const searches = traces.filter((t) => t.kind === 'search');
+  const n = searches.length;
+  const factCount = (t) => (t.detail?.ranking?.facts?.length || 0);
+  const withHits = searches.filter((t) => factCount(t) > 0).length;
+  const hitRate = n ? Math.round((withHits / n) * 100) : null;
+  const avgFacts = n ? (searches.reduce((s, t) => s + factCount(t), 0) / n) : null;
+  const durs = searches.map((t) => t.durationMs).filter((x) => x != null).sort((a, b) => a - b);
+  const med = durs.length ? durs[Math.floor(durs.length / 2)] : null;
+
+  $('#hm-recall').textContent = hitRate != null ? `${hitRate}%` : '—';
+  $('#hm-recall-sub').textContent = n ? `${n} recent searches` : 'no searches yet';
+  const dot = $('#hm-recall-dot');
+  dot.className = 'hm-dot' + (hitRate == null ? '' : hitRate >= 80 ? ' ok' : hitRate >= 50 ? ' warn' : ' err');
+
+  $('#hm-searches').textContent = fmtNum(n);
+  $('#hm-hitrate').textContent = hitRate != null ? `${hitRate}%` : '—';
+  $('#hm-hitbar').style.transform = `scaleX(${hitRate != null ? hitRate / 100 : 0})`;
+  $('#hm-avgfacts').textContent = avgFacts != null ? avgFacts.toFixed(1) : '—';
+  $('#hm-latency').textContent = med != null ? `${med}ms` : '—';
+
+  const feed = $('#hm-feed');
+  feed.innerHTML = traces.length
+    ? traces.slice(0, 6).map(homeFeedRow).join('')
+    : '<li class="muted text-sm">no activity yet — run a search or remember a fact</li>';
+}
+
+function homeFeedRow(t) {
+  const agent = t.agent ? `<span class="badge ${agentBadge(t.agent)}">${escape(t.agent)}</span>` : '';
+  return `<li class="home-feed-row">
+    <span class="badge ${traceBadge(t.kind)}">${escape(t.kind)}</span>
+    <span class="home-feed-summary">${escape(t.summary)}</span>
+    ${agent}
+    <span class="home-feed-time">${escape(clock(t.ts))}</span>
+  </li>`;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -574,7 +637,7 @@ function kbRenderGraph(mount, center, relations) {
     }
   }
 
-  function nodeEl(n, idx) {
+  function nodeEl(n, _idx) {
     const g = document.createElementNS(ns, 'g');
     g.setAttribute('class', `kb-node-g${n.focal ? ' focal' : ''}`);
     g.setAttribute('tabindex', '0');
@@ -682,28 +745,33 @@ $('#kb-entity-detail')?.addEventListener('click', (e) => {
 });
 
 // ════════════════════════════════════════════════════════════════════
-// GRAPH VIEW — whole-KB force-directed graph on canvas (Obsidian-style)
-// Hand-rolled spring-electrical simulation (velocity Verlet + cooling),
-// no dependencies. Facts + entities as nodes; fact→entity mentions and
-// entity→entity relations as edges.
+// GRAPH VIEW — whole-KB force-directed graph (Obsidian-style)
+// Rendered with vasturiano/force-graph (vendored UMD): d3-force physics +
+// HTML5 canvas, with drag / pan / zoom / hover / auto-resize handled by the
+// library. We keep custom canvas drawing so nodes, links and labels match the
+// Sigil design tokens. Facts + entities are nodes; fact→entity mentions and
+// entity→entity relations are edges.
 // ════════════════════════════════════════════════════════════════════
 const graph = {
   loaded: false,
   raw: null,            // { nodes, edges, counts, truncated }
-  sim: null,            // running simulation handle
-  view: { x: 0, y: 0, k: 1 },  // pan (x,y) + zoom (k)
+  fg: null,             // ForceGraph instance
+  adj: new Map(),       // id → Set(neighbour ids), for hover-highlight
   hover: null,
-  dragNode: null,
-  panning: false,
+  _fitted: false,
 };
 
-// Entity-type palette — a cohesive cool triad, distinct on the near-black
-// canvas. Used by both the graph nodes and the KB browser's type dots/legend.
-const ENTITY_COLORS = { person: '#4ea1ff', topic: '#9a86ff', document: '#43c9b0' };
+// Entity-type palette — brand-forward: topics (the most common entity) take the
+// brand blue so the graph reads mostly-blue and on-brand, with person/document
+// as light-blue / teal accents. Mirrors the --etype-* design tokens (one source
+// of truth). Used by the graph nodes and the KB browser's type dots/legend.
+const ENTITY_COLORS = { person: '#9bd6ff', topic: '#2f81f7', document: '#36cfa6' };
+const FACT_COLOR = '#565a63';   // --etype-fact: visible-but-secondary on canvas
 const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+let _graphPointer = { x: 0, y: 0 };
 
 async function initGraphView() {
-  if (graph.loaded) { graph.hover = null; hideTooltip(); graphFit(); return; }
+  if (graph.loaded) { graph.hover = null; hideTooltip(); sizeGraph(); graph.fg?.zoomToFit(400, 64); return; }
   await loadGraph();
 }
 
@@ -721,7 +789,7 @@ async function loadGraph() {
       return;
     }
     overlay.style.display = 'none';
-    buildSimulation(data);
+    buildGraph(data);
     graph.loaded = true;
   } catch (err) {
     overlay.innerHTML = `<div class="graph-status err">Couldn’t build the graph: ${escape(err.message)}</div>`;
@@ -796,273 +864,224 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-function buildSimulation(data) {
-  const canvas = $('#graph-canvas');
-  const stage = $('#graph-stage');
-  const W = stage.clientWidth, H = stage.clientHeight;
+function buildGraph(data) {
+  const mount = $('#graph-canvas');
+  if (typeof ForceGraph === 'undefined') throw new Error('graph engine failed to load');
 
-  // node radius: entities scale with degree+mentions; facts are small dots
-  const nodes = data.nodes.map((n, idx) => {
+  // node radius: entities scale gently with degree+mentions (tight range so
+  // hubs don't dwarf everything); facts are small dots. Spread each node so
+  // force-graph mutates a fresh copy, leaving graph.raw intact.
+  const nodes = data.nodes.map((n) => {
     const deg = n.degree || 0;
-    const r = n.kind === 'entity' ? Math.min(4 + Math.sqrt(deg + (n.mentions || 0)) * 3.2, 22) : 3.2;
-    // seed on a spiral so the layout opens consistently (no Math.random reliance for repeatability)
-    const ang = idx * 2.399963229, rad = 14 * Math.sqrt(idx);
-    return { ...n, r, x: W / 2 + Math.cos(ang) * rad, y: H / 2 + Math.sin(ang) * rad, vx: 0, vy: 0 };
+    const r = n.kind === 'entity'
+      ? Math.max(3.5, Math.min(3 + Math.sqrt(deg + (n.mentions || 0)) * 1.5, 11))
+      : 2.4;
+    return { ...n, r };
   });
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const links = data.edges
-    .map((e) => ({ ...e, s: byId.get(e.source), t: byId.get(e.target) }))
-    .filter((l) => l.s && l.t);
+  const links = data.edges.map((e) => ({ ...e }));
 
-  // adjacency for hover-highlight
+  // adjacency (by id) for hover-highlight — built now, before force-graph swaps
+  // each link's source/target from an id string to a node reference.
   const adj = new Map();
   for (const n of nodes) adj.set(n.id, new Set());
-  for (const l of links) { adj.get(l.s.id).add(l.t.id); adj.get(l.t.id).add(l.s.id); }
+  for (const e of data.edges) {
+    if (adj.has(e.source) && adj.has(e.target)) {
+      adj.get(e.source).add(e.target);
+      adj.get(e.target).add(e.source);
+    }
+  }
+  graph.adj = adj;
+  graph.hover = null;
+  graph._fitted = false;
+  // On dense graphs, only label the biggest hubs at the default zoom (zooming
+  // past 1.45 still reveals every entity label, hover always labels).
+  graph._hubMin = nodes.length > 150 ? 10 : 2;
 
-  graph.nodes = nodes; graph.links = links; graph.byId = byId; graph.adj = adj;
+  // Reuse the instance across refreshes so we don't leak canvases/listeners.
+  if (graph.fg) {
+    graph.fg.graphData({ nodes, links });
+    graph.fg.d3ReheatSimulation();
+    sizeGraph();
+    return;
+  }
 
-  setupCanvas();
-  if (graph.sim) cancelAnimationFrame(graph.sim);
+  const fg = new ForceGraph(mount)
+    .backgroundColor('rgba(0,0,0,0)')          // let the CSS dotted grid show through
+    .nodeId('id')
+    .nodeCanvasObject(drawNode)                 // custom draw → matches design tokens
+    .nodePointerAreaPaint((n, color, ctx) => { // generous, radius-aware hit target
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, Math.max(n.r, 6), 0, 2 * Math.PI);
+      ctx.fill();
+    })
+    .linkColor(graphLinkColor)
+    .linkWidth((l) => (l.kind === 'relation' ? 1.3 : 1))
+    .onNodeHover(onGraphHover)
+    .onNodeClick((n) => openGraphNode(n))
+    .onNodeDragEnd((n) => { n.fx = n.x; n.fy = n.y; })  // pin a deliberately-placed node
+    .onBackgroundClick(() => { graph.hover = null; hideTooltip(); })
+    .warmupTicks(reducedMotion ? 200 : 0)      // pre-settle invisibly if motion is reduced
+    .cooldownTicks(reducedMotion ? 0 : 200);   // …then stop quickly (bounded animation)
 
-  // simulation params
-  const REPULSION = 1400, LINK_DIST = 64, LINK_K = 0.04, GRAVITY = 0.018, DAMP = 0.86;
-  let alpha = 1;
+  // Tune the d3 forces for an Obsidian-style constellation. A collision force
+  // (below) does the spacing, so charge/links can stay gentle — that's what
+  // keeps the graph compact instead of scattering: short links pull connected
+  // nodes into tight rosettes, light repulsion just separates clusters, and
+  // collision guarantees no overlap. The default forceCenter re-centres the
+  // centroid each tick, so orphans can't drift off-canvas. Forces ease off as
+  // the KB grows so a big graph doesn't blow up.
+  const n = nodes.length;
+  const charge = n > 400 ? -22 : n > 150 ? -45 : -90;
+  fg.d3Force('charge').strength(charge).distanceMax(170);
+  fg.d3Force('link').distance(24).strength(0.28);
+  fg.d3Force('collide', collideForce((nd) => nd.r + 2, 0.9));
 
-  function tick() {
-    const cx = W / 2, cy = H / 2;
-    // repulsion (O(n²) — fine for a few hundred nodes)
-    for (let a = 0; a < nodes.length; a++) {
-      const na = nodes[a];
-      for (let b = a + 1; b < nodes.length; b++) {
-        const nb = nodes[b];
-        let dx = na.x - nb.x, dy = na.y - nb.y;
-        let d2 = dx * dx + dy * dy; if (d2 < 0.01) { d2 = 0.01; dx = (a - b) * 0.1; }
-        const f = (REPULSION * alpha) / d2;
-        const d = Math.sqrt(d2);
-        const fx = (dx / d) * f, fy = (dy / d) * f;
-        na.vx += fx; na.vy += fy; nb.vx -= fx; nb.vy -= fy;
+  // Auto-fit once the layout settles: fit instantly, then clamp zoom to 1.5×
+  // so the graph fills the frame on a small KB without ballooning the nodes.
+  fg.onEngineStop(() => {
+    if (graph._fitted) return;
+    graph._fitted = true;
+    fg.zoomToFit(0, 55);
+    if (fg.zoom() > 1.5) fg.zoom(1.5, 0);
+  });
+
+  graph.fg = fg;
+  fg.graphData({ nodes, links });
+  sizeGraph();
+}
+
+// Minimal collision force (d3-force compatible: a function called each tick
+// plus an .initialize hook that receives the node array). force-graph bundles
+// d3-force privately and doesn't expose forceCollide, so we register our own.
+// O(n²) per tick — fine for a few hundred nodes (the old engine did the same).
+// `radius(node)` → the keep-out radius; `strength` 0..1 damps the push.
+function collideForce(radius, strength = 0.85) {
+  let nodes = [];
+  function force() {
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      const ra = radius(a);
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        // resolve against the post-velocity position, like d3.forceCollide
+        let dx = (b.x + b.vx) - (a.x + a.vx);
+        let dy = (b.y + b.vy) - (a.y + a.vy);
+        let d2 = dx * dx + dy * dy;
+        const rmin = ra + radius(b);
+        if (d2 < rmin * rmin) {
+          if (d2 === 0) { dx = (i - j) * 0.5; dy = (j - i) * 0.5; d2 = dx * dx + dy * dy; }
+          const d = Math.sqrt(d2);
+          const push = ((rmin - d) / d) * strength * 0.5;
+          const ox = dx * push, oy = dy * push;
+          a.vx -= ox; a.vy -= oy;
+          b.vx += ox; b.vy += oy;
+        }
       }
     }
-    // springs
-    for (const l of links) {
-      let dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const f = LINK_K * (d - LINK_DIST) * alpha;
-      const fx = (dx / d) * f, fy = (dy / d) * f;
-      l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy;
-    }
-    // gravity to center (contains orphans) + integrate
-    for (const n of nodes) {
-      if (n === graph.dragNode || n.pinned) { n.vx = 0; n.vy = 0; continue; }
-      n.vx += (cx - n.x) * GRAVITY * alpha;
-      n.vy += (cy - n.y) * GRAVITY * alpha;
-      n.vx *= DAMP; n.vy *= DAMP;
-      n.x += n.vx; n.y += n.vy;
-    }
-    // forceCenter: snap the free cluster's centroid back to canvas center each
-    // tick (Obsidian-style center of gravity) so the layout settles centered
-    // instead of drifting off into a corner. Pinned / dragged nodes are excluded
-    // so a deliberate placement isn't yanked around.
-    let mx = 0, my = 0, cnt = 0;
-    for (const n of nodes) { if (n === graph.dragNode || n.pinned) continue; mx += n.x; my += n.y; cnt++; }
-    if (cnt) {
-      const sx = cx - mx / cnt, sy = cy - my / cnt;
-      for (const n of nodes) { if (n === graph.dragNode || n.pinned) continue; n.x += sx; n.y += sy; }
-    }
-    alpha *= 0.985;
   }
-
-  if (reducedMotion) {
-    for (let i = 0; i < 320; i++) tick();
-    graphFit(); render();
-  } else {
-    function loop() {
-      tick();
-      render();
-      if (alpha > 0.02 || graph.dragNode) { graph.sim = requestAnimationFrame(loop); }
-      else graph.sim = null;
-    }
-    graphFit(false);
-    graph.sim = requestAnimationFrame(loop);
-  }
-  graph._reheat = () => { alpha = Math.max(alpha, 0.5); if (!graph.sim && !reducedMotion) graph.sim = requestAnimationFrame(function l() { tick(); render(); if (alpha > 0.02 || graph.dragNode) graph.sim = requestAnimationFrame(l); else graph.sim = null; }); };
+  force.initialize = (_nodes) => { nodes = _nodes; };
+  return force;
 }
 
-function setupCanvas() {
-  const canvas = $('#graph-canvas');
-  const stage = $('#graph-stage');
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = stage.clientWidth * dpr;
-  canvas.height = stage.clientHeight * dpr;
-  canvas.style.width = stage.clientWidth + 'px';
-  canvas.style.height = stage.clientHeight + 'px';
-  graph.ctx = canvas.getContext('2d');
-  graph.dpr = dpr;
-}
-
-function render() {
-  const ctx = graph.ctx; if (!ctx) return;
-  const canvas = $('#graph-canvas');
-  const { x: px, y: py, k } = graph.view;
-  ctx.save();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.scale(graph.dpr, graph.dpr);
-  ctx.translate(px, py); ctx.scale(k, k);
-
+// Custom node renderer — colours by entity type, sizes by degree, and shows
+// labels for hubs (always), leaf entities (zoomed in / hovered) and facts (only
+// on hover). `scale` is the current zoom (k), so dividing by it keeps strokes
+// and label text screen-constant while node radii scale with zoom.
+function drawNode(n, ctx, scale) {
   const hoverId = graph.hover?.id;
   const lit = hoverId ? graph.adj.get(hoverId) : null;
-  const isLit = (id) => !hoverId || id === hoverId || lit.has(id);
-
-  // edges — three tiers: incident-to-hover (bright), idle (legible at rest),
-  // non-incident-while-hovering (faded so the focused subgraph reads clearly)
-  for (const l of graph.links) {
-    const incident = l.s.id === hoverId || l.t.id === hoverId;
-    const faded = hoverId && !incident;
-    ctx.beginPath();
-    ctx.moveTo(l.s.x, l.s.y); ctx.lineTo(l.t.x, l.t.y);
-    if (l.kind === 'relation') {
-      ctx.strokeStyle = incident ? 'rgba(0,132,255,0.7)' : faded ? 'rgba(0,132,255,0.06)' : 'rgba(0,132,255,0.3)';
-      ctx.lineWidth = 1.3 / k;
-    } else {
-      ctx.strokeStyle = incident ? 'rgba(164,167,179,0.6)' : faded ? 'rgba(140,142,150,0.05)' : 'rgba(146,149,171,0.2)';
-      ctx.lineWidth = 1 / k;
-    }
-    ctx.stroke();
+  const on = !hoverId || n.id === hoverId || lit?.has(n.id);
+  ctx.globalAlpha = on ? 1 : 0.18;
+  ctx.beginPath();
+  ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+  if (n.kind === 'entity') {
+    ctx.fillStyle = ENTITY_COLORS[n.entityType] || ENTITY_COLORS.topic;
+    ctx.fill();
+    if (n.id === hoverId) { ctx.lineWidth = 2 / scale; ctx.strokeStyle = '#f4f5f6'; ctx.stroke(); }
+  } else {
+    ctx.fillStyle = FACT_COLOR;
+    ctx.fill();
+    if (n.id === hoverId) { ctx.lineWidth = 2 / scale; ctx.strokeStyle = '#0084ff'; ctx.stroke(); }
   }
-  // nodes
-  for (const n of graph.nodes) {
-    const on = isLit(n.id);
-    ctx.globalAlpha = on ? 1 : 0.22;
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-    if (n.kind === 'entity') {
-      ctx.fillStyle = ENTITY_COLORS[n.entityType] || ENTITY_COLORS.topic;
-      ctx.fill();
-      if (n.id === hoverId) { ctx.lineWidth = 2 / k; ctx.strokeStyle = '#f4f5f6'; ctx.stroke(); }
-    } else {
-      ctx.fillStyle = '#5b5f67'; // visible-but-secondary on the near-black canvas
-      ctx.fill();
-      if (n.id === hoverId) { ctx.lineWidth = 2 / k; ctx.strokeStyle = '#0084ff'; ctx.stroke(); }
-    }
-    ctx.globalAlpha = 1;
-    // labels: hubs (high-degree entities) read at any zoom; leaf entities only
-    // when zoomed in or hovered; facts only on hover. Keeps dense graphs legible.
-    const isHub = n.kind === 'entity' && n.degree >= 2;
-    const showLabel = n.id === hoverId || (n.kind === 'entity' && on && (isHub || k > 1.45));
-    if (showLabel) {
-      const label = n.label.length > 26 ? n.label.slice(0, 25) + '…' : n.label;
-      ctx.font = `${n.kind === 'entity' ? 600 : 400} ${11 / k}px 'Geist', ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = on ? '#f4f5f6' : '#74777d';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      ctx.fillText(label, n.x, n.y + n.r + 2 / k);
-    }
+  ctx.globalAlpha = 1;
+  const isHub = n.kind === 'entity' && (n.degree || 0) >= (graph._hubMin || 2);
+  const showLabel = n.id === hoverId || (n.kind === 'entity' && on && (isHub || scale > 1.45));
+  if (showLabel) {
+    const label = n.label.length > 26 ? n.label.slice(0, 25) + '…' : n.label;
+    ctx.font = `${n.kind === 'entity' ? 600 : 400} ${11 / scale}px 'Geist', ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillStyle = on ? '#f4f5f6' : '#74777d';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(label, n.x, n.y + n.r + 2 / scale);
   }
-  ctx.restore();
 }
 
-// fit all nodes into view (with padding)
-function graphFit(doRender = true) {
-  const nodes = graph.nodes; if (!nodes?.length) return;
+// Edge colour — three tiers: incident-to-hover (bright), idle (legible at
+// rest), non-incident-while-hovering (faded so the focused subgraph reads
+// clearly). Works whether source/target are id strings or node refs.
+function graphLinkColor(l) {
+  const hoverId = graph.hover?.id;
+  const sid = (l.source && l.source.id) ?? l.source;
+  const tid = (l.target && l.target.id) ?? l.target;
+  const incident = sid === hoverId || tid === hoverId;
+  const faded = hoverId && !incident;
+  if (l.kind === 'relation') {
+    return incident ? 'rgba(0,132,255,0.7)' : faded ? 'rgba(0,132,255,0.06)' : 'rgba(0,132,255,0.3)';
+  }
+  return incident ? 'rgba(164,167,179,0.6)' : faded ? 'rgba(140,142,150,0.05)' : 'rgba(146,149,171,0.22)';
+}
+
+// Hover → drive the existing tooltip + cursor. force-graph repaints every
+// frame, so updating graph.hover here is enough for drawNode / graphLinkColor
+// to reflect the highlight.
+function onGraphHover(n) {
+  graph.hover = n || null;
+  const mount = $('#graph-canvas');
+  if (mount) mount.style.cursor = n ? 'pointer' : 'grab';
+  if (n) showTooltip(n, _graphPointer.x, _graphPointer.y);
+  else hideTooltip();
+}
+
+// Keep the force-graph canvas matched to its container (fixes the old 0×0 /
+// stale-size races: we re-assert size on enter and on every container resize).
+function sizeGraph() {
+  if (!graph.fg) return;
   const stage = $('#graph-stage');
-  const W = stage.clientWidth, H = stage.clientHeight;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const n of nodes) { minX = Math.min(minX, n.x); minY = Math.min(minY, n.y); maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y); }
-  const gw = (maxX - minX) || 1, gh = (maxY - minY) || 1;
-  const pad = 96; // generous margin so edge nodes' labels stay in frame
-  // Cap below the leaf-label threshold (1.45) so the default view labels only
-  // hubs; zooming in past that reveals every entity label.
-  const k = Math.min((W - pad) / gw, (H - pad) / gh, 1.35);
-  graph.view.k = k;
-  graph.view.x = W / 2 - ((minX + maxX) / 2) * k;
-  graph.view.y = H / 2 - ((minY + maxY) / 2) * k;
-  if (doRender) render();
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (w > 0 && h > 0) graph.fg.width(w).height(h);
 }
 
-// screen → world coords
-function toWorld(sx, sy) {
-  return { x: (sx - graph.view.x) / graph.view.k, y: (sy - graph.view.y) / graph.view.k };
-}
-function nodeAt(sx, sy) {
-  const { x, y } = toWorld(sx, sy);
-  // topmost (facts drawn last but entities are bigger targets) — iterate reverse
-  for (let i = graph.nodes.length - 1; i >= 0; i--) {
-    const n = graph.nodes[i];
-    const dx = n.x - x, dy = n.y - y;
-    const hitR = Math.max(n.r, 6); // generous hit target in world units
-    if (dx * dx + dy * dy <= hitR * hitR) return n;
-  }
-  return null;
-}
-
-// ── graph interactions ───────────────────────────────────────────────
+// ── graph interactions (toolbar, tooltip placement, resize) ──────────
+// Drag / pan / zoom / hover hit-testing are all handled by force-graph; here
+// we only wire the toolbar buttons, keep the tooltip glued to the pointer
+// (onNodeHover gives us the node but no coords), and keep the canvas sized to
+// its container — which kills the old 0×0 / stale-size races.
 (function wireGraph() {
-  const stage = () => $('#graph-stage');
-  const canvas = () => $('#graph-canvas');
-  let down = null;
+  const stage = $('#graph-stage');
 
-  $('#graph-stage')?.addEventListener('pointerdown', (e) => {
-    const rect = canvas().getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-    const n = nodeAt(sx, sy);
-    down = { sx, sy, vx: graph.view.x, vy: graph.view.y, node: n, moved: false };
-    if (n) { graph.dragNode = n; } else { graph.panning = true; }
-    canvas().setPointerCapture(e.pointerId);
+  stage?.addEventListener('pointermove', (e) => {
+    const rect = stage.getBoundingClientRect();
+    _graphPointer.x = e.clientX - rect.left;
+    _graphPointer.y = e.clientY - rect.top;
+    if (graph.hover) showTooltip(graph.hover, _graphPointer.x, _graphPointer.y);
   });
-  $('#graph-stage')?.addEventListener('pointermove', (e) => {
-    const rect = canvas().getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-    if (!down) {
-      const n = nodeAt(sx, sy);
-      if (n !== graph.hover) { graph.hover = n; showTooltip(n, sx, sy); render(); }
-      else if (n) showTooltip(n, sx, sy);
-      canvas().style.cursor = n ? 'pointer' : 'grab';
-      return;
-    }
-    const ddx = sx - down.sx, ddy = sy - down.sy;
-    if (Math.abs(ddx) > 3 || Math.abs(ddy) > 3) down.moved = true;
-    if (down.node) {
-      const w = toWorld(sx, sy);
-      down.node.x = w.x; down.node.y = w.y;
-      graph._reheat?.(); render();
-    } else if (graph.panning) {
-      graph.view.x = down.vx + ddx; graph.view.y = down.vy + ddy;
-      render();
-    }
-  });
-  function endDrag(e) {
-    if (down && down.node && !down.moved) openGraphNode(down.node);
-    else if (down && down.node && down.moved) down.node.pinned = true; // keep a deliberately-placed node put
-    graph.dragNode = null; graph.panning = false; down = null;
-    if (canvas()) canvas().style.cursor = 'grab';
-  }
-  $('#graph-stage')?.addEventListener('pointerup', endDrag);
-  $('#graph-stage')?.addEventListener('pointerleave', () => { if (!down) { graph.hover = null; hideTooltip(); render(); } });
+  stage?.addEventListener('pointerleave', () => { graph.hover = null; hideTooltip(); });
 
-  $('#graph-stage')?.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const rect = canvas().getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const k0 = graph.view.k, k1 = Math.max(0.15, Math.min(k0 * factor, 6));
-    // zoom toward cursor
-    graph.view.x = sx - (sx - graph.view.x) * (k1 / k0);
-    graph.view.y = sy - (sy - graph.view.y) * (k1 / k0);
-    graph.view.k = k1;
-    render();
-  }, { passive: false });
-
+  const zoomBy = (f) => { if (graph.fg) graph.fg.zoom(graph.fg.zoom() * f, 200); };
   $('#graph-zoom-in')?.addEventListener('click', () => zoomBy(1.25));
   $('#graph-zoom-out')?.addEventListener('click', () => zoomBy(1 / 1.25));
-  $('#graph-zoom-fit')?.addEventListener('click', () => graphFit());
+  $('#graph-zoom-fit')?.addEventListener('click', () => graph.fg?.zoomToFit(400, 64));
   $('#graph-refresh')?.addEventListener('click', () => { graph.loaded = false; loadGraph(); });
-  $('#graph-relayout')?.addEventListener('click', () => { if (graph.raw) buildSimulation(graph.raw); });
+  $('#graph-relayout')?.addEventListener('click', () => {
+    if (!graph.fg) return;
+    // unpin every node, then re-run the layout from the current positions
+    for (const n of graph.fg.graphData().nodes) { n.fx = undefined; n.fy = undefined; }
+    graph._fitted = false;
+    graph.fg.d3ReheatSimulation();
+  });
 
-  function zoomBy(f) {
-    const stageEl = stage(); const sx = stageEl.clientWidth / 2, sy = stageEl.clientHeight / 2;
-    const k0 = graph.view.k, k1 = Math.max(0.15, Math.min(k0 * f, 6));
-    graph.view.x = sx - (sx - graph.view.x) * (k1 / k0);
-    graph.view.y = sy - (sy - graph.view.y) * (k1 / k0);
-    graph.view.k = k1; render();
+  if (stage && 'ResizeObserver' in window) {
+    new ResizeObserver(() => sizeGraph()).observe(stage);
   }
 })();
 
@@ -1098,13 +1117,6 @@ function kbSelectFactById(factId) {
   }).catch(() => {});
 }
 
-let _graphResizeT = null;
-window.addEventListener('resize', () => {
-  if (location.hash !== '#graph' || !graph.loaded) return;
-  clearTimeout(_graphResizeT);
-  _graphResizeT = setTimeout(() => { setupCanvas(); graphFit(); }, 150);
-});
-
 async function refreshMethods() {
   try {
     const res = await fetch('/api/v1/methods', { credentials: 'same-origin' });
@@ -1123,6 +1135,7 @@ async function refreshEnv() {
     const dbDesc = db.mode === 'url' ? `connection URL (${db.urlHost || '—'})`
       : db.mode === 'docker' ? `Docker container (localhost:${db.port})`
       : db.mode === 'local' ? `local Postgres (${db.host}:${db.port})`
+      : db.mode === 'embedded' ? 'built-in (embedded)'
       : 'not configured';
     $('#cfg-db').textContent = `${dbDesc}${c.setup?.steps?.database === 'done' ? ' · ready' : ''}`;
     $('#cfg-llm').textContent = c.llm?.provider ? `${c.llm.provider}${c.llm.model ? ` · ${c.llm.model}` : ''}` : 'not configured';
@@ -1154,40 +1167,70 @@ async function refreshEnv() {
 // Same flow as the onboarding CONNECTORS step, surfaced post-onboarding so
 // users who skipped the step (or completed setup before this card existed)
 // can still wire up Claude Code / Cursor / Codex / Kiro / Hermes.
-async function refreshSettingsClients() {
-  const host = $('#settings-connectors');
-  if (!host) return;
-  try {
-    const { connectors } = await rpc('listConnectors');
-    host.innerHTML = '';
-    if (!connectors.length) {
-      host.innerHTML = '<div class="muted">no agents registered</div>';
-      return;
+// ════════════════════════════════════════════════════════════════════
+// AGENTS — connect coding tools to this memory + per-agent activity
+// ════════════════════════════════════════════════════════════════════
+async function refreshAgents() {
+  const host = $('#agents-connectors');
+  if (host) {
+    try {
+      const { connectors } = await rpc('listConnectors');
+      host.innerHTML = '';
+      if (!connectors.length) host.innerHTML = '<div class="muted">no coding tools detected on this machine</div>';
+      else connectors.forEach((c) => host.appendChild(connectorCard(c, onAgentAction)));
+    } catch (err) {
+      host.innerHTML = `<div class="muted">could not load agents: ${escape(err.message)}</div>`;
     }
-    connectors.forEach((c) => host.appendChild(connectorCard(c, onSettingsClientAction)));
-  } catch (err) {
-    host.innerHTML = `<div class="muted">could not load agents: ${escape(err.message)}</div>`;
   }
+  loadAgentActivity();
 }
 
-async function onSettingsClientAction(id, action) {
-  const host = $('#settings-connectors');
+async function onAgentAction(id, action) {
+  const host = $('#agents-connectors');
   const card = host?.querySelector(`[data-id="${id}"]`);
   if (action === 'disconnect') {
     try {
       await rpc('disconnectConnector', { id });
       toast({ variant: 'success', message: `${id} disconnected` });
     } catch (err) { toast({ variant: 'error', message: err.message, hint: err.hint, code: err.code }); }
-    return refreshSettingsClients();
+    return refreshAgents();
   }
-  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onSettingsClientAction));
+  if (card) card.replaceWith(connectorCard({ id, label: id, hint: '', uiState: 'connecting' }, onAgentAction));
   try {
     await rpc('connectConnector', { id });
     toast({ variant: 'success', message: `${id} connected` });
   } catch (err) {
     toast({ variant: 'error', message: err.message || `could not connect ${id}`, hint: err.hint, code: err.code });
   }
-  return refreshSettingsClients();
+  return refreshAgents();
+}
+
+// Per-agent reads/writes from recent traces (newest-first), attributed by the
+// trace's `agent` field — no backend metric needed. Same approach as Home.
+async function loadAgentActivity() {
+  const tbody = $('#agents-activity tbody');
+  if (!tbody) return;
+  let traces;
+  try { ({ traces } = await rpc('trace.list', { limit: 200 })); }
+  catch (err) { tbody.innerHTML = `<tr><td colspan="4" class="empty">could not load activity: ${escape(err.message)}</td></tr>`; return; }
+
+  const byAgent = new Map();
+  for (const t of traces) {
+    if (!t.agent) continue;
+    if (!byAgent.has(t.agent)) byAgent.set(t.agent, { searches: 0, writes: 0, last: t.ts }); // first seen = latest
+    const rec = byAgent.get(t.agent);
+    if (t.kind === 'search') rec.searches++;
+    else if (t.kind === 'ingest') rec.writes++;
+  }
+  const rows = [...byAgent.entries()].sort((a, b) => (b[1].searches + b[1].writes) - (a[1].searches + a[1].writes));
+  tbody.innerHTML = rows.length
+    ? rows.map(([agent, r]) => `<tr>
+        <td><span class="badge ${agentBadge(agent)}">${escape(agent)}</span></td>
+        <td class="num">${r.searches}</td>
+        <td class="num">${r.writes}</td>
+        <td class="num">${escape(clock(r.last))}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">no agent activity yet</td></tr>';
 }
 
 // ── Settings: live provider switcher (LLM + embedding) ───────────────
@@ -1310,6 +1353,7 @@ async function restartAndClose(out) {
 // ── Activity / causal trace log ──────────────────────────────────────
 let ws = null;
 let traceFilter = '';
+let traceAgentFilter = '';
 const seenTraceUids = new Set();
 
 function ensureActivityWs() {
@@ -1329,8 +1373,9 @@ function setActivityStatus(state, label) { const el = $('#activity-status'); if 
 function onLiveEvent(evt) {
   if (evt.type === 'trace') {
     if (traceFilter && evt.kind !== traceFilter) return;
+    if (traceAgentFilter && evt.agent !== traceAgentFilter) return;
     prependTrace(evt, true);
-  } else if (!traceFilter) {
+  } else if (!traceFilter && !traceAgentFilter) {
     // operational events (rpc/pair/device) only shown in the unfiltered view
     prependOpEvent(evt);
   }
@@ -1340,7 +1385,7 @@ async function loadTraces() {
   const list = $('#trace-list');
   if (!list) return;
   try {
-    const { traces } = await rpc('trace.list', { kind: traceFilter || undefined, limit: 50 });
+    const { traces } = await rpc('trace.list', { kind: traceFilter || undefined, agent: traceAgentFilter || undefined, limit: 50 });
     seenTraceUids.clear();
     list.innerHTML = '';
     if (!traces.length) { $('#activity-empty').style.display = 'block'; return; }
@@ -1379,12 +1424,20 @@ function traceCard(t) {
   li.className = 'trace-card';
   const dur = t.durationMs != null ? `${t.durationMs}ms` : '';
   const ns = t.namespace ? `<span class="trace-ns">${escape(t.namespace)}</span>` : '';
+  // Attribution: who made this call. agent answers "which agent", sessionId
+  // "which session" — the pair that was previously unrecorded.
+  const agent = t.agent ? `<span class="badge ${agentBadge(t.agent)}" title="originating agent">${escape(t.agent)}</span>` : '';
+  const sess = t.sessionId
+    ? `<span class="trace-sess" title="session ${escape(t.sessionId)}">${escape(shortId(t.sessionId))}</span>`
+    : '';
   li.innerHTML = `
     <button class="trace-head" type="button" aria-expanded="false">
       <span class="trace-caret">▸</span>
       <span class="trace-ts">${escape(clock(t.ts))}</span>
       <span class="badge ${traceBadge(t.kind)}">${escape(t.kind)}</span>
+      ${agent}
       <span class="trace-summary">${escape(t.summary)}</span>
+      ${sess}
       ${ns}
       <span class="trace-dur">${escape(dur)}</span>
     </button>
@@ -1403,9 +1456,43 @@ function traceCard(t) {
 // ── Detail renderers ─────────────────────────────────────────────────
 function renderTraceDetail(t) {
   const d = t.detail || {};
-  if (t.kind === 'search') return renderSearchTrace(d);
-  if (t.kind === 'ingest') return renderIngestTrace(d);
-  return `<pre class="trace-json">${escape(JSON.stringify(d, null, 2))}</pre>`;
+  const source = renderSourceBlock(t, d);
+  if (t.kind === 'search') return source + renderSearchTrace(d);
+  if (t.kind === 'ingest') return source + renderIngestTrace(d);
+  if (t.kind === 'engine') return source + renderEngineTrace(d);
+  return source + `<pre class="trace-json">${escape(JSON.stringify(d, null, 2))}</pre>`;
+}
+
+// Who made this call — the attribution block. Surfaced on every trace so an
+// unexplained search/expansion can be traced to a specific agent + session.
+function renderSourceBlock(t, d) {
+  const rows = [
+    ['agent', t.agent],
+    ['session', t.sessionId],
+    ['transport', t.transport],
+    ['device', t.deviceId],
+    ['cwd', d.cwd],
+  ].filter(([, v]) => v != null && v !== '');
+  if (!rows.length) return '';
+  return traceBlock('Source', rows.map(([k, v]) => kvline(k, v)).join(' '));
+}
+
+// Managed-session engine event (dispatch/result/fallback/recycle/ready).
+function renderEngineTrace(d) {
+  const rows = [
+    ['event', d.type],
+    ['worker', d.workerId],
+    ['tmux session', d.session],
+    ['reqId', d.reqId],
+    ['caller', d.caller],
+    ['reason', d.reason],
+    ['viaFallback', d.type === 'fallback' ? true : undefined],
+    ['durationMs', d.durationMs],
+    ['inputTokens', d.inputTokens],
+    ['outputTokens', d.outputTokens],
+    ['tokensUsed', d.tokensUsed],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== '');
+  return traceBlock('Engine event', rows.map(([k, v]) => kvline(k, v)).join(' '));
 }
 
 const sc = (v) => (v === null || v === undefined ? '—' : String(v));
@@ -1525,8 +1612,20 @@ function clock(iso) { return (iso || '').slice(11, 19) || (iso || '').slice(0, 1
 function traceBadge(kind) {
   if (kind === 'search') return 'info';
   if (kind === 'ingest') return 'ok';
+  if (kind === 'engine') return 'accent';
   if (kind === 'lifecycle') return 'warn';
   return 'info';
+}
+function agentBadge(agent) {
+  if (agent === 'claude-code') return 'info';
+  if (agent === 'mcp') return 'ok';
+  if (agent === 'codex') return 'warn';
+  if (agent === 'cursor') return 'accent';
+  return ''; // cli + unknown → neutral
+}
+function shortId(id) {
+  const s = String(id);
+  return s.length > 10 ? s.slice(0, 8) + '…' : s;
 }
 function audmBadge(action) {
   const a = String(action || '').toUpperCase();
@@ -1561,12 +1660,80 @@ $('#trace-filters')?.addEventListener('click', (e) => {
   $$('#trace-filters .chip').forEach((c) => c.classList.toggle('active', c === chip));
   loadTraces();
 });
+$('#trace-agent-filters')?.addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-agent-filter]');
+  if (!chip) return;
+  traceAgentFilter = chip.dataset.agentFilter || '';
+  $$('#trace-agent-filters .chip').forEach((c) => c.classList.toggle('active', c === chip));
+  loadTraces();
+});
 $('#trace-refresh')?.addEventListener('click', loadTraces);
 $('#trace-clear')?.addEventListener('click', async () => {
   if (!confirm('Clear the entire trace log? This deletes persisted history.')) return;
   try { await rpc('trace.clear'); } catch {}
   loadTraces();
 });
+
+// ── Engine (managed-session warm tmux workers) ──────────────────────
+let engineTimer = null;
+function startEnginePolling() {
+  loadEngine();
+  if (engineTimer) return;
+  engineTimer = setInterval(() => { if (location.hash === '#engine') loadEngine(); }, 5000);
+}
+function stopEnginePolling() { if (engineTimer) { clearInterval(engineTimer); engineTimer = null; } }
+
+const STATE_PILL = { ready: 'ok', busy: 'info', booting: 'warn', unhealthy: 'err' };
+
+async function loadEngine() {
+  const setStatus = (state, label) => { const el = $('#engine-status'); if (el) { el.className = `conn-status ${state}`; el.textContent = label; } };
+  let s;
+  try { s = await rpc('engine.status'); }
+  catch (err) { setStatus('err', 'error'); $('#engine-workers').innerHTML = `<div class="empty">could not load engine status: ${escape(err.message)}</div>`; return; }
+
+  const running = !!s.running;
+  setStatus(running ? 'ok' : '', running ? 'managed' : 'one-shot');
+
+  $('#eng-mode').textContent = running ? 'Managed' : 'One-shot';
+  $('#eng-mode-sub').textContent = running ? 'warm tmux workers' : 'claude -p per call';
+  $('#eng-pool').textContent = sc(s.poolSize);
+  $('#eng-budget').textContent = s.tokenBudget != null ? `${s.tokenBudget.toLocaleString()} tok budget` : '—';
+  const queued = Object.values(s.queued || {}).reduce((a, b) => a + b, 0);
+  $('#eng-queued').textContent = sc(queued);
+  $('#eng-pending').textContent = sc(s.pending);
+
+  const host = $('#engine-workers');
+  if (!running) {
+    // Explain WHY the engine isn't warm so the empty state is actionable.
+    let why;
+    if (!s.enabled) why = 'Managed-session engine is off. Every LLM call uses the proven one-shot <code>claude -p</code> path.';
+    else if (!s.tmuxAvailable) why = '<code>SIGIL_MANAGED_SESSION=true</code> is set, but <code>tmux</code> was not found on PATH — staying on one-shot.';
+    else if (s.provider && s.provider !== 'claude-cli') why = `LLM provider is <code>${escape(s.provider)}</code> (not <code>claude-cli</code>) — API providers don't need warm sessions.`;
+    else why = 'Engine enabled but no workers are running yet.';
+    host.innerHTML = `<div class="empty">${why}<br><span class="muted">Enable with <code>SIGIL_MANAGED_SESSION=true</code> on a host with <code>tmux</code> + the <code>claude</code> CLI, then restart the daemon.</span></div>`;
+  } else if (!s.workers || !s.workers.length) {
+    host.innerHTML = `<div class="empty">No live workers — the pool is spinning up or has yielded to one-shot after repeated boot failures. Check <code>~/.sigil/sigild.log</code>.</div>`;
+  } else {
+    const rows = s.workers.map((w) => {
+      const session = `${escape(s.sessionPrefix || 'sigil-')}${escape(w.id)}`;
+      const pct = s.tokenBudget ? Math.min(100, Math.round((w.tokensUsed / s.tokenBudget) * 100)) : null;
+      return `<tr>
+        <td class="mono">${escape(w.id)}</td>
+        <td class="mono">${session}</td>
+        <td><span class="pill ${STATE_PILL[w.state] || ''}">${escape(w.state)}</span></td>
+        <td class="num">${w.tokensUsed.toLocaleString()}${pct != null ? ` <span class="muted">(${pct}%)</span>` : ''}</td>
+      </tr>`;
+    }).join('');
+    host.innerHTML = `<div class="trace-table-wrap"><table class="trace-table">
+      <thead><tr><th>worker</th><th>tmux session</th><th>state</th><th>tokens used</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+
+  $('#engine-hint').innerHTML = running
+    ? 'Inspect a worker pane directly: <code>tmux attach -t sigil-&lt;worker&gt;</code> (detach with <code>Ctrl-b d</code>) or <code>tmux capture-pane -t sigil-&lt;worker&gt; -p</code>. Per-task events stream into <a href="#activity" data-route="activity">Activity → Engine</a>.'
+    : '';
+}
+$('#engine-refresh')?.addEventListener('click', loadEngine);
 
 // ── Setup tab (legacy DB form) ──────────────────────────────────────
 $('#db-mode')?.addEventListener('change', (e) => {

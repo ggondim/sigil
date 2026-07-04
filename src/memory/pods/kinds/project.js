@@ -26,6 +26,7 @@ import { basename, join } from 'node:path';
 
 import * as podStore from '../store.js';
 import * as membership from '../membership.js';
+import { parseAttrs } from '../attrs.js';
 import config from '../../../config.js';
 
 export const POD_TYPE = 'project';
@@ -247,12 +248,6 @@ export function formatForDisplay(pod) {
     memberFactCount: pod.memberFactCount,
     memberDocCount: pod.memberDocCount,
   };
-}
-
-function parseAttrs(attrs) {
-  if (!attrs) return {};
-  if (typeof attrs === 'object') return attrs;
-  try { return JSON.parse(attrs); } catch { return {}; }
 }
 
 // Re-export for hooks that want both pod_uid and a fact attached.

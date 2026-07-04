@@ -6,7 +6,8 @@ import { loadConfig } from '../setup/config-store.js';
 import { createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 
-import { SIGIL_DAEMON_LOG, SIGIL_HEARTBEAT } from '../lib/paths.js';
+import { PKG_ROOT, SIGIL_DAEMON_LOG, SIGIL_HEARTBEAT, SIGIL_UPDATE_FLAG } from '../lib/paths.js';
+import { getSigilVersion } from '../lib/version.js';
 import {
   detectRunningDaemon,
   ensureSigilHome,
@@ -145,6 +146,22 @@ export async function startDaemon({ foreground = false } = {}) {
     })();
   }
 
+  // Managed-session engine (warm tmux workers; opt-in via SIGIL_MANAGED_SESSION).
+  // Best-effort + non-blocking: any failure (no tmux, spawn error) just leaves
+  // LLM calls on the proven one-shot path. Skipped for lite-followers, whose LLM
+  // work runs on master. Started after the socket server is up so workers can
+  // call back over RPC immediately.
+  if (config.network.mode !== 'lite-follower') {
+    (async () => {
+      try {
+        const { initSessionManager } = await import('../lib/llm/session/index.js');
+        await initSessionManager({ config, log });
+      } catch (err) {
+        log(`managed-session init failed: ${err.message}`);
+      }
+    })();
+  }
+
   // Iroh: warm up the endpoint when network is enabled so the NodeID
   // is registered with relays + discoverable before the first pair
   // request arrives. Failure is non-fatal — solo mode keeps working.
@@ -188,13 +205,16 @@ export async function startDaemon({ foreground = false } = {}) {
 
   // Heartbeat: a small liveness file the supervisor/CLI/GUI read to tell
   // "running" from "stale pidfile". Refreshed every 15s; removed on shutdown.
-  const pkgVersion = await readPkgVersion();
+  const pkgVersion = getSigilVersion();
   const writeHeartbeat = () => {
     try {
       writeFileSync(SIGIL_HEARTBEAT, JSON.stringify({
         pid: process.pid,
         version: pkgVersion,
         node: process.version,
+        // The daemon's package root — lets the install-integrity check (S2) tell
+        // whether the serving daemon is the canonical git install or a foreign copy.
+        root: PKG_ROOT,
         startedAt: STARTED_AT,
         ts: Date.now(),
         supervised: process.env.SIGIL_SUPERVISED === '1',
@@ -204,6 +224,51 @@ export async function startDaemon({ foreground = false } = {}) {
   writeHeartbeat();
   const heartbeatTimer = setInterval(writeHeartbeat, 15_000);
   heartbeatTimer.unref();
+
+  // Install-integrity warning (S2): if the shims or this daemon don't line up
+  // with the canonical git install at ~/.sigil/app, say so loudly. We WARN
+  // rather than refuse to boot — a hard exit here could wedge auto-spawn into a
+  // restart loop on a broken shim — while `sigil doctor` reports it as a hard
+  // failure with the one-command fix.
+  try {
+    const { checkInstallIntegrity } = await import('../lib/install-state.js');
+    const r = checkInstallIntegrity();
+    if (r.applicable && !r.ok) {
+      for (const issue of r.issues) log(`install-integrity WARNING: ${issue.message} — fix: ${issue.fix}`);
+    }
+  } catch { /* best-effort — never block boot */ }
+
+  // Background staleness check: tell the user when their git install has fallen
+  // behind the release branch. Writes SIGIL_UPDATE_FLAG (read by the CLI
+  // preamble → "update available") when behind, removes it when in sync. Git
+  // installs only; best-effort; unref'd so it never holds the process open.
+  // First check 30s after boot (let the daemon settle), then every 12h. Opt out
+  // by setting preferences.noUpdateCheck in config.json.
+  if (!config.preferences?.noUpdateCheck) {
+    (async () => {
+      try {
+        const { isGitInstall, checkForUpdate } = await import('../lib/git-update.js');
+        if (!isGitInstall()) return;
+        const runCheck = async () => {
+          try {
+            const s = await checkForUpdate();
+            if (s.behind > 0) {
+              writeFileSync(SIGIL_UPDATE_FLAG, JSON.stringify({ ...s, ts: Date.now() }), 'utf8');
+              log(`update available: ${s.local} → ${s.remote} (${s.behind} behind ${s.branch})`);
+            } else {
+              rmSync(SIGIL_UPDATE_FLAG, { force: true });
+            }
+          } catch (e) {
+            log(`update check failed: ${e.message.split('\n')[0]}`);
+          }
+        };
+        const firstCheck = setTimeout(runCheck, 30_000);
+        firstCheck.unref();
+        const updateCheckTimer = setInterval(runCheck, 12 * 60 * 60 * 1000);
+        updateCheckTimer.unref();
+      } catch { /* git-update unavailable — skip */ }
+    })();
+  }
 
   // Periodic CHECKPOINT for the embedded store (field-report Defect 1): bounds how
   // much WAL a hard kill (SIGKILL / crash / power loss) would need to replay,
@@ -216,11 +281,34 @@ export async function startDaemon({ foreground = false } = {}) {
       if (cfg.db.mode !== 'embedded') return;
       const { default: cortexDb } = await import('../db/cortex.js');
       checkpointTimer = setInterval(() => {
-        cortexDb.raw('CHECKPOINT').catch((e) => log(`periodic checkpoint failed: ${e.message}`));
+        cortexDb.raw('CHECKPOINT').catch(async (e) => {
+          log(`periodic checkpoint failed: ${e.message}`);
+          // A CHECKPOINT abort is a poisoned WASM heap surfacing on a TIMER, not
+          // an RPC — so the dispatch-path recovery never sees it. Heal it here so
+          // an idle daemon (no request traffic) can't sit wedged (S1).
+          const { isPgliteAbort } = await import('../db/pglite-adapter.js');
+          if (isPgliteAbort(e) || e?.sigilPoisoned) {
+            const { recoverEmbeddedDb } = await import('./db-monitor.js');
+            await recoverEmbeddedDb({ log, reason: 'checkpoint-abort' });
+          }
+        });
       }, 60_000);
       checkpointTimer.unref();
     } catch { /* config/db unavailable — skip */ }
   })();
+
+  // Proactive DB health monitor (S1): periodically probe the store and, on a
+  // poisoned embedded engine, rebuild it (→ snapshot restore if torn). Recovery
+  // is crash-loop guarded. Skipped for lite-followers (no local DB). Unref'd.
+  let dbMonitorTimer = null;
+  if (config.network.mode !== 'lite-follower') {
+    try {
+      const { startDbHealthMonitor } = await import('./db-monitor.js');
+      dbMonitorTimer = startDbHealthMonitor({ log });
+    } catch (err) {
+      log(`db health monitor failed to start: ${err.message}`);
+    }
+  }
 
   // Periodic + post-boot snapshots of the embedded cluster (F2, field-report
   // Defect 1). A consistent dumpDataDir tarball, rotated, so F3 can restore a
@@ -254,9 +342,18 @@ export async function startDaemon({ foreground = false } = {}) {
     log(`received ${signal}, shutting down`);
     clearInterval(heartbeatTimer);
     if (checkpointTimer) clearInterval(checkpointTimer);
+    if (dbMonitorTimer) clearInterval(dbMonitorTimer);
     if (snapshotTimer) clearInterval(snapshotTimer);
     if (bootSnapshotTimer) clearTimeout(bootSnapshotTimer);
     try { rmSync(SIGIL_HEARTBEAT, { force: true }); } catch { /* ignore */ }
+    // Kill warm tmux workers + stop the health sweep before tearing down the
+    // socket, so no worker is left holding a half-open RPC connection.
+    try {
+      const { shutdownSessionManager } = await import('../lib/llm/session/index.js');
+      await shutdownSessionManager();
+    } catch (err) {
+      log(`managed-session shutdown failed: ${err.message}`);
+    }
     await socket.close();
     if (http) await http.close();
     if (netEnabled) {
@@ -310,17 +407,6 @@ export async function startDaemon({ foreground = false } = {}) {
 // and logs loudly on failure. Never throws, never blocks startup — a down DB
 // must not stop the daemon (so `sigil` keeps responding and the user gets a
 // clear signal rather than silent empty memory).
-async function readPkgVersion() {
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const { PKG_ROOT } = await import('../lib/paths.js');
-    return JSON.parse(await readFile(join(PKG_ROOT, 'package.json'), 'utf8')).version;
-  } catch {
-    return 'unknown';
-  }
-}
-
 async function probeDbHealth(log) {
   try {
     const { default: cortexDb } = await import('../db/cortex.js');

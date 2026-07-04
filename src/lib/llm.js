@@ -6,7 +6,16 @@ import { logCall, calcCost, withRetry } from './llm/log.js';
 
 async function resolveForCall(taskModel) {
   const globalProvider = await detectProvider();
-  return resolveProviderAndModel(taskModel, globalProvider);
+  const resolved = resolveProviderAndModel(taskModel, globalProvider);
+  // Warm-session routing: when the resolved provider is the one-shot claude-cli
+  // and managed sessions are enabled, swap in the internal managed-session
+  // provider. It uses a warm tmux worker inside the daemon and transparently
+  // falls through to one-shot claude-cli everywhere else, so callers are
+  // unaffected. Only claude-cli is swapped — API providers don't need warming.
+  if (resolved.provider === 'claude-cli' && config.llm.managedSession.enabled) {
+    return { ...resolved, provider: 'managed-session' };
+  }
+  return resolved;
 }
 
 // --- Public API (unchanged signatures) ---
@@ -17,7 +26,7 @@ async function prompt(input, { model, caller, temperature } = {}) {
   const start = Date.now();
 
   try {
-    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: false, temperature }), config.llm.maxRetries);
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: false, temperature, caller }), config.llm.maxRetries);
     const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
 
     logCall({
@@ -25,6 +34,7 @@ async function prompt(input, { model, caller, temperature } = {}) {
       input, response: result.text,
       inputTokens: result.inputTokens, outputTokens: result.outputTokens,
       cost, durationMs: Date.now() - start, status: 'success',
+      workerId: result.workerId, reqId: result.reqId, viaFallback: result.viaFallback,
     });
 
     return result.text;
@@ -48,7 +58,7 @@ async function promptJson(input, { model, caller, schema, temperature } = {}) {
     // `schema` (a JSON Schema) requests provider-enforced structured output.
     // Providers that support it (OpenAI, OpenRouter) constrain decoding to the
     // exact shape; others ignore it and fall back to plain JSON mode.
-    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: true, schema, temperature }), config.llm.maxRetries);
+    const result = await withRetry(() => chatFn(input, { model: resolvedModel, jsonMode: true, schema, temperature, caller }), config.llm.maxRetries);
     const cost = result.cost || calcCost(result.model, result.inputTokens, result.outputTokens);
 
     logCall({
@@ -56,6 +66,7 @@ async function promptJson(input, { model, caller, schema, temperature } = {}) {
       input, response: result.text,
       inputTokens: result.inputTokens, outputTokens: result.outputTokens,
       cost, durationMs: Date.now() - start, status: 'success',
+      workerId: result.workerId, reqId: result.reqId, viaFallback: result.viaFallback,
     });
 
     return parseJson(result.text);
@@ -82,7 +93,7 @@ function parseJson(text) {
     } catch { /* invalid JSON in code block */ }
   }
 
-  const jsonMatch = text.match(/[\[{][\s\S]*[\]}]/);
+  const jsonMatch = text.match(/[[{][\s\S]*[\]}]/);
   if (jsonMatch) {
     try {
       return JSON.parse(jsonMatch[0]);

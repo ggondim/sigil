@@ -55,44 +55,85 @@
        MAIN DASHBOARD
        ════════════════════════════════════════════════════════════════════ -->
   <header>
-    <div class="header-inner">
-      <div class="brand">
-        <img class="brand-mark" src="/static/design/sigil-mark.svg" alt="Sigil" width="20" height="20">
-        <div class="brand-name">Sigil</div>
-        <div class="brand-badge" id="brand-badge">local</div>
-      </div>
-      <nav>
-        <a href="#health"   data-route="health"   class="active">Overview</a>
+    <div class="brand">
+      <img class="brand-mark" src="/static/design/sigil-mark.svg" alt="Sigil" width="22" height="22">
+      <div class="brand-name">Sigil</div>
+      <div class="brand-badge" id="brand-badge">local</div>
+    </div>
+
+    <div class="side-status"><span class="conn-status" id="conn">connecting…</span></div>
+
+    <nav aria-label="Primary">
+      <div class="navgroup">
+        <div class="navgroup-label">Memory</div>
+        <a href="#health"   data-route="health" class="active">Home</a>
         <a href="#kb"       data-route="kb">Knowledge Base</a>
         <a href="#graph"    data-route="graph">Graph</a>
-        <a href="#devices"  data-route="devices">Devices</a>
         <a href="#activity" data-route="activity">Activity</a>
-        <a href="#setup"    data-route="setup">Setup</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Connections</div>
+        <a href="#agents"   data-route="agents">Agents</a>
+        <a href="#devices"  data-route="devices">Devices</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">System</div>
+        <a href="#engine"   data-route="engine">Engine</a>
         <a href="#settings" data-route="settings">Settings</a>
-        <a href="#methods"  data-route="methods">RPC</a>
-      </nav>
-      <div class="conn-status" id="conn">connecting…</div>
-    </div>
+      </div>
+    </nav>
+
+    <div class="side-foot">Local · loopback only</div>
   </header>
 
   <main>
-    <!-- ── Overview ─────────────────────────────────────────────── -->
+    <!-- Per-route page heading (visually hidden; the section-head h2 carries
+         the visible title). Gives every view a proper h1 for screen readers. -->
+    <h1 class="sr-only" id="route-title">Home</h1>
+
+    <!-- ── Home ─────────────────────────────────────────────────── -->
     <section id="view-health" class="view active">
       <div class="section-head">
         <div class="title-block">
-          <h2>Overview</h2>
-          <p>This Sigil install — its daemon process, identity, and where memory lives.</p>
+          <h2>Home</h2>
+          <p>Your agents' memory at a glance — everything they've learned, on this machine, in your control.</p>
+        </div>
+        <div class="actions"><button class="btn" id="home-refresh">Refresh</button></div>
+      </div>
+
+      <!-- stat strip — memory as the hero (real counts; recall computed from traces) -->
+      <div class="stat-grid">
+        <div class="stat"><span class="lbl">Facts</span><span class="val" id="hm-facts">—</span><span class="sub">stored memories</span></div>
+        <div class="stat"><span class="lbl">Entities</span><span class="val" id="hm-entities">—</span><span class="sub">people · topics · docs</span></div>
+        <div class="stat"><span class="lbl">Relations</span><span class="val" id="hm-relations">—</span><span class="sub">graph edges</span></div>
+        <div class="stat"><span class="lbl"><span class="hm-dot" id="hm-recall-dot"></span>Recall hit-rate</span><span class="val" id="hm-recall">—</span><span class="sub" id="hm-recall-sub">recent searches</span></div>
+      </div>
+
+      <div class="home-cols">
+        <!-- recall health -->
+        <div class="panel panel-pad">
+          <h3 class="home-h">Recall health</h3>
+          <p class="muted text-sm" style="margin:2px 0 var(--s-4)">Is memory answering when your agents ask? (recent searches)</p>
+          <div class="home-recall">
+            <div class="hm-metric"><span class="hmv" id="hm-searches">—</span><span class="hmk">searches</span></div>
+            <div class="hm-metric"><span class="hmv" id="hm-hitrate">—</span><span class="hmk">returned ≥1 fact</span><div class="hm-bar"><i id="hm-hitbar"></i></div></div>
+            <div class="hm-metric"><span class="hmv" id="hm-avgfacts">—</span><span class="hmk">avg facts / search</span></div>
+            <div class="hm-metric"><span class="hmv" id="hm-latency">—</span><span class="hmk">median latency</span></div>
+          </div>
+        </div>
+
+        <!-- recent activity -->
+        <div class="panel panel-pad">
+          <h3 class="home-h">Recent activity <a href="#activity" data-route="activity" class="home-link">View all →</a></h3>
+          <ul class="home-feed" id="hm-feed"><li class="muted text-sm">loading…</li></ul>
         </div>
       </div>
 
-      <div class="stat-grid">
-        <div class="stat"><span class="lbl">Daemon</span><span class="val" id="hc-pid">—</span><span class="sub" id="hc-uptime">—</span></div>
-        <div class="stat"><span class="lbl">Mode</span><span class="val" id="hc-mode">—</span><span class="sub" id="hc-driver">—</span></div>
-        <div class="stat"><span class="lbl">Identity</span><span class="val" id="hc-nodeid">—</span><span class="sub" id="hc-relay">—</span></div>
-      </div>
-
-      <h3 class="section-sub">Details</h3>
-      <div class="kv" id="health-pane"><div class="row"><div class="k">pid</div><div class="v">—</div></div></div>
+      <!-- diagnostics — the daemon plumbing, demoted out of the headline -->
+      <details class="panel home-diag">
+        <summary>Diagnostics — daemon process &amp; identity</summary>
+        <div class="kv" id="health-pane"><div class="row"><div class="k">pid</div><div class="v">—</div></div></div>
+      </details>
     </section>
 
     <!-- ── Knowledge Base ───────────────────────────────────────── -->
@@ -166,7 +207,7 @@
       </div>
 
       <div class="graph-stage" id="graph-stage">
-        <canvas id="graph-canvas"></canvas>
+        <div id="graph-canvas"></div><!-- force-graph mounts its canvas here -->
         <div class="graph-legend" id="graph-legend" aria-hidden="true">
           <span class="gl-item"><span class="gl-dot entity person"></span>Person</span>
           <span class="gl-item"><span class="gl-dot entity topic"></span>Topic</span>
@@ -180,6 +221,28 @@
         </div>
         <div class="graph-tooltip" id="graph-tooltip" hidden></div>
         <div class="graph-overlay" id="graph-overlay"></div>
+      </div>
+    </section>
+
+    <!-- ── Agents ───────────────────────────────────────────────── -->
+    <section id="view-agents" class="view">
+      <div class="section-head">
+        <div class="title-block">
+          <h2>Agents</h2>
+          <p>One shared memory across every AI coding tool on this machine. Connect a tool and Sigil writes a small, reversible hook so it reads and writes the same brain.</p>
+        </div>
+        <div class="actions"><button class="btn" id="agents-refresh">Refresh</button></div>
+      </div>
+
+      <div class="connector-grid" id="agents-connectors"><div class="muted">detecting installed tools…</div></div>
+
+      <h3 class="section-sub">Activity by agent</h3>
+      <p class="muted text-sm" style="margin-top: calc(var(--s-3) * -1 + 2px); margin-bottom: var(--s-3);">Reads and writes attributed to each agent, from recent activity.</p>
+      <div class="table-wrap">
+        <table id="agents-activity">
+          <thead><tr><th>Agent</th><th class="num">Searches</th><th class="num">Writes</th><th class="num">Last seen</th></tr></thead>
+          <tbody><tr><td colspan="4" class="empty">loading…</td></tr></tbody>
+        </table>
       </div>
     </section>
 
@@ -242,11 +305,48 @@
         <button class="chip active" type="button" data-trace-filter="">All</button>
         <button class="chip" type="button" data-trace-filter="search">Search</button>
         <button class="chip" type="button" data-trace-filter="ingest">Ingest</button>
+        <button class="chip" type="button" data-trace-filter="engine">Engine</button>
         <button class="chip" type="button" data-trace-filter="lifecycle">Lifecycle</button>
+      </div>
+
+      <div class="trace-filters" id="trace-agent-filters">
+        <span class="filter-lbl">agent</span>
+        <button class="chip active" type="button" data-agent-filter="">All</button>
+        <button class="chip" type="button" data-agent-filter="claude-code">claude-code</button>
+        <button class="chip" type="button" data-agent-filter="mcp">mcp</button>
+        <button class="chip" type="button" data-agent-filter="cli">cli</button>
+        <button class="chip" type="button" data-agent-filter="codex">codex</button>
+        <button class="chip" type="button" data-agent-filter="cursor">cursor</button>
       </div>
 
       <ul id="trace-list" class="trace-list"></ul>
       <div class="empty" id="activity-empty">no activity yet — run <code>sigil search "..."</code> or <code>sigil remember "..."</code> and it'll appear here</div>
+    </section>
+
+    <!-- ── Engine (managed-session warm tmux workers) ──────────────── -->
+    <section id="view-engine" class="view">
+      <div class="section-head">
+        <div class="title-block">
+          <h2>Engine</h2>
+          <p>The LLM core. When the managed-session engine is on, Sigil keeps warm <code>claude</code> workers alive in tmux (one <code>sigil-&lt;worker&gt;</code> session each) to amortize agentic cold-starts across ingest + expansion calls. When off, every call uses the one-shot <code>claude -p</code> path. Live worker state below; per-task dispatch/result/fallback events stream into Activity (filter: Engine).</p>
+        </div>
+        <div class="actions">
+          <button class="btn" id="engine-refresh">Refresh</button>
+          <span class="conn-status" id="engine-status">—</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="lbl">Mode</span><span class="val" id="eng-mode">—</span><span class="sub" id="eng-mode-sub">—</span></div>
+        <div class="stat"><span class="lbl">Pool size</span><span class="val" id="eng-pool">—</span><span class="sub" id="eng-budget">—</span></div>
+        <div class="stat"><span class="lbl">Queued</span><span class="val" id="eng-queued">—</span><span class="sub">tasks waiting</span></div>
+        <div class="stat"><span class="lbl">Pending</span><span class="val" id="eng-pending">—</span><span class="sub">in flight</span></div>
+      </div>
+
+      <h3 class="section-sub">Workers</h3>
+      <div id="engine-workers"></div>
+
+      <div class="muted text-xs" id="engine-hint" style="margin-top:var(--s-4)"></div>
     </section>
 
     <!-- ── Setup (legacy DB test tab; same as onboarding) ─────────── -->
@@ -305,15 +405,8 @@
         </div>
       </div>
 
-      <!-- Coding agents — single-click install of Sigil hooks into Claude Code,
-           Cursor, Codex, Kiro, Hermes. Cards reuse the wizard's connectorCard. -->
-      <div class="panel" style="padding: var(--s-5); margin-bottom: var(--s-4);">
-        <div class="title-block" style="margin-bottom: var(--s-4);">
-          <h3 style="margin: 0;">Coding agents</h3>
-          <p class="muted text-sm" style="margin: 4px 0 0;">One shared memory across every AI coding tool you use. Sigil writes a small CLAUDE.md/AGENTS.md import + hook config — fully reversible.</p>
-        </div>
-        <div class="connector-grid" id="settings-connectors"><div class="muted">detecting installed tools…</div></div>
-      </div>
+      <!-- Coding agents now live on their own page (Connections › Agents). -->
+      <p class="muted text-sm" style="margin-bottom: var(--s-4);">Connect coding tools to this memory on the <a href="#agents" data-route="agents">Agents</a> page.</p>
 
       <!-- Current config + switch controls -->
       <div class="panel" style="padding: var(--s-5); margin-bottom: var(--s-4);">
@@ -470,6 +563,8 @@
     </div>
   </div>
 
+  <!-- force-graph (vasturiano), vendored UMD — defines window.ForceGraph -->
+  <script src="/static/vendor/force-graph.min.js"></script>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

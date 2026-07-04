@@ -71,12 +71,6 @@ vi.mock('./hybrid-sql.js', () => ({
   hybridSearchFacts: vi.fn(),
 }));
 
-// Local device id for owner-scoped read enforcement (P2). hybrid.js reads it
-// via getConfig().device?.id when no RPC caller device is present.
-vi.mock('../../setup/config-store.js', () => ({
-  getConfig: vi.fn().mockReturnValue({ device: { id: 'local-device-xyz' } }),
-}));
-
 // Synthesizer fires for every search call. Without this mock the real wrapper
 // spawns the configured LLM (Claude CLI / Anthropic API) — turns 1ms tests
 // into 7-10s tests and occasionally trips the default 10s timeout.
@@ -88,7 +82,7 @@ vi.mock('../../lib/llm.js', () => ({
 import { hybridSearchFacts } from './hybrid-sql.js';
 import { routeQuery } from '../cognitive/query-router.js';
 import { search } from './hybrid.js';
-import config from '../../config.js';
+import { __setTestConfig, __resetTestConfig } from '../../setup/config-store.js';
 
 const makeFactList = (ids) =>
   ids.map((id, i) => ({
@@ -105,6 +99,13 @@ const makeFactList = (ids) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // config.json is the single source of truth (no env). Reset then seed the
+  // in-memory cache so config getters (search.synthesize, privacy.scope, …)
+  // resolve to code defaults each test, plus the local device id used for
+  // owner-scoped reads (P2). Reset-first prevents a prior test's overlay
+  // (e.g. privacy.scope='off') from leaking into the next.
+  __resetTestConfig();
+  __setTestConfig({ device: { id: 'local-device-xyz' } });
   routeQuery.mockResolvedValue({
     intent: 'factual',
     categories: [],
@@ -234,14 +235,11 @@ describe('search — facade behavior', () => {
 });
 
 describe('search — owner-scoped read enforcement (P2) threading', () => {
-  const originalScope = config.privacy.scope;
-
-  afterEach(() => {
-    config.privacy.scope = originalScope;
-  });
+  // privacy.scope is config.json-driven (SSOT). The global beforeEach resets the
+  // config cache to defaults (scope='device') each test; cases that need 'off'
+  // overlay it via __setTestConfig.
 
   it('threads the local device id + private kinds into hybrid-sql when scope=device', async () => {
-    config.privacy.scope = 'device';
     hybridSearchFacts.mockResolvedValue([]);
 
     await search('test', { namespaces: ['default'], limit: 5 });
@@ -257,7 +255,6 @@ describe('search — owner-scoped read enforcement (P2) threading', () => {
   });
 
   it('prefers the RPC caller device id over the local config device id', async () => {
-    config.privacy.scope = 'device';
     hybridSearchFacts.mockResolvedValue([]);
 
     await search('test', { namespaces: ['default'], limit: 5, ctx: { device: { id: 'remote-device-1' } } });
@@ -266,8 +263,8 @@ describe('search — owner-scoped read enforcement (P2) threading', () => {
     expect(opts.currentDeviceId).toBe('remote-device-1');
   });
 
-  it('disables enforcement when scope=off (SIGIL_PRIVATE_SCOPE=off)', async () => {
-    config.privacy.scope = 'off';
+  it('disables enforcement when scope=off', async () => {
+    __setTestConfig({ privacy: { scope: 'off' } });
     hybridSearchFacts.mockResolvedValue([]);
 
     await search('test', { namespaces: ['default'], limit: 5 });

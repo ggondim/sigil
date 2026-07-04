@@ -25,6 +25,7 @@ import { maskSecrets } from './secret-mask.js';
 import { classifyTurn } from './stop-classify.js';
 import { appendSpool } from './stop-spool.js';
 import { breakerOpen, tripBreaker, resetBreaker } from './daemon-breaker.js';
+import { readStdin } from './io.js';
 import { SIGIL_STOP_CURSOR } from '../lib/paths.js';
 
 loadHookEnv();
@@ -132,13 +133,6 @@ async function main() {
   }
 
   return respond();
-}
-
-async function readStdin() {
-  if (process.stdin.isTTY) return '';
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8').trim();
 }
 
 function respond() {

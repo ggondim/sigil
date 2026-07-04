@@ -1,4 +1,6 @@
 import { keyBy } from '../../lib/collection.js';
+import { escapeRegex } from '../../lib/text.js';
+import { RRF_K, VECTOR_WEIGHT, KEYWORD_WEIGHT } from './scoring-constants.js';
 
 import { embed, embedBatch } from '../../ingestion/embedder.js';
 import config from '../../config.js';
@@ -23,14 +25,6 @@ import { getConfig } from '../../setup/config-store.js';
 import { currentDeviceId as rpcDeviceId } from '../../daemon/request-context.js';
 import { currentOrigin } from '../provenance.js';
 import cortexDb from '../../db/cortex.js';
-
-// K=20 gives good score spread for our result set sizes (5-50).
-// K=60 (original paper) compresses scores into a ~0.001 band with small sets.
-const RRF_K = 20;
-
-// Vector results get higher weight — better for semantic/natural language queries.
-const VECTOR_WEIGHT = 1.0;
-const KEYWORD_WEIGHT = 0.7;
 
 // Entity detection only for short, name-like queries — not full sentences
 const MAX_ENTITY_QUERY_LENGTH = 60;
@@ -524,10 +518,6 @@ function buildAliasQueryVariants(query, entity) {
   }
 
   return variants;
-}
-
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // No entity match: expand query into variants, search all in parallel, merge

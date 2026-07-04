@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { deriveProjectRoot, deriveProjectIdentity, normalizeGitRemote } from './kinds/project.js';
+import { __setTestConfig, __resetTestConfig } from '../../setup/config-store.js';
 
 describe('deriveProjectRoot', () => {
   it('returns the git toplevel when inside a repo', () => {
@@ -82,6 +83,9 @@ describe('deriveProjectIdentity', () => {
     else process.env.SIGIL_PROJECT_ID = saved.id;
     if (saved.strategy === undefined) delete process.env.SIGIL_PROJECT_IDENTITY;
     else process.env.SIGIL_PROJECT_IDENTITY = saved.strategy;
+    // The identity strategy is config.json-driven now (SSOT), not env — clear
+    // any test overlay so the next case starts from code defaults ('remote').
+    __resetTestConfig();
   });
 
   it('SIGIL_PROJECT_ID overrides everything', () => {
@@ -91,7 +95,7 @@ describe('deriveProjectIdentity', () => {
   });
 
   it('SIGIL_PROJECT_ID wins even under the path strategy', () => {
-    process.env.SIGIL_PROJECT_IDENTITY = 'path';
+    __setTestConfig({ project: { identity: 'path' } });
     process.env.SIGIL_PROJECT_ID = 'forced-id';
     const dir = mkdtempSync(join(tmpdir(), 'sigil-id2-'));
     expect(deriveProjectIdentity(dir)).toBe('forced-id');
@@ -128,7 +132,7 @@ describe('deriveProjectIdentity', () => {
   });
 
   it('path strategy uses the absolute path even when a marker exists', () => {
-    process.env.SIGIL_PROJECT_IDENTITY = 'path';
+    __setTestConfig({ project: { identity: 'path' } });
     const dir = mkdtempSync(join(tmpdir(), 'sigil-pathstrat-'));
     mkdirSync(join(dir, '.sigil'));
     writeFileSync(join(dir, '.sigil', 'project.json'), JSON.stringify({ id: 'marker-id' }));
