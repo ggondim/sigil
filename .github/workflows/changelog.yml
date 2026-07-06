@@ -1,0 +1,83 @@
+name: 'Fork: Changelog Issue'
+
+# Opens a `changelog` documentation issue when a FEATURE PR is merged into the
+# integration branch (ggondim). Feature PRs are the only PRs that target ggondim;
+# autoducks task PRs (execution/fix) target the feature branch, so `base == ggondim`
+# already excludes them. The head-prefix guard additionally skips manual/setup
+# merges (e.g. fork glue pushed straight to ggondim) that aren't feature/* branches.
+#
+# Fork glue: lives ONLY here, never mirrored into .autoducks/runtimes/ (that dir
+# holds autoducks core agent workflows only) and never sent upstream.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  changelog:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'ggondim' &&
+      startsWith(github.event.pull_request.head.ref, 'feature/')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR_NUM: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - name: Ensure changelog label
+        run: |
+          gh label create changelog --repo "$REPO" \
+            --color 0E8A16 \
+            --description "Documentação de feature + tracker de PR upstream" \
+            2>/dev/null || true
+
+      - name: Create changelog issue
+        run: |
+          set -euo pipefail
+          MARKER="<!-- changelog-for-pr:${PR_NUM} -->"
+
+          # Idempotency: literal-substring match (no regex) so #123 never collides
+          # with #1234 — the marker's trailing " -->" makes the boundary exact.
+          EXISTING=$(gh issue list --repo "$REPO" --state all --label changelog \
+            --limit 200 --json number,body \
+            --jq "[.[] | select(.body | contains(\"changelog-for-pr:${PR_NUM} -->\"))] | .[0].number // empty")
+          if [[ -n "$EXISTING" ]]; then
+            echo "Changelog issue #$EXISTING já existe para o PR #$PR_NUM; nada a fazer."
+            exit 0
+          fi
+
+          # Best-effort: the work issue(s) this feature PR closes ("Closes #N").
+          CLOSED=$(gh pr view "$PR_NUM" --repo "$REPO" --json closingIssuesReferences \
+            --jq '[.closingIssuesReferences[].number] | map("#\(.)") | join(", ")' 2>/dev/null || true)
+          [[ -z "$CLOSED" || "$CLOSED" == "null" ]] && CLOSED="_(nenhuma detectada)_"
+
+          BODY_FILE="$RUNNER_TEMP/changelog-body.md"
+          {
+            printf '%s\n\n' "$MARKER"
+            printf 'Trabalho de feature integrado na `ggondim`.\n\n'
+            printf '| Campo | Valor |\n|---|---|\n'
+            printf '| PR do fork | %s (#%s) |\n' "$PR_URL" "$PR_NUM"
+            printf '| Feature branch | `%s` |\n' "$HEAD_REF"
+            printf '| Issue(s) de trabalho | %s |\n' "$CLOSED"
+            printf '| Merge commit | `%s` |\n\n' "$MERGE_SHA"
+            printf '### PR pro upstream\n'
+            printf '<!-- Linke aqui o PR de Anmol-Srv/sigil, manualmente, se/quando abrir. -->\n'
+            printf '_Ainda não linkado._\n\n'
+            printf -- '---\n'
+            printf '_Issue de documentação gerada automaticamente no merge do PR de feature. '
+            printf 'Fica **aberta** como tracker do PR upstream (sem necessidade de acompanhamento ativo)._\n'
+          } > "$BODY_FILE"
+
+          gh issue create --repo "$REPO" \
+            --title "[changelog] ${PR_TITLE}" \
+            --label changelog \
+            --body-file "$BODY_FILE"
