@@ -36,9 +36,10 @@ Dois tipos de issue coexistem no fork, com papéis distintos:
 - **Não** são a "issue obrigatória por feature" — são insumo de orquestração.
 
 **2 — Issues de documentação** (`changelog`, criadas automaticamente)
-- Um workflow customizado (**a construir**) abre uma issue no **merge de um PR de _feature_ na
-  `ggondim`** — só PRs de feature disparam (os PRs de _task_ do autoducks miram a feature branch,
-  não a `ggondim`).
+- O workflow [changelog.yml](.github/workflows/changelog.yml) abre uma issue no **merge de um PR
+  de _feature_ na `ggondim`** — só PRs de feature disparam (`base == ggondim` + head `feature/*`;
+  os PRs de _task_ do autoducks miram a feature branch, não a `ggondim`). Idempotente via marcador
+  `<!-- changelog-for-pr:N -->`.
 - Documenta o trabalho feito e referencia o PR do fork. Se houve PR pro upstream, **eu linko
   manualmente** — o workflow não descobre isso sozinho.
 - Fica **aberta** como tracker do PR upstream (sem necessidade de acompanhamento ativo).
