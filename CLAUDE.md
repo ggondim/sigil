@@ -83,3 +83,21 @@ na feature/task branch. A action do LLM é resolvida por
 
 > A default branch do repo no GitHub é `ggondim`: triggers `issue_comment` do autoducks rodam a
 > partir da default branch, e os workflows do fork vivem só na `ggondim`.
+
+### Issue types vs label `Feature` (divergência fork-local)
+
+Os guards dos workflows de **tactical** e **wave** roteiam por **label** `Feature`
+(`contains(github.event.issue.labels.*.name, 'Feature')`). O autoducks vendored, porém, só chama
+`its::set_issue_type "Feature"` — que seta o **issue type** nativo do GitHub, **não** um label.
+
+Issue types são **herdados do owner-organização** (doc: `GET /orgs/{org}/issue-types`); como
+`ggondim/sigil` é **owned por conta de usuário** (não org), issue types são **impossíveis** aqui —
+`set_issue_type` vira no-op e `github.event.issue.type` fica `null`. Sem o label, `/agents execute`
+mis-rotearia pro **execution** (task avulsa) em vez do **wave**.
+
+**Correção fork-local:** [design/post.sh](.autoducks/agents/design/post.sh) e
+[tactical/post.sh](.autoducks/agents/tactical/post.sh) aplicam `its::add_label … "Feature"` junto do
+`set_issue_type`. Também aplico o label **manualmente** ao criar a issue de feature (cinto-e-suspensório).
+É divergência do autoducks vendored (um `install.sh`/update futuro pode sobrescrever — reaplicar).
+Reportado upstream em `deepducks/autoducks`; o fix principiado seria os guards checarem
+`github.event.issue.type.name` quando há org, com fallback pro label.

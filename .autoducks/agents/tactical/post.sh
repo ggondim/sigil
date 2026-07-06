@@ -58,6 +58,11 @@ its::update_issue_body "$ISSUE_NUM" /tmp/feature-body.md
 # Labels and type (idempotent — safe on both first pass and revision)
 its::add_label "$ISSUE_NUM" "Ready"
 its::set_issue_type "$ISSUE_NUM" "Feature" 2>/dev/null || true
+# Fork divergence: user-owned repo → no org → issue types impossible, so the
+# type set above is a no-op. Workflow guards gate on the `Feature` LABEL; apply
+# it so `/agents execute` routes to the wave orchestrator (not the execution
+# agent). See CLAUDE.md "Issue types vs label".
+its::add_label "$ISSUE_NUM" "Feature" 2>/dev/null || true
 
 # Feature branch and PR — create if missing (handles first pass and
 # recovery from a prior run that crashed before reaching this point)

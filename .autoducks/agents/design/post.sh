@@ -18,6 +18,13 @@ its::update_issue_body "$ISSUE_NUM" /tmp/design-spec.md
 # Set issue type to Feature
 its::set_issue_type "$ISSUE_NUM" "Feature"
 
+# Fork divergence: issue types require an org owner (GitHub inherits repo issue
+# types from the org). This fork is user-owned, so set_issue_type is a no-op and
+# `github.event.issue.type` stays null. The wave/tactical workflow guards gate on
+# the `Feature` LABEL, so apply it explicitly or the loop can't route. Harmless
+# (belt) on org repos that also set the type. See CLAUDE.md "Issue types vs label".
+its::add_label "$ISSUE_NUM" "Feature" 2>/dev/null || true
+
 # Remove Draft label if present
 its::remove_label "$ISSUE_NUM" "Draft" 2>/dev/null || true
 
