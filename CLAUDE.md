@@ -6,24 +6,43 @@ enviado ao upstream (as `feat/*` que viram PR upstream saem de `master`, limpas)
 
 ## Objetivo
 
-Citação literal (do meu enquadramento original — na época o setup vivia num *workspace* separado
-com o fork como *submodule*; hoje o mesmo papel é cumprido pela branch `ggondim` deste próprio
-fork, mas a intenção é idêntica):
+- Esse repositório é um **fork privado** do upstream, com **setup próprio** (workflows, skills, etc.) e
+  **branches de features** (`feat/*`) que podem virar PR upstream.
 
-> esse workspace será um espaço de trabalho onde vou fazer novas features e ajustes no meu fork do
-> sigil. estou fazendo num workspace separado porque não quero commitar o setup completo
-> (`.autoducks`, `.claude`, etc.) para o upstream. o submodule é o meu fork do projeto. minha
-> intenção é que a branch main do fork sempre esteja sincronizada/rebaseada com a main do upstream.
-> novas features seguirão branches da `main` e serão integradas em uma nova branch `ggondim` (a
-> criar). cada feature/branch nova terá 1) obrigatoriamente uma issue correspondente no fork
-> descrevendo todo o trabalho; 2) opcionalmente, conforme minha decisão, um Pull Request da branch
-> para o upstream. para manter o fork sempre sincronizado com o upstream, criaremos um workflow do
-> GHA que vai: 1) listar novos commits/PRs do maintainer no upstream; 2) buscar conflitos entre a
-> branch `ggondim` ou os PRs do fork e os novos commits; 3) disparar os agentes do autoducks
-> conforme solicitado por mim para alinhar os dois repositórios.
+- A ideia é que o upstream continue **limpo**, sem o setup do fork, e que o fork seja **sempre
+  sincronizado** com o upstream (via workflow `fork-sync`). Esse workflow: 1) lista novos commits/PRs do
+  maintainer no upstream; 2) busca conflitos entre a branch `ggondim` ou os PRs do fork e os novos commits;
+  3) dispara os agentes do autoducks conforme solicitado por mim para alinhar os dois repositórios.
+
+- A branch `ggondim` é a **branch de integração** do fork, onde o setup e as features são integradas
+  e testadas. As branches `feat/*` são **branches de desenvolvimento** que saem de `master` (upstream
+  puro) e podem virar PR upstream, de acordo com a decisão do desenvolvedor.
+
+- Cada feature gera issues no fork (ver **Política de issues**): issues de *trabalho* efêmeras para
+  operar os agentes, e uma issue de *documentação* (`changelog`) obrigatória, aberta automaticamente
+  quando o PR da feature é mergeado na `ggondim`. O PR pro upstream é opcional (minha decisão) e é
+  linkado manualmente nessa issue de documentação.
 
 **Corolário operacional:** cada `feat/*` fica **viva** como fonte de PR upstream — estar integrada
 na `ggondim` (build privado) **nunca** é motivo para deletá-la.
+
+## Política de issues
+
+Dois tipos de issue coexistem no fork, com papéis distintos:
+
+**1 — Issues de trabalho** (eu crio, para operar os agentes do autoducks)
+- Rascunhos, planos, subtasks e a issue de *feature* que casa 1:1 com uma branch.
+- **Efêmeras:** quando a branch é fechada, a issue é fechada junto.
+- **Não** são a "issue obrigatória por feature" — são insumo de orquestração.
+
+**2 — Issues de documentação** (`changelog`, criadas automaticamente)
+- Um workflow customizado (**a construir**) abre uma issue no **merge de um PR de _feature_ na
+  `ggondim`** — só PRs de feature disparam (os PRs de _task_ do autoducks miram a feature branch,
+  não a `ggondim`).
+- Documenta o trabalho feito e referencia o PR do fork. Se houve PR pro upstream, **eu linko
+  manualmente** — o workflow não descobre isso sozinho.
+- Fica **aberta** como tracker do PR upstream (sem necessidade de acompanhamento ativo).
+- É a "issue obrigatória descrevendo o trabalho" que este documento exige. Label: `changelog`.
 
 ## Remotes
 
@@ -41,18 +60,6 @@ na `ggondim` (build privado) **nunca** é motivo para deletá-la.
 **Regra de ouro (anti-empilhamento):** toda `feat/*` sai de `master` (upstream puro), nunca de
 outra `feat/*` nem da `ggondim`. A integração acontece só via merges na `ggondim`.
 
-## Fluxo de uma feature
-
-**Via agentes (autoducks):**
-- Abra uma **issue** (tipo `Feature` = trabalho grande a decompor; senão vira `Task`).
-- Comente **`/agents execute`**: em issue `Feature` → **devise/wave** (quebra em Tasks e roda em
-  paralelo); em `Task` → **execute** (implementa e abre PR pra `base_branch` = `ggondim`).
-- Outros: `/agents design` (spec a partir de ideia), `/agents devise` (quebra spec em tasks),
-  `/agents fix`, `/agents revert`, `/agents close`.
-
-**Manual:** `git checkout master && git checkout -b feat/<slug>` → implementa → **`/launch`**
-(gates + merge em `ggondim` + PR opcional pro upstream).
-
 ## Sincronização com upstream — `fork-sync` (agendado)
 
 `.github/workflows/fork-sync.yml` (cron + dispatch): fast-forward de `master` pro
@@ -60,13 +67,18 @@ outra `feat/*` nem da `ggondim`. A integração acontece só via merges na `ggon
 conflito abre/atualiza a issue `[upstream-sync]`. `mode=report` (default) só sinaliza; `apply`
 rebaseia as limpas. Roda com o `GITHUB_TOKEN` (sem PAT).
 
-## Setup / secrets
+## Autoducks — corte e integração
 
-- Secret necessário: **`CLAUDE_CODE_OAUTH_TOKEN`** (LLM dos agentes). O resto usa o `GITHUB_TOKEN`.
-- App: **Claude GitHub App** instalado neste repo (para os agentes).
-- Permissões de Actions: read/write + criar PRs (já configurado).
-- `.autoducks/autoducks.json`: `base_branch=ggondim`, `model=sonnet`.
+O autoducks separa **ponto de corte** e **alvo do PR** via
+[.autoducks/autoducks.json](.autoducks/autoducks.json): `base_branch: master` (de onde as
+`feature/*` são cortadas) e `integration_branch: ggondim` (para onde o PR final da feature é
+aberto). Assim cada `feature/*` nasce limpa (`master` + só o trabalho da feature), pronta para
+virar PR upstream, e é integrada na `ggondim` sem reintroduzir empilhamento.
 
-> ⚠️ Ressalva conhecida: o autoducks corta a task de `base_branch` (`ggondim`) e PR de volta pra
-> ela — o que pode reintroduzir empilhamento. O `fork-sync` rebaseando as `feat/*` sobre `master`
-> mantém isso sob controle; a política final está em refino (ver `PENDING.md`, local/gitignored).
+Como a `master` é espelho limpo (sem `.autoducks/`), o `autoducks-execute` carrega a tooling da
+`ggondim` para um diretório **fora** da work tree (via `AUTODUCKS_ROOT`) — ela nunca é commitada
+na feature/task branch. A action do LLM é resolvida por
+`ggondim/sigil/.autoducks/providers/llm/claude@ggondim`, independente da branch em trabalho.
+
+> A default branch do repo no GitHub é `ggondim`: triggers `issue_comment` do autoducks rodam a
+> partir da default branch, e os workflows do fork vivem só na `ggondim`.
