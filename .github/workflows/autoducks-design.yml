@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ggondim
       - name: Load agent defaults
         id: agent
         run: AUTODUCKS_AGENT=design bash .autoducks/core/config/load-agent-defaults.sh >> "$GITHUB_OUTPUT"

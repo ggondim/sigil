@@ -9,7 +9,7 @@ source "$AUTODUCKS_ROOT/core/orchestration/trigger-loop-closure.sh"
 
 # Reconstruct state from git (pre.sh exports don't persist across GHA steps)
 TASK_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_BASE_BRANCH}"
+BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_INTEGRATION_BRANCH}"
 FEATURE_NUM=""
 if [[ "$BASE_BRANCH" =~ ^feature/([0-9]+) ]]; then
   FEATURE_NUM="${BASH_REMATCH[1]}"

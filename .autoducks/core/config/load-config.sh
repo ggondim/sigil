@@ -65,6 +65,12 @@ AUTODUCKS_REASONING="$(echo "$_merged" | jq -r '.reasoning // empty')"
 export AUTODUCKS_BASE_BRANCH
 AUTODUCKS_BASE_BRANCH="$(echo "$_merged" | jq -r '.base_branch // empty')"
 
+# Integration branch = where feature PRs are opened (fork build branch).
+# Falls back to base_branch when unset (backward compat with single-branch setups).
+export AUTODUCKS_INTEGRATION_BRANCH
+AUTODUCKS_INTEGRATION_BRANCH="$(echo "$_merged" | jq -r '.integration_branch // empty')"
+[[ -z "$AUTODUCKS_INTEGRATION_BRANCH" ]] && AUTODUCKS_INTEGRATION_BRANCH="$AUTODUCKS_BASE_BRANCH"
+
 # ── Source provider interfaces ──────────────────────────────────────
 source "$AUTODUCKS_ROOT/providers/its/interface.sh"
 source "$AUTODUCKS_ROOT/providers/git/interface.sh"

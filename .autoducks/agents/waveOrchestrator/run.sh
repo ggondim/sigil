@@ -122,7 +122,7 @@ if [[ $NEXT_WAVE -eq -1 ]]; then
         ALL_TASK_NUMS+=("$t")
       done
     done
-    create_final_pr "$FEATURE" "$FEATURE_BRANCH" "$AUTODUCKS_BASE_BRANCH" "$ISSUE_TITLE" "${ALL_TASK_NUMS[@]}"
+    create_final_pr "$FEATURE" "$FEATURE_BRANCH" "$AUTODUCKS_INTEGRATION_BRANCH" "$ISSUE_TITLE" "${ALL_TASK_NUMS[@]}"
 
     its::comment_issue "$FEATURE" "**All waves complete!** The feature PR is ready for review."
   else

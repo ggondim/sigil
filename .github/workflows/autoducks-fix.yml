@@ -17,16 +17,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ggondim
+          fetch-depth: 0
+      # Task branches are cut from clean `master` and carry no `.autoducks/`.
+      # Load the tooling from the integration branch (ggondim) into a dir OUTSIDE
+      # the work tree so it is never committed onto the task branch.
+      - name: Fetch autoducks tooling from ggondim
+        run: |
+          git fetch --no-tags --depth=1 origin ggondim
+          mkdir -p "$RUNNER_TEMP/tooling"
+          git archive FETCH_HEAD .autoducks | tar -x -C "$RUNNER_TEMP/tooling"
+          echo "AUTODUCKS_ROOT=$RUNNER_TEMP/tooling/.autoducks" >> "$GITHUB_ENV"
       - name: Load agent defaults
         id: agent
-        run: AUTODUCKS_AGENT=fix bash .autoducks/core/config/load-agent-defaults.sh >> "$GITHUB_OUTPUT"
+        run: AUTODUCKS_AGENT=fix bash "$AUTODUCKS_ROOT/core/config/load-agent-defaults.sh" >> "$GITHUB_OUTPUT"
       - name: Parse directive
         id: directive
-        run: source .autoducks/core/config/parse-directive.sh >> "$GITHUB_OUTPUT"
+        run: source "$AUTODUCKS_ROOT/core/config/parse-directive.sh" >> "$GITHUB_OUTPUT"
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
       - name: Pre-execution
-        run: bash .autoducks/agents/fix/pre.sh
+        run: bash "$AUTODUCKS_ROOT/agents/fix/pre.sh"
         env:
           ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
@@ -34,16 +46,16 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run LLM agent
-        uses: ./.autoducks/providers/llm/claude
+        uses: ggondim/sigil/.autoducks/providers/llm/claude@ggondim
         with:
-          prompt_file: .autoducks/agents/fix/prompt.md
+          prompt_file: ${{ runner.temp }}/tooling/.autoducks/agents/fix/prompt.md
           allowed_tools: "Read,Write,Edit,Bash,Glob,Grep"
           model: ${{ steps.directive.outputs.model || steps.agent.outputs.model }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Post-execution
         if: always()
-        run: bash .autoducks/agents/fix/post.sh
+        run: bash "$AUTODUCKS_ROOT/agents/fix/post.sh"
         env:
           ISSUE_NUM: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}

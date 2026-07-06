@@ -9,7 +9,7 @@ react_to_comment "${COMMENT_ID:-}" "eyes"
 
 # Determine base branch and issue number
 # These come from the runtime as env vars: ISSUE_NUM, BASE_BRANCH
-BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_BASE_BRANCH}"
+BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_INTEGRATION_BRANCH}"
 
 # If base branch is a feature branch, extract feature number
 FEATURE_NUM=""

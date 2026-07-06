@@ -7,6 +7,7 @@
   "defaults": {
     "model": "sonnet",
     "reasoning": "high",
-    "base_branch": "ggondim"
+    "base_branch": "master",
+    "integration_branch": "ggondim"
   }
 }

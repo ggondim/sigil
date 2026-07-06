@@ -6,7 +6,7 @@ source "$AUTODUCKS_ROOT/core/feedback/react-to-comment.sh"
 
 react_to_comment "$COMMENT_ID" "eyes"
 
-BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_BASE_BRANCH}"
+BASE_BRANCH="${BASE_BRANCH:-$AUTODUCKS_INTEGRATION_BRANCH}"
 
 # Extract feature number from base branch
 FEATURE_NUM=""
