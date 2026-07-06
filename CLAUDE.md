@@ -84,20 +84,25 @@ na feature/task branch. A action do LLM é resolvida por
 > A default branch do repo no GitHub é `ggondim`: triggers `issue_comment` do autoducks rodam a
 > partir da default branch, e os workflows do fork vivem só na `ggondim`.
 
-### Issue types vs label `Feature` (divergência fork-local)
+### Issue type + label `Feature` (roteamento dual — divergência fork-local)
 
-Os guards dos workflows de **tactical** e **wave** roteiam por **label** `Feature`
-(`contains(github.event.issue.labels.*.name, 'Feature')`). O autoducks vendored, porém, só chama
-`its::set_issue_type "Feature"` — que seta o **issue type** nativo do GitHub, **não** um label.
+O autoducks vendored só chama `its::set_issue_type "Feature"` — o **issue type** nativo do GitHub.
+Issue types, porém, são **exclusivos de organização** (`POST /orgs/{org}/issue-types`, doc
+[community #175785](https://github.com/orgs/community/discussions/175785)); como `ggondim/sigil` é
+**owned por conta de usuário**, são **impossíveis** aqui — `set_issue_type` vira no-op e
+`github.event.issue.type` fica `null`.
 
-Issue types são **herdados do owner-organização** (doc: `GET /orgs/{org}/issue-types`); como
-`ggondim/sigil` é **owned por conta de usuário** (não org), issue types são **impossíveis** aqui —
-`set_issue_type` vira no-op e `github.event.issue.type` fica `null`. Sem o label, `/agents execute`
-mis-rotearia pro **execution** (task avulsa) em vez do **wave**.
+**Correção fork-local (dual type-OU-label):**
+1. Os agentes aplicam **também o label** `Feature`: [design/post.sh](.autoducks/agents/design/post.sh)
+   e [tactical/post.sh](.autoducks/agents/tactical/post.sh) chamam `its::add_label … "Feature"` junto
+   do `set_issue_type` (que fica — em org com o type definido, o **badge** aparece sozinho). Também
+   aplico o label manualmente ao criar a issue (cinto-e-suspensório).
+2. Os guards de **tactical**/**wave**/**execute** roteiam por
+   `(github.event.issue.type.name == 'Feature' || contains(github.event.issue.labels.*.name, 'Feature'))`.
+   Em conta de usuário o type é `null` → cai no label; numa org o **type vira sinal de 1ª classe** sem
+   precisar do label.
 
-**Correção fork-local:** [design/post.sh](.autoducks/agents/design/post.sh) e
-[tactical/post.sh](.autoducks/agents/tactical/post.sh) aplicam `its::add_label … "Feature"` junto do
-`set_issue_type`. Também aplico o label **manualmente** ao criar a issue de feature (cinto-e-suspensório).
+Assim as duas formas coexistem: **label** é o mecanismo universal (funciona em qualquer conta);
+**type** é o badge/subtask nativo, ativo quando o repo estiver sob uma org com os types `Feature`/`Task`.
 É divergência do autoducks vendored (um `install.sh`/update futuro pode sobrescrever — reaplicar).
-Reportado upstream em `deepducks/autoducks`; o fix principiado seria os guards checarem
-`github.event.issue.type.name` quando há org, com fallback pro label.
+Reportado upstream em [deepducks/autoducks#165](https://github.com/deepducks/autoducks/issues/165).
